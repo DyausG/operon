@@ -1,0 +1,38 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+!frontend/dist/
+
+# ---- uv / virtualenv ----
+.venv/
+venv/
+env/
+
+# ---- Node ----
+frontend/node_modules/
+frontend/.vite/
+
+# ---- Runtime artifacts (regenerated on every run) ----
+# SQLite demo DB is deleted & re-seeded each launch (run.py)
+data/poc.db
+data/poc.db-journal
+data/poc.db-wal
+data/poc.db-shm
+# Health model retrains (~10s) if absent; keep it out of version control so it
+# always matches the locally-installed scikit-learn version.
+data/health_model.joblib
+# NOTE: data/ai4i2020.csv (the public AI4I 2020 dataset) IS committed.
+
+# ---- Secrets ----
+.env
+.env.local
+.aws/
+
+# ---- Editor / OS ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

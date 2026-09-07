@@ -1,0 +1,18 @@
+# Render Blueprint — one-click deploy of the public demo.
+# In the Render dashboard: New → Blueprint → point at this repo. Or use the
+# "Deploy to Render" button in the README.
+services:
+  - type: web
+    name: agentic-predictive-maintenance
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      # Public demo runs the deterministic agent (no AWS creds, no cost).
+      # To run the live Bedrock agent instead, set POC_FORCE_DETERMINISTIC=0
+      # and add AWS_REGION / AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / BEDROCK_MODEL_ID.
+      - key: POC_FORCE_DETERMINISTIC
+        value: "1"
+      - key: POC_TICK_SECONDS
+        value: "1.2"

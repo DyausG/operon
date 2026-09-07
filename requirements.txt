@@ -1,0 +1,12 @@
+# Fallback for pip users. The supported path is uv (see README): `uv sync`.
+fastapi>=0.110
+uvicorn[standard]>=0.29
+scikit-learn>=1.3
+numpy>=1.24
+pandas>=2.0
+joblib>=1.3
+google-genai>=1.0    # Google Gemini (live agent, free tier — the POC default)
+boto3>=1.34          # AWS Bedrock (live agent); demo runs deterministically without creds
+python-dotenv>=1.0   # loads a local .env if present
+mcp>=1.28            # MCP server (mcp_app) + optional 'mcp' service adapter
+a2a-sdk>=0.2.5,<0.3  # A2A peer server (a2a_app) + optional 'a2a' service adapter

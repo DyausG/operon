@@ -1,0 +1,39 @@
+[project]
+name = "agentic-predictive-maintenance"
+version = "0.1.0"
+description = "Sentinel — a vendor-neutral Agentic Predictive-Maintenance POC (ML health model + AI maintenance agent + human-in-the-loop dashboard)"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "scikit-learn>=1.3",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "joblib>=1.3",
+    "boto3>=1.43.54",
+    "mcp>=1.28.1",
+    "a2a-sdk>=0.2.5,<0.3",
+    "google-genai>=2.14.0",
+]
+
+[project.scripts]
+sentinel = "run:main"
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+addopts = "-ra -q"
+markers = [
+    "integration: spawns/serves a real MCP or A2A endpoint (slower). Deselect with -m 'not integration'.",
+]

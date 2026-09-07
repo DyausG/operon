@@ -1,0 +1,27 @@
+# Keep the build context small and the image clean.
+.git/
+.venv/
+venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# Node (the committed frontend/dist is all we need at runtime).
+frontend/node_modules/
+frontend/.vite/
+
+# Runtime artifacts (regenerated in-container / at runtime).
+data/poc.db
+data/poc.db-journal
+data/poc.db-wal
+data/poc.db-shm
+data/health_model.joblib
+
+# Local secrets / editor cruft.
+.env
+.env.local
+.aws/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

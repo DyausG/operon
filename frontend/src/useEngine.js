@@ -1,0 +1,135 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+
+/**
+ * Live connection to the Sentinel engine.
+ *
+ * Holds one WebSocket, folds the server's event stream into a single `state`
+ * object (fleet, per-asset history, alerts, triage, business), and exposes the
+ * human-in-the-loop actions (approve / reject / reset).
+ */
+const HISTORY_CAP = 90;
+
+function wsURL() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  return `${proto}://${location.host}/ws`;
+}
+
+export function useEngine() {
+  const [state, setState] = useState({
+    connected: false,
+    running: true,
+    tick: 0,
+    plantMin: 0,
+    agentMode: "deterministic",
+    meta: { appName: "Sentinel", tagline: "Agentic Predictive Maintenance", plant: "" },
+    triggerThreshold: 0.8,
+    warnThreshold: 0.45,
+    fleet: [],
+    histories: {},
+    alerts: {},
+    triage: { count: 0, rationale: "", order: [] },
+    business: {},
+    lastEvent: null,
+  });
+  const wsRef = useRef(null);
+
+  const applySnapshot = useCallback((s) => {
+    setState((prev) => ({
+      ...prev,
+      connected: true,
+      running: s.running ?? prev.running,
+      tick: s.tick,
+      agentMode: s.agent_mode,
+      meta: { appName: s.app_name, tagline: s.tagline, plant: s.plant_name },
+      triggerThreshold: s.trigger_threshold,
+      warnThreshold: s.warn_threshold,
+      fleet: s.fleet,
+      histories: s.histories || {},
+      alerts: Object.fromEntries((s.alerts || []).map((a) => [a.equipment_id, a])),
+      triage: s.triage || prev.triage,
+      business: s.business || {},
+    }));
+  }, []);
+
+  useEffect(() => {
+    let stop = false;
+    let ws;
+    const connect = () => {
+      ws = new WebSocket(wsURL());
+      wsRef.current = ws;
+      ws.onopen = () => setState((p) => ({ ...p, connected: true }));
+      ws.onclose = () => {
+        setState((p) => ({ ...p, connected: false }));
+        if (!stop) setTimeout(connect, 1200);
+      };
+      ws.onmessage = (ev) => {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === "snapshot") return applySnapshot(msg);
+        setState((prev) => reduce(prev, msg));
+      };
+    };
+    connect();
+    return () => {
+      stop = true;
+      if (ws) ws.close();
+    };
+  }, [applySnapshot]);
+
+  const post = useCallback((path) => fetch(path, { method: "POST" }).catch(() => {}), []);
+  const approve = useCallback((id) => post(`/api/approve/${id}`), [post]);
+  const reject = useCallback((id) => post(`/api/reject/${id}`), [post]);
+  const reset = useCallback(() => post("/api/reset"), [post]);
+  const stop = useCallback(() => post("/api/stop"), [post]);
+  const resume = useCallback(() => post("/api/start"), [post]);
+
+  return { state, approve, reject, reset, stop, resume };
+}
+
+function reduce(prev, msg) {
+  switch (msg.type) {
+    case "control":
+      return { ...prev, running: msg.running };
+    case "reset":
+      return {
+        ...prev, running: true, tick: 0, plantMin: 0, fleet: [], histories: {}, alerts: {},
+        triage: { count: 0, rationale: "", order: [] }, business: {}, lastEvent: null,
+      };
+    case "tick": {
+      const histories = { ...prev.histories };
+      for (const a of msg.fleet) {
+        if (!a.point) continue;
+        const arr = (histories[a.equipment_id] || []).concat(a.point);
+        histories[a.equipment_id] = arr.slice(-HISTORY_CAP);
+      }
+      return {
+        ...prev, tick: msg.tick, plantMin: msg.plant_time_min, agentMode: msg.agent_mode,
+        fleet: msg.fleet, histories, business: msg.business || prev.business,
+      };
+    }
+    case "alert": {
+      const alerts = { ...prev.alerts, [msg.alert.equipment_id]: msg.alert };
+      return { ...prev, alerts, triage: msg.triage || prev.triage,
+               lastEvent: { kind: "alert", id: msg.alert.equipment_id, phase: msg.phase } };
+    }
+    case "resolved": {
+      const a = prev.alerts[msg.equipment_id];
+      const alerts = a ? { ...prev.alerts, [msg.equipment_id]: { ...a, status: "APPROVED", result: msg.result } } : prev.alerts;
+      return { ...prev, alerts, business: msg.business || prev.business, triage: msg.triage || prev.triage,
+               lastEvent: { kind: "resolved", id: msg.equipment_id } };
+    }
+    case "rejected": {
+      const a = prev.alerts[msg.equipment_id];
+      const alerts = a ? { ...prev.alerts, [msg.equipment_id]: { ...a, status: "REJECTED" } } : prev.alerts;
+      return { ...prev, alerts, triage: msg.triage || prev.triage,
+               lastEvent: { kind: "rejected", id: msg.equipment_id } };
+    }
+    case "failure": {
+      const a = prev.alerts[msg.equipment_id];
+      const alerts = a ? { ...prev.alerts, [msg.equipment_id]: { ...a, status: "FAILED", result: msg.result } } : prev.alerts;
+      return { ...prev, alerts, business: msg.business || prev.business,
+               lastEvent: { kind: "failure", id: msg.equipment_id } };
+    }
+    default:
+      return prev;
+  }
+}
