@@ -16,8 +16,10 @@ planned swap, and the dashboard quantifies the recovered value and OEE lift.
 When **several machines degrade at once, the agent triages them** — ranking by criticality ×
 failure-probability × business impact — and works the highest-value risk first.
 
-> **Vendor-neutral portfolio project.** All data is public-domain (AI4I 2020) or synthetic.
-> This POC is not affiliated with, endorsed by, or built for any specific company.
+> **Vendor-neutral portfolio project.** The bundled AI4I 2020 dataset is synthetic and
+> licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); the remaining
+> demo data is synthetic. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for
+> attribution. This POC is not affiliated with, endorsed by, or built for any specific company.
 
 ![architecture](https://img.shields.io/badge/stack-FastAPI%20%2B%20React%20%2B%20AWS%20Bedrock-7c8cff)
 
@@ -51,7 +53,7 @@ The React dashboard is **pre-built and committed**, so you need **no Node.js** t
 Manual / cross-platform:
 
 ```bash
-git clone https://github.com/ashish-code/agentic-predictive-maintenance.git
+git clone <repository-url> agentic-predictive-maintenance
 cd agentic-predictive-maintenance
 uv sync                    # create .venv + install deps
 uv run python run.py       # trains model on first run, serves http://127.0.0.1:8000/
@@ -97,11 +99,10 @@ clones the repo supplies their **own** key — nothing is shared or committed.
 ## Deploy a public demo
 
 The whole app is a single container (FastAPI + the pre-built dashboard), so it drops onto
-any container host. The included **Render Blueprint** (`render.yaml`) is one click:
+any container host. An included **Render Blueprint** (`render.yaml`) provides the service
+configuration.
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/ashish-code/agentic-predictive-maintenance)
-
-- **Render** — *New → Blueprint → pick this repo* (or the button above). Free tier, WebSockets supported.
+- **Render** — *New → Blueprint → pick this repository*. Free tier, WebSockets supported.
 - **Railway / Fly.io** — both auto-detect the `Dockerfile`; no extra config needed.
 - **Locally** — `docker build -t sentinel . && docker run -p 8000:8000 sentinel`
 

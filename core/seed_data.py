@@ -28,23 +28,23 @@ SENSORS = [
 
 # id, name, title, skills(CSV), shift, available
 TECHNICIANS = [
-    ("TECH-201", "Marcus Reyes",    "Reliability Technician II", "COMPRESSOR,PUMP,ROTATING,VIBRATION", "A", 1),
-    ("TECH-202", "Priya Nair",      "CNC Maintenance Tech I",    "CNC_MACHINE,GRINDER,TOOLING",        "A", 1),
-    ("TECH-203", "Dylan Osei",      "Reliability Technician I",  "COMPRESSOR,PUMP,ROTATING",           "B", 1),
-    ("TECH-204", "Sofia Marchetti", "Controls Engineer",         "ROBOT,PLC,CONVEYOR,PRESS",           "A", 1),
-    ("TECH-205", "Aiden Brooks",    "Maintenance Tech II",       "PRESS,HYDRAULICS,PUMP",              "A", 0),  # on leave
-    ("TECH-206", "Lena Kowalski",   "Machinist / Tooling",       "CNC_MACHINE,GRINDER,TOOLING",        "B", 1),
+    ("TECH-201", "Demo Technician 201", "Reliability Technician II", "COMPRESSOR,PUMP,ROTATING,VIBRATION", "A", 1),
+    ("TECH-202", "Demo Technician 202", "CNC Maintenance Tech I",    "CNC_MACHINE,GRINDER,TOOLING",        "A", 1),
+    ("TECH-203", "Demo Technician 203", "Reliability Technician I",  "COMPRESSOR,PUMP,ROTATING",           "B", 1),
+    ("TECH-204", "Demo Technician 204", "Controls Engineer",         "ROBOT,PLC,CONVEYOR,PRESS",           "A", 1),
+    ("TECH-205", "Demo Technician 205", "Maintenance Tech II",       "PRESS,HYDRAULICS,PUMP",              "A", 0),  # on leave
+    ("TECH-206", "Demo Technician 206", "Machinist / Tooling",       "CNC_MACHINE,GRINDER,TOOLING",        "B", 1),
 ]
 
 PARTS = [
     # part_id, erp_material_no, part_number, description, on_hand, lead_time_days
-    ("PRT-BRG",  "MAT-100482", "SKF-6316-C3", "Drive-end deep-groove ball bearing", 3,  5),
-    ("PRT-TOOL", "MAT-100640", "SND-CNMG1204","Carbide turning insert (10-pack)",   14, 2),
-    ("PRT-SEAL", "MAT-100521", "PRK-HS-070",  "Hydraulic rod seal kit",             5,  4),
-    ("PRT-CPL",  "MAT-100119", "LOV-AL-090",  "Flexible jaw coupling insert",       6,  3),
-    ("PRT-COOL", "MAT-100777", "MOB-XHP-222", "High-temp bearing grease (400g)",    12, 1),
-    ("PRT-FLT",  "MAT-100913", "CMP-AF-55",   "Intake air filter",                  9,  2),
-    ("PRT-PMPK", "MAT-100388", "GRF-PK-050",  "Coolant pump rebuild kit",           1,  7),  # short stock
+    ("PRT-BRG",  "MAT-100482", "DEMO-BRG-6316",  "Drive-end deep-groove ball bearing", 3,  5),
+    ("PRT-TOOL", "MAT-100640", "DEMO-TOOL-1204", "Carbide turning insert (10-pack)",   14, 2),
+    ("PRT-SEAL", "MAT-100521", "DEMO-SEAL-070",  "Hydraulic rod seal kit",             5,  4),
+    ("PRT-CPL",  "MAT-100119", "DEMO-CPL-090",   "Flexible jaw coupling insert",       6,  3),
+    ("PRT-COOL", "MAT-100777", "DEMO-LUBE-222",  "High-temp bearing grease (400g)",    12, 1),
+    ("PRT-FLT",  "MAT-100913", "DEMO-FILTER-055", "Intake air filter",                 9,  2),
+    ("PRT-PMPK", "MAT-100388", "DEMO-PUMP-050",  "Coolant pump rebuild kit",           1,  7),  # short stock
 ]
 
 # equipment_id, part_id, qty_per_service, is_critical_spare

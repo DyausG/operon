@@ -22,7 +22,7 @@ except Exception:
 # ---------------------------------------------------------------------------
 APP_NAME = "Sentinel"
 APP_TAGLINE = "Agentic Predictive Maintenance"
-PLANT_NAME = os.getenv("POC_PLANT_NAME", "Riverside Component Plant")
+PLANT_NAME = os.getenv("POC_PLANT_NAME", "Demo Manufacturing Plant 01")
 
 # ---------------------------------------------------------------------------
 # Paths

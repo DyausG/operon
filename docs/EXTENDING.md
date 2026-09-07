@@ -121,7 +121,7 @@ uv run python -m mcp_app.server --http      # streamable-http on :8100
     "sentinel-maintenance": {
       "command": "uv",
       "args": ["run", "python", "-m", "mcp_app.server"],
-      "cwd": "/absolute/path/to/agentic-predictive-maintenance"
+      "cwd": "/path/to/agentic-predictive-maintenance"
     }
   }
 }
