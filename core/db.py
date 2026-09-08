@@ -5,8 +5,10 @@ a real deployment. The agent may only read/write through these governed tables.
 """
 from __future__ import annotations
 import sqlite3
+from pathlib import Path
 from contextlib import contextmanager
 from .config import DB_PATH
+from .migrations import apply_migrations
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS plant (
@@ -157,26 +159,35 @@ CREATE TABLE IF NOT EXISTS labor_booking (
 
 
 @contextmanager
-def get_conn():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10)
+def get_conn(path: Path | None = None):
+    conn = sqlite3.connect(path if path is not None else DB_PATH, check_same_thread=False, timeout=10)
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA foreign_keys=ON;")
         yield conn
         conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
 
-def init_schema() -> None:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with get_conn() as conn:
+def init_schema(path: Path | None = None) -> None:
+    path = Path(path if path is not None else DB_PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with get_conn(path) as conn:
         conn.executescript(SCHEMA)
+        apply_migrations(conn)
+
+
+RELIABILITY_RESET_TABLES = ("execution_receipt", "approval_decision", "incident_event",
+                            "incident_artifact", "incident")
 
 
 def reset_transactional() -> None:
     """Wipe the loop's write-back + telemetry (keep master data)."""
     with get_conn() as conn:
-        for t in ("labor_booking", "part_reservation", "work_package", "notification",
+        for t in RELIABILITY_RESET_TABLES + ("labor_booking", "part_reservation", "work_package", "notification",
                   "alert", "maintenance_event", "work_order", "health_score", "sensor_reading"):
             conn.execute(f"DELETE FROM {t};")

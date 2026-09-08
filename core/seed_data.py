@@ -6,7 +6,7 @@ maintenance crew (labor ontology), and the spare-parts bridge.
 Vendor-neutral synthetic values only.
 """
 from __future__ import annotations
-from .db import get_conn, init_schema
+from .db import get_conn, init_schema, RELIABILITY_RESET_TABLES
 from .config import PLANT_NAME
 
 # equipment_id, name, class, criticality, product_tier
@@ -104,7 +104,7 @@ def seed(reset: bool = False) -> None:
     with get_conn() as conn:
         if reset:
             # child/transactional tables first so foreign keys never block the wipe
-            for t in ("labor_booking", "part_reservation", "work_package", "notification",
+            for t in RELIABILITY_RESET_TABLES + ("labor_booking", "part_reservation", "work_package", "notification",
                       "alert", "maintenance_event", "work_order", "health_score", "sensor_reading",
                       "equipment_part", "sensor", "part", "technician", "failure_mode",
                       "equipment", "assembly_line", "plant"):

@@ -7,7 +7,7 @@ events that any transport (the FastAPI WebSocket, a notebook, a test) can consum
 """
 from __future__ import annotations
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 
 from . import config, agent, services
@@ -16,6 +16,10 @@ from .model import load_or_train
 from .simulator import PlantSimulator
 from .seed_data import CLASS_DEFAULT_MODE, SENSOR_FEATURES
 from .tools import get_failure_mode_by_code, commit_actions, raise_alert
+from .reliability.coordinator import IncidentCoordinator, legacy_projection
+from .reliability.models import IncidentPhase, ModelSignal
+from .reliability.repository import IncidentRepository
+from .reliability.signals import from_prediction, model_version
 
 HISTORY_CAP = 90
 logger = logging.getLogger(__name__)
@@ -43,6 +47,41 @@ class DemoEngine:
         self._task: asyncio.Task | None = None
         self._analyzing: set[str] = set()
         self.meta = self._load_meta()
+        self.coordinator = IncidentCoordinator(IncidentRepository())
+        self.incidents = {}
+        self._resume: set[str] = set()
+        self._model_version = model_version(config.MODEL_PATH)
+        self._observed_at = datetime.now(timezone.utc)
+        self._recover_incidents()
+
+    def _recover_incidents(self):
+        for incident, checkpoint in self.coordinator.recover():
+            # This compatibility runner only resumes its own single-asset signals.
+            if not incident.signal_evidence_ids or len(incident.equipment_ids) != 1:
+                continue
+            eid = incident.equipment_ids[0]
+            self.incidents[eid] = incident
+            if eid not in self.sim.assets:
+                continue
+            if checkpoint:
+                self.alerts[eid] = legacy_projection(checkpoint)
+                st = self.sim.assets[eid]
+                st.prog, st.tick = checkpoint.simulator_progress, checkpoint.simulator_tick
+                self.tick_i = max(self.tick_i, st.tick)
+                mode, status = {"APPROVED": ("recovering", "SCHEDULED"),
+                                "REJECTED": ("failing", "CRITICAL"),
+                                "FAILED": ("arrested", "DOWN")}.get(checkpoint.status, ("arrested", "CRITICAL"))
+                self.sim.set_mode(eid, mode)
+                self.status_override[eid] = status
+            if incident.phase == IncidentPhase.OPEN and (checkpoint is None or checkpoint.status == "ANALYZING"):
+                self._resume.add(eid)
+        self._retriage()
+
+    def _checkpoint_alert(self, eid: str):
+        # Hand-built legacy alerts remain supported by old callers/tests.
+        if eid in self.incidents:
+            self.incidents[eid] = self.coordinator.checkpoint_legacy(
+                self.incidents[eid], self.alerts[eid], self.sim.assets[eid])
 
     def _load_meta(self) -> dict:
         with get_conn() as c:
@@ -86,6 +125,8 @@ class DemoEngine:
         self.alerts = {}
         self.status_override = {}
         self._analyzing = set()
+        self.incidents = {}
+        self._resume = set()
         await self.broadcast({"type": "reset"})
         await self.start()
 
@@ -101,7 +142,8 @@ class DemoEngine:
     async def _advance(self):
         self.tick_i += 1
         feats = self.sim.tick()
-        now = datetime.now().isoformat(timespec="seconds")
+        self._observed_at = datetime.now(timezone.utc)
+        now = self._observed_at.isoformat(timespec="seconds")
         fleet_msg, readings, healths = [], [], []
         for eid, f in feats.items():
             pred = self.model.predict(f)
@@ -135,9 +177,15 @@ class DemoEngine:
         # detect NEW alerts (assets crossing the threshold while still degrading)
         for eid, a in self.assets.items():
             st = self.sim.assets[eid]
-            if (a["failure_prob"] >= config.TRIGGER_THRESHOLD and eid not in self.alerts
-                    and eid not in self._analyzing and st.mode == "degrading"):
-                await self._fire_agent(eid)
+            if (eid in self._resume or
+                    (a["failure_prob"] >= config.TRIGGER_THRESHOLD and eid not in self.alerts
+                     and eid not in self._analyzing and st.mode == "degrading")):
+                try:
+                    await self._fire_agent(eid)
+                except Exception:
+                    logger.exception("Incident admission/planning persistence failed for %s", eid)
+                    await self.broadcast({"type": "error", "equipment_id": eid,
+                                          "error": "incident admission or legacy planning failed; retrying"})
 
         # unplanned failures for rejected assets
         for eid in list(self.alerts):
@@ -190,38 +238,67 @@ class DemoEngine:
         return result
 
     # -- agent + triage ----------------------------------------------------
-    def _build_ctx(self, eid: str) -> dict:
+    def _build_ctx(self, eid: str, signal: ModelSignal | None = None) -> dict:
         a = self.assets[eid]
-        mode_code = a["predicted_mode"]["mode"]
+        mode_code = signal.candidate_failure_mode if signal else a["predicted_mode"]["mode"]
         fm = get_failure_mode_by_code(mode_code)
         if not fm:  # NONE / unknown -> fall back to the class's characteristic mode
             fallback_id = CLASS_DEFAULT_MODE.get(a["equipment_class"], "FM-OSF")
             fm = get_failure_mode_by_code(fallback_id.split("-")[1])
-        drivers = self.model.attribute(a)
+        drivers = [item.model_dump(exclude={"schema_version"}) for item in signal.attribution] if signal else self.model.attribute(a)
+        mode_prediction = ({"mode": mode_code, "distribution": signal.mode_distribution}
+                           if signal else a["predicted_mode"])
+        prediction = ({"failure_prob": signal.risk_score, "health_score": signal.health_score}
+                      if signal else {"failure_prob": a["failure_prob"], "health_score": a["health_score"]})
         return {"equipment_id": eid, "equipment_name": a["name"],
                 "equipment_class": a["equipment_class"], "criticality": a["criticality"],
-                "failure_mode": fm, "mode_prediction": a["predicted_mode"],
-                "prediction": {"failure_prob": a["failure_prob"], "health_score": a["health_score"]},
+                "failure_mode": fm, "mode_prediction": mode_prediction,
+                "prediction": prediction,
                 "drivers": drivers}
 
     async def _fire_agent(self, eid: str):
+        try:
+            await self._plan_legacy_alert(eid)
+        finally:
+            self._analyzing.discard(eid)
+
+    async def _plan_legacy_alert(self, eid: str):
+        ctx = self._build_ctx(eid)
+        signal = from_prediction(eid, self.assets[eid], ctx["drivers"],
+                                 observed_at=self._observed_at,
+                                 source=f"{type(self.model).__module__}.{type(self.model).__qualname__}",
+                                 version=self._model_version)
+        incident, created = self.coordinator.admit(
+            signal, severity="CRITICAL" if ctx["criticality"] == "HIGH" else "HIGH",
+            triage_score=agent.triage_score(ctx))
+        self.incidents[eid] = incident
+        if not created and incident.legacy_alert_id and eid not in self._resume:
+            checkpoint = self.coordinator.repository.get_artifact(incident.id, incident.legacy_alert_id)
+            self.alerts[eid] = legacy_projection(checkpoint)
+            return
+        if incident.phase != IncidentPhase.OPEN:
+            return
+        if not created:
+            evidence = self.coordinator.repository.get_artifact(incident.id, incident.signal_evidence_ids[0])
+            ctx = self._build_ctx(eid, ModelSignal.model_validate(evidence.payload))
+        self._resume.add(eid)
         self._analyzing.add(eid)
         self.sim.set_mode(eid, "arrested")
         self.status_override[eid] = "CRITICAL"
-        ctx = self._build_ctx(eid)
         # Record a governed operational alert (foundation for the monitoring layer).
         # Best-effort: a notification-backend hiccup must never stall the loop.
         try:
             sev = "CRITICAL" if ctx["criticality"] == "HIGH" else "HIGH"
-            raise_alert(eid, sev,
-                        f"{ctx['failure_mode'].get('mode_code','?')} predicted on {eid} at "
-                        f"{ctx['prediction']['failure_prob']:.0%} failure probability.", "agent")
+            if created:
+                raise_alert(eid, sev,
+                            f"{ctx['failure_mode'].get('mode_code','?')} candidate on {eid} at "
+                            f"{ctx['prediction']['failure_prob']:.0%} model risk score.", "agent")
         except Exception:
             logger.exception(
                 "Operational alert persistence failed for %s; continuing the demo loop", eid
             )
         # announce the alert immediately (agent is "thinking")
-        alert = {"equipment_id": eid, "equipment_name": ctx["equipment_name"],
+        alert = {"incident_id": incident.id, "equipment_id": eid, "equipment_name": ctx["equipment_name"],
                  "equipment_class": ctx["equipment_class"], "criticality": ctx["criticality"],
                  "failure_prob": round(ctx["prediction"]["failure_prob"], 3),
                  "predicted_mode": ctx["failure_mode"].get("mode_code"),
@@ -230,11 +307,14 @@ class DemoEngine:
                  "triage_rank": None, "triage_score": agent.triage_score(ctx),
                  "proposal": None, "result": None}
         self.alerts[eid] = alert
+        self._checkpoint_alert(eid)
         await self.broadcast({"type": "alert", "alert": alert, "phase": "analyzing"})
 
         proposal = await asyncio.to_thread(agent.decide, ctx)
         alert["proposal"] = proposal
         alert["status"] = "PENDING_APPROVAL"
+        self._checkpoint_alert(eid)
+        self._resume.discard(eid)
         self._analyzing.discard(eid)
         self._retriage()
         await self.broadcast({"type": "alert", "alert": alert, "phase": "ready",
@@ -291,6 +371,7 @@ class DemoEngine:
                   "oee_after": min(config.OEE_TARGET, config.OEE_BASELINE + 0.031)}
         al["status"] = "APPROVED"
         al["result"] = result
+        self._checkpoint_alert(eid)
         self._retriage()
         await self.broadcast({"type": "resolved", "equipment_id": eid, "result": result,
                               "business": self._business_summary(), "triage": self._triage_msg()})
@@ -303,6 +384,7 @@ class DemoEngine:
         self.sim.set_mode(eid, "failing")
         self.status_override[eid] = "CRITICAL"
         al["status"] = "REJECTED"
+        self._checkpoint_alert(eid)
         self._retriage()
         await self.broadcast({"type": "rejected", "equipment_id": eid, "triage": self._triage_msg()})
         return {"ok": True}
@@ -315,6 +397,7 @@ class DemoEngine:
                   "oee_after": round(config.OEE_BASELINE - 0.06, 3)}
         self.alerts[eid]["status"] = "FAILED"
         self.alerts[eid]["result"] = result
+        self._checkpoint_alert(eid)
         await self.broadcast({"type": "failure", "equipment_id": eid, "result": result,
                               "business": self._business_summary()})
 

@@ -291,3 +291,101 @@ async def test_application_startup_preserves_persisted_state(seeded_db, monkeypa
         assert conn.execute(
             "SELECT COUNT(*) AS n FROM health_score WHERE scored_at='startup-marker'"
         ).fetchone()["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_durable_alerts_recover_without_replanning_and_preserve_demo_decisions(seeded_db, monkeypatch):
+    from core.reliability.models import IncidentPhase
+
+    engine = make_engine(monkeypatch, failure_prob=0.91)
+    monkeypatch.setattr(StubModel, "attribute", lambda self, _features: [
+        {"feature": "torque", "label": "Torque", "value": 62.0, "contribution": 0.34}])
+    # Use the real deterministic planner and local service/CMMS writes.
+    await engine._advance()
+    original_ids = {eid: incident.id for eid, incident in engine.incidents.items()}
+    assert len(original_ids) == 4
+
+    def no_replanning(_ctx):
+        pytest.fail("pending proposals should be reconstructed without model/planner calls")
+
+    monkeypatch.setattr(engine_module.agent, "decide", no_replanning)
+    restarted = make_engine(monkeypatch, failure_prob=0.91)
+    assert {eid: incident.id for eid, incident in restarted.incidents.items()} == original_ids
+    assert restarted.snapshot()["alerts"] == engine.snapshot()["alerts"]
+    await restarted._advance()
+
+    response = await restarted.approve("AC-COMP-01")
+    assert response["ok"]
+    assert (await restarted.approve("AC-COMP-01"))["ok"] is False
+    assert (await restarted.reject("AC-COMP-01"))["ok"] is False
+    restarted.sim.assets["HYD-PUMP-03"].prog = FAIL_PROG - 0.01
+    assert (await restarted.reject("HYD-PUMP-03"))["ok"]
+
+    again = make_engine(monkeypatch, failure_prob=0.91)
+    assert again.alerts["AC-COMP-01"]["status"] == "APPROVED"
+    assert again.sim.assets["AC-COMP-01"].mode == "recovering"
+    assert again.alerts["HYD-PUMP-03"]["status"] == "REJECTED"
+    assert again.sim.assets["HYD-PUMP-03"].mode == "failing"
+    await again._advance()
+    assert again.alerts["HYD-PUMP-03"]["status"] == "FAILED"
+    final = make_engine(monkeypatch)
+    assert final.alerts["HYD-PUMP-03"]["status"] == "FAILED"
+    assert final.status_override["HYD-PUMP-03"] == "DOWN"
+    assert final._business_summary()["events_prevented"] == 1
+    assert final._business_summary()["events_failed"] == 1
+    assert all(i.phase == IncidentPhase.OPEN for i in final.incidents.values())
+    with get_conn() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM incident").fetchone()[0] == 4
+        assert conn.execute("SELECT COUNT(*) FROM alert").fetchone()[0] == 4
+        assert conn.execute("SELECT COUNT(*) FROM work_package").fetchone()[0] == 1
+        # Legacy actions must not masquerade as new governed approvals/outcomes.
+        assert conn.execute("SELECT COUNT(*) FROM approval_decision").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM execution_receipt").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM incident_artifact WHERE kind='Outcome'").fetchone()[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_interrupted_planning_resumes_durable_incident(seeded_db, monkeypatch, caplog):
+    engine = make_engine(monkeypatch, failure_prob=0.91)
+
+    def interrupted(_ctx):
+        raise RuntimeError("planner interrupted")
+
+    monkeypatch.setattr(engine_module.agent, "decide", interrupted)
+    await engine._advance()
+    assert "Incident admission/planning persistence failed" in caplog.text
+    assert engine._analyzing == set()
+    ids = {eid: incident.id for eid, incident in engine.incidents.items()}
+
+    def resumed(ctx):
+        assert ctx["prediction"]["failure_prob"] == 0.91
+        assert ctx["mode_prediction"]["mode"] == "PWF"
+        # A model/planner wait must not retain a SQLite writer transaction.
+        with get_conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+        return {"business": {}}
+
+    monkeypatch.setattr(engine_module.agent, "decide", resumed)
+    restarted = make_engine(monkeypatch, failure_prob=0.1)
+    assert len(restarted._resume) == 4
+    await restarted._advance()
+    assert restarted._resume == set()
+    assert {eid: incident.id for eid, incident in restarted.incidents.items()} == ids
+    assert all(a["status"] == "PENDING_APPROVAL" for a in restarted.alerts.values())
+    assert len(restarted.coordinator.repository.list_active_incidents()) == 4
+
+
+@pytest.mark.asyncio
+async def test_admission_failure_is_visible_and_does_not_start_planner(seeded_db, monkeypatch, caplog):
+    engine = make_engine(monkeypatch, failure_prob=0.91)
+
+    def unavailable(*args, **kwargs):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(engine.coordinator, "admit", unavailable)
+    monkeypatch.setattr(engine_module.agent, "decide", lambda _ctx: pytest.fail("admission must persist first"))
+    await engine._advance()
+    assert engine.alerts == {}
+    assert engine._analyzing == set()
+    assert engine.tick_i == 1
+    assert "database unavailable" in caplog.text

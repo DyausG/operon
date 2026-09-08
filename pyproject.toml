@@ -5,6 +5,7 @@ description = "Operon — Autonomous Reliability Operations for Industrial Syste
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
 dependencies = [
+    "pydantic>=2.11,<3",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
     "scikit-learn>=1.3",

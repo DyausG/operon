@@ -9,10 +9,14 @@ from __future__ import annotations
 import os
 import pathlib
 import tempfile
+import socket
 
 # --- isolate BEFORE importing core (config resolves paths/creds at import) ----
-_TMP_DB = pathlib.Path(tempfile.gettempdir()) / "operon_pytest_poc.db"
+_TMP_ROOT = tempfile.TemporaryDirectory(prefix="operon-pytest-")
+_TMP_DB = pathlib.Path(_TMP_ROOT.name) / "poc.db"
 os.environ["POC_DB_PATH"] = str(_TMP_DB)
+os.environ["POC_MODEL_PATH"] = str(pathlib.Path(_TMP_ROOT.name) / "model.joblib")
+os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
 
 # Neutralize provider creds. Empty (not absent) so python-dotenv's load_dotenv
 # (override=False) won't repopulate GEMINI_API_KEY from a local .env.
@@ -23,14 +27,45 @@ for _k in ("AWS_ACCESS_KEY_ID", "AWS_PROFILE", "SENTINEL_LLM_PROVIDER",
     os.environ.pop(_k, None)
 for _k in [k for k in os.environ if k.startswith("SENTINEL_") and k.endswith("_ADAPTER")]:
     os.environ.pop(_k, None)
+os.environ["POC_FORCE_DETERMINISTIC"] = "1"
 
 import pytest  # noqa: E402
 from core.db import init_schema  # noqa: E402
 from core.seed_data import seed  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _isolate_database_and_network(tmp_path, monkeypatch):
+    from core import config, db
+    path = tmp_path / "operon.db"
+    monkeypatch.setattr(db, "DB_PATH", path)
+    monkeypatch.setattr(config, "DB_PATH", path)
+    monkeypatch.setenv("POC_DB_PATH", str(path))
+
+    original_connect = socket.socket.connect
+    original_connect_ex = socket.socket.connect_ex
+
+    def guarded_connect(sock, address):
+        if sock.family in (socket.AF_INET, socket.AF_INET6):
+            raise AssertionError(f"network access is blocked in tests: {address}")
+        return original_connect(sock, address)
+
+    def guarded_connect_ex(sock, address):
+        if sock.family in (socket.AF_INET, socket.AF_INET6):
+            raise AssertionError(f"network access is blocked in tests: {address}")
+        return original_connect_ex(sock, address)
+
+    monkeypatch.setattr(socket.socket, "connect", guarded_connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", guarded_connect_ex)
+
+    def blocked_dns(*args, **kwargs):
+        raise AssertionError("DNS/network access is blocked in tests")
+
+    monkeypatch.setattr(socket, "getaddrinfo", blocked_dns)
+
+
 @pytest.fixture()
-def seeded_db():
+def seeded_db(_isolate_database_and_network):
     """Fresh schema + master data + wiped transactional tables."""
     init_schema()
     seed(reset=True)
