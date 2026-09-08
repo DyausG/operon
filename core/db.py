@@ -191,3 +191,7 @@ def reset_transactional() -> None:
         for t in RELIABILITY_RESET_TABLES + ("labor_booking", "part_reservation", "work_package", "notification",
                   "alert", "maintenance_event", "work_order", "health_score", "sensor_reading"):
             conn.execute(f"DELETE FROM {t};")
+    # Reset removes generated operational writes but restores the one explicitly
+    # marked historical demo fixture so a fresh incident remains investigable.
+    from .seed_data import seed_maintenance_history
+    seed_maintenance_history()

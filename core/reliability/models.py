@@ -95,12 +95,18 @@ class Evidence(Artifact):
     source_locator: Identifier
     source_version: Identifier
     content_hash: Identifier
-    observed_at: AwareDatetime
+    # Missing evidence has no truthful observation timestamp. Collection time is
+    # retained separately and must not be substituted for a nonexistent sample.
+    observed_at: AwareDatetime | None
     retrieved_at: AwareDatetime
     quality: Literal["GOOD", "SUSPECT", "MISSING"]
     provenance: Literal["OBSERVED", "SIMULATED", "DERIVED"]
     summary: str
     payload: dict[str, JsonValue]
+    source_capability: Identifier = "legacy.unspecified"
+    source_system: Identifier = "legacy.unspecified"
+    request_id: str | None = None
+    collection_key: str | None = None
     derived_from_ids: tuple[Identifier, ...] = ()
     supersedes_id: str | None = None
 
@@ -120,6 +126,8 @@ class EvidenceRequest(Artifact):
     equipment_ids: tuple[Identifier, ...] = Field(min_length=1)
     question: str
     capability: Identifier
+    parameters: dict[str, JsonValue] = Field(default_factory=dict)
+    request_key: str | None = None
     required_for: Literal["diagnosis", "intervention", "outcome"]
     status: Literal["OPEN", "SATISFIED", "UNAVAILABLE"] = "OPEN"
     resolved_by_evidence_ids: tuple[Identifier, ...] = ()
@@ -349,5 +357,7 @@ class IncidentEvent(Contract):
     event_type: Literal["INCIDENT_OPENED", "SIGNAL_RECORDED", "PHASE_CHANGED",
                         "ARTIFACT_ADDED", "INCIDENT_ESCALATED", "INCIDENT_CLOSED",
                         "INCIDENT_UPDATED", "APPROVAL_REQUESTED", "APPROVAL_RECORDED",
-                        "EXECUTION_CLAIMED", "EXECUTION_RECORDED"]
+                        "EXECUTION_CLAIMED", "EXECUTION_RECORDED",
+                        "EVIDENCE_REQUESTED", "EVIDENCE_COLLECTED",
+                        "EVIDENCE_REQUEST_RESOLVED"]
     payload: dict[str, JsonValue]

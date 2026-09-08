@@ -93,6 +93,53 @@ CLASS_DEFAULT_MODE = {
     "ROBOT": "FM-PWF", "CONVEYOR": "FM-PWF", "GRINDER": "FM-TWF", "PRESS": "FM-OSF",
 }
 
+# A deliberately small, clearly identified historical fixture.  It gives the
+# investigation layer one credible prior maintenance record without pretending
+# to be a CMMS history import or asserting a verified diagnostic outcome.
+DEMO_MAINTENANCE_HISTORY = (
+    {
+        "wo_number": "DEMO-HIST-WO-0001",
+        "equipment_id": "AC-COMP-01",
+        "failure_mode_id": None,
+        "technician_id": "TECH-201",
+        "status": "COMPLETE",
+        "priority": "ROUTINE",
+        "created_at": "2026-08-18T14:00:00+00:00",
+        "detail": "Quarterly compressor inspection; replaced the intake filter and checked coupling alignment.",
+        "event_type": "PREVENTIVE",
+        "note": "Scheduled demo maintenance record; equipment was returned to service. No causal diagnosis was stored.",
+    },
+)
+
+
+def _seed_maintenance_history(conn) -> None:
+    for record in DEMO_MAINTENANCE_HISTORY:
+        row = conn.execute("SELECT wo_id FROM work_order WHERE wo_number=?",
+                           (record["wo_number"],)).fetchone()
+        if row is not None:
+            continue
+        cursor = conn.execute(
+            "INSERT INTO work_order "
+            "(wo_number,equipment_id,failure_mode_id,technician_id,status,priority,created_at,detail) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            tuple(record[key] for key in (
+                "wo_number", "equipment_id", "failure_mode_id", "technician_id",
+                "status", "priority", "created_at", "detail",
+            )),
+        )
+        conn.execute(
+            "INSERT INTO maintenance_event "
+            "(equipment_id,failure_mode_id,wo_id,event_type,created_at,note) VALUES (?,?,?,?,?,?)",
+            (record["equipment_id"], record["failure_mode_id"], cursor.lastrowid,
+             record["event_type"], record["created_at"], record["note"]),
+        )
+
+
+def seed_maintenance_history() -> None:
+    """Idempotently restore the explicit historical demo fixture."""
+    with get_conn() as conn:
+        _seed_maintenance_history(conn)
+
 
 def seed(reset: bool = False) -> None:
     """Create missing demo master data without disturbing existing state.
@@ -130,6 +177,7 @@ def seed(reset: bool = False) -> None:
             conn.execute("INSERT OR IGNORE INTO part VALUES (?,?,?,?,?,?)", row)
         for row in EQUIPMENT_PART:
             conn.execute("INSERT OR IGNORE INTO equipment_part VALUES (?,?,?,?)", row)
+        _seed_maintenance_history(conn)
 
 
 if __name__ == "__main__":

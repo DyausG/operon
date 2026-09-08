@@ -72,9 +72,12 @@ def test_notify_draft_writes_nothing(seeded_db):
 
 def test_generic_work_package_cannot_bypass_governed_executor(seeded_db):
     from tests.conftest import sample_proposal
+    with get_conn() as c:
+        before = {t: c.execute(f"SELECT COUNT(*) n FROM {t}").fetchone()["n"]
+                  for t in ("work_order", "maintenance_event", "work_package",
+                            "part_reservation", "labor_booking", "notification")}
     with pytest.raises(TypeError):
         tools.commit_actions(sample_proposal(), None)
     with get_conn() as c:
-        for t in ("work_order", "maintenance_event", "work_package",
-                  "part_reservation", "labor_booking", "notification"):
-            assert c.execute(f"SELECT COUNT(*) n FROM {t}").fetchone()["n"] == 0
+        assert {t: c.execute(f"SELECT COUNT(*) n FROM {t}").fetchone()["n"]
+                for t in before} == before

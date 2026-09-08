@@ -37,6 +37,8 @@ def signal_evidence(signal: ModelSignal, incident_id: str) -> Evidence:
         source_uri=signal.model_source, source_locator=f"signal:{signal.id}",
         source_version=signal.model_version, content_hash=content_hash(payload),
         observed_at=signal.observed_at, retrieved_at=now, quality="GOOD", provenance="DERIVED",
+        source_capability="admit_model_signal",
+        source_system=f"{signal.input_source}+{signal.model_source}",
         summary=f"Model risk signal {signal.risk_score:.1%}; candidate mode {signal.candidate_failure_mode}",
         payload=payload,
     )

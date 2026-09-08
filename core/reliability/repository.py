@@ -53,6 +53,7 @@ REFERENCE_TYPES = {
     "intervention_id": m.Intervention, "requirement_id": m.ApprovalRequirement,
     "input_artifact_ids": m.Artifact, "output_artifact_ids": m.Artifact,
     "execution_receipt_ids": m.ExecutionReceipt,
+    "request_id": m.EvidenceRequest,
 }
 
 
@@ -148,6 +149,27 @@ class IncidentRepository:
                 "SELECT state_json FROM incident WHERE phase NOT IN ('CLOSED','CANCELLED') "
                 "ORDER BY created_at,incident_id")]
 
+    def list_incidents_for_equipment(self, equipment_id: str, *,
+                                     exclude_incident_id: str | None = None,
+                                     limit: int = 20) -> list[m.Incident]:
+        """Bounded same-equipment lookup for incident-memory capabilities."""
+        if not 1 <= limit <= 100:
+            raise ValueError("incident limit must be between 1 and 100")
+        with db.get_conn(self.path) as conn:
+            sql = (
+                "SELECT state_json FROM incident i "
+                "WHERE EXISTS (SELECT 1 FROM json_each(i.state_json, '$.equipment_ids') "
+                "WHERE value=?)"
+            )
+            params: list[object] = [equipment_id]
+            if exclude_incident_id is not None:
+                sql += " AND incident_id<>?"
+                params.append(exclude_incident_id)
+            sql += " ORDER BY updated_at DESC, incident_id DESC LIMIT ?"
+            params.append(limit)
+            return [m.Incident.model_validate_json(row[0])
+                    for row in conn.execute(sql, tuple(params))]
+
     @staticmethod
     def _artifact(conn, incident_id, artifact_id):
         row = conn.execute("SELECT kind,body_json FROM incident_artifact "
@@ -236,6 +258,22 @@ class IncidentRepository:
             })
         if isinstance(artifact, m.Evidence) and artifact.kind == "model_signal":
             self._event(conn, incident, "SIGNAL_RECORDED", {"evidence_id": artifact.id, "signal_id": artifact.payload["id"]})
+        elif isinstance(artifact, m.Evidence):
+            self._event(conn, incident, "EVIDENCE_COLLECTED", {
+                "evidence_id": artifact.id,
+                "request_id": artifact.request_id,
+                "capability": artifact.source_capability,
+                "quality": artifact.quality,
+            })
+        elif isinstance(artifact, m.EvidenceRequest):
+            event_type = ("EVIDENCE_REQUESTED" if artifact.status == "OPEN"
+                          else "EVIDENCE_REQUEST_RESOLVED")
+            self._event(conn, incident, event_type, {
+                "request_id": artifact.id,
+                "capability": artifact.capability,
+                "status": artifact.status,
+                "resolved_by_evidence_ids": list(artifact.resolved_by_evidence_ids),
+            })
         return incident
 
     def add_artifact(self, artifact: m.Artifact, *, expected_revision: int) -> m.Incident:
