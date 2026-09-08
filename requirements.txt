@@ -1,6 +1,7 @@
 # Fallback for pip users. The supported path is uv (see README): `uv sync`.
 fastapi>=0.110
 pydantic>=2.11,<3
+strands-agents==1.54.0  # advisory specialists; Bedrock runtime, no optional tool packs
 uvicorn[standard]>=0.29
 scikit-learn>=1.3
 numpy>=1.24
