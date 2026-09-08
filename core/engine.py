@@ -15,9 +15,12 @@ from .db import get_conn, reset_transactional
 from .model import load_or_train
 from .simulator import PlantSimulator
 from .seed_data import CLASS_DEFAULT_MODE, SENSOR_FEATURES
-from .tools import get_failure_mode_by_code, commit_actions, raise_alert
+from .tools import get_failure_mode_by_code
 from .reliability.coordinator import IncidentCoordinator, legacy_projection
-from .reliability.models import IncidentPhase, ModelSignal
+from .reliability.execution import ExecutionFailed, GovernedExecutor
+from .reliability.governance import ApprovalLedger
+from .reliability.legacy import prepare_legacy_intervention
+from .reliability.models import ApprovalRequirement, IncidentPhase, Intervention, ModelSignal
 from .reliability.repository import IncidentRepository
 from .reliability.signals import from_prediction, model_version
 
@@ -290,9 +293,11 @@ class DemoEngine:
         try:
             sev = "CRITICAL" if ctx["criticality"] == "HIGH" else "HIGH"
             if created:
-                raise_alert(eid, sev,
-                            f"{ctx['failure_mode'].get('mode_code','?')} candidate on {eid} at "
-                            f"{ctx['prediction']['failure_prob']:.0%} model risk score.", "agent")
+                services.notifications().raise_alert(
+                    equipment_id=eid, severity=sev,
+                    summary=(f"{ctx['failure_mode'].get('mode_code','?')} candidate on {eid} at "
+                             f"{ctx['prediction']['failure_prob']:.0%} model risk score."),
+                    source="operon-signal-admission")
         except Exception:
             logger.exception(
                 "Operational alert persistence failed for %s; continuing the demo loop", eid
@@ -305,14 +310,19 @@ class DemoEngine:
                  "predicted_mode_label": ctx["failure_mode"].get("failure_mode_name"),
                  "status": "ANALYZING", "created_tick": self.tick_i,
                  "triage_rank": None, "triage_score": agent.triage_score(ctx),
-                 "proposal": None, "result": None}
+                 "proposal": None, "result": None, "intervention_id": None,
+                 "approval_requirement_id": None, "execution_receipt_ids": []}
         self.alerts[eid] = alert
         self._checkpoint_alert(eid)
         await self.broadcast({"type": "alert", "alert": alert, "phase": "analyzing"})
 
-        proposal = await asyncio.to_thread(agent.decide, ctx)
+        proposal = agent.decide(ctx)
         alert["proposal"] = proposal
         alert["status"] = "PENDING_APPROVAL"
+        prepared = prepare_legacy_intervention(self.coordinator.repository, incident.id, proposal)
+        alert["intervention_id"] = prepared.intervention.id
+        alert["approval_requirement_id"] = prepared.requirement.id if prepared.requirement else None
+        self.incidents[eid] = self.coordinator.repository.fetch_incident(incident.id)
         self._checkpoint_alert(eid)
         self._resume.discard(eid)
         self._analyzing.discard(eid)
@@ -359,11 +369,25 @@ class DemoEngine:
         al = self.alerts.get(eid)
         if not al or al["status"] != "PENDING_APPROVAL":
             return {"ok": False, "error": "no pending proposal for this asset"}
-        wo = await asyncio.to_thread(commit_actions, al["proposal"])
+        incident = self.incidents.get(eid)
+        if not incident or not al.get("intervention_id") or not al.get("approval_requirement_id"):
+            return {"ok": False, "error": "proposal has no governed intervention approval request"}
+        ledger = ApprovalLedger(self.coordinator.repository)
+        try:
+            ledger.decide(
+                incident.id, al["approval_requirement_id"],
+                actor_id="dashboard-operator", actor_role="maintenance_approver",
+                decision="APPROVE", rationale="approved in Operon dashboard",
+            )
+            execution = GovernedExecutor(self.coordinator.repository).execute(
+                incident.id, al["intervention_id"])
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+        wo = execution.external_objects
         self.sim.set_mode(eid, "recovering")
         self.status_override[eid] = "SCHEDULED"
         b = al["proposal"]["business"]
-        result = {"outcome": "PREVENTED", "wo_number": wo["wo_number"],
+        result = {"outcome": "PREVENTED", "wo_number": wo.get("wo_number"),
                   "package_number": wo.get("package_number"),
                   "recovered_value": b["recovered_value"],
                   "downtime_hours_avoided": b["downtime_hours_avoided"],
@@ -371,6 +395,8 @@ class DemoEngine:
                   "oee_after": min(config.OEE_TARGET, config.OEE_BASELINE + 0.031)}
         al["status"] = "APPROVED"
         al["result"] = result
+        al["execution_receipt_ids"] = list(execution.receipt_ids)
+        self.incidents[eid] = self.coordinator.repository.fetch_incident(incident.id)
         self._checkpoint_alert(eid)
         self._retriage()
         await self.broadcast({"type": "resolved", "equipment_id": eid, "result": result,
@@ -381,6 +407,23 @@ class DemoEngine:
         al = self.alerts.get(eid)
         if not al or al["status"] != "PENDING_APPROVAL":
             return {"ok": False, "error": "no pending proposal for this asset"}
+        incident = self.incidents.get(eid)
+        if not incident or not al.get("approval_requirement_id"):
+            return {"ok": False, "error": "proposal has no governed intervention approval request"}
+        ledger = ApprovalLedger(self.coordinator.repository)
+        try:
+            ledger.decide(
+                incident.id, al["approval_requirement_id"],
+                actor_id="dashboard-operator", actor_role="maintenance_approver",
+                decision="REJECT", rationale="rejected in Operon dashboard",
+            )
+            current = self.coordinator.repository.fetch_incident(incident.id)
+            current = self.coordinator.transition(
+                current.id, IncidentPhase.ESCALATED, expected_revision=current.revision,
+                reason="intervention rejected; human reconciliation required")
+            self.incidents[eid] = current
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
         self.sim.set_mode(eid, "failing")
         self.status_override[eid] = "CRITICAL"
         al["status"] = "REJECTED"

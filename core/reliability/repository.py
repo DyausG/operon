@@ -203,6 +203,8 @@ class IncidentRepository:
             requirement = self._artifact(conn, incident.id, artifact.requirement_id)
             if (requirement.intervention_id, requirement.intervention_hash) != (artifact.intervention_id, artifact.intervention_hash):
                 raise InvalidReference("decision does not match approval requirement")
+            if artifact.context_revision != incident.revision:
+                raise StaleRevision("approval decision context is stale")
         if hasattr(artifact, "input_revision") and artifact.input_revision != incident.revision:
             raise StaleRevision("artifact input revision is stale")
 
@@ -226,6 +228,12 @@ class IncidentRepository:
             changes["legacy_alert_id"] = artifact.id
         incident = self._update(conn, incident, **changes)
         self._event(conn, incident, "ARTIFACT_ADDED", {"artifact_id": artifact.id, "kind": cls.__name__})
+        if isinstance(artifact, m.ApprovalRequirement):
+            self._event(conn, incident, "APPROVAL_REQUESTED", {
+                "requirement_id": artifact.id,
+                "intervention_id": artifact.intervention_id,
+                "intervention_hash": artifact.intervention_hash,
+            })
         if isinstance(artifact, m.Evidence) and artifact.kind == "model_signal":
             self._event(conn, incident, "SIGNAL_RECORDED", {"evidence_id": artifact.id, "signal_id": artifact.payload["id"]})
         return incident
@@ -283,7 +291,7 @@ class IncidentRepository:
                 (incident_id, after_id))]
 
     def add_approval_decision(self, decision: m.ApprovalDecision, *, expected_revision: int) -> m.Incident:
-        """Ledger foundation only: no policy evaluation or execution authorization."""
+        """Append a trusted decision; policy determines whether it is applicable."""
         decision = m.ApprovalDecision.model_validate_json(decision.model_dump_json())
         with self._write() as conn:
             incident = self._fetch(conn, decision.incident_id)
@@ -293,7 +301,10 @@ class IncidentRepository:
                          (decision.id, incident.id, decision.intervention_id, decision.intervention_hash,
                           decision.actor_id, decision.created_at.isoformat(), decision.model_dump_json()))
             updated = self._update(conn, incident)
-            self._event(conn, updated, "APPROVAL_RECORDED", {"decision_id": decision.id})
+            self._event(conn, updated, "APPROVAL_RECORDED", {
+                "decision_id": decision.id, "decision": decision.decision,
+                "intervention_id": decision.intervention_id,
+            })
             return updated
 
     def get_approval_decision(self, incident_id: str, decision_id: str) -> m.ApprovalDecision:
@@ -303,6 +314,18 @@ class IncidentRepository:
             if row is None:
                 raise InvalidReference(decision_id)
             return m.ApprovalDecision.model_validate_json(row[0])
+
+    def list_approval_decisions(self, incident_id: str, *, intervention_id: str | None = None) -> list[m.ApprovalDecision]:
+        with db.get_conn(self.path) as conn:
+            self._fetch(conn, incident_id)
+            sql = "SELECT body_json FROM approval_decision WHERE incident_id=?"
+            params: tuple[str, ...] = (incident_id,)
+            if intervention_id is not None:
+                sql += " AND intervention_id=?"
+                params += (intervention_id,)
+            sql += " ORDER BY created_at, decision_id"
+            return [m.ApprovalDecision.model_validate_json(row[0])
+                    for row in conn.execute(sql, params)]
 
     def add_execution_receipt(self, receipt: m.ExecutionReceipt, *, expected_revision: int) -> m.Incident:
         """Insert-only foundation. Claim/reconcile/execute behavior is a later stage."""
@@ -329,3 +352,118 @@ class IncidentRepository:
     def get_execution_receipt(self, incident_id: str, receipt_id: str) -> m.ExecutionReceipt:
         with db.get_conn(self.path) as conn:
             return self._receipt(conn, incident_id, receipt_id)
+
+    def list_execution_receipts(self, incident_id: str, *, intervention_id: str | None = None) -> list[m.ExecutionReceipt]:
+        with db.get_conn(self.path) as conn:
+            self._fetch(conn, incident_id)
+            sql = "SELECT body_json FROM execution_receipt WHERE incident_id=?"
+            params: tuple[str, ...] = (incident_id,)
+            if intervention_id is not None:
+                sql += " AND intervention_id=?"
+                params += (intervention_id,)
+            sql += " ORDER BY created_at, receipt_id"
+            return [m.ExecutionReceipt.model_validate_json(row[0])
+                    for row in conn.execute(sql, params)]
+
+    @staticmethod
+    def _claim_from_row(row) -> m.ExecutionClaim:
+        return m.ExecutionClaim(
+            idempotency_key=row["idempotency_key"], incident_id=row["incident_id"],
+            intervention_id=row["intervention_id"], intervention_hash=row["intervention_hash"],
+            step_id=row["step_id"], capability=row["capability"], request_hash=row["request_hash"],
+            adapter=row["adapter"], executor=row["executor"], state=row["state"], attempt=row["attempt"],
+            started_at=row["started_at"], updated_at=row["updated_at"],
+            error_message=row["error_message"],
+        )
+
+    def get_execution_claim(self, idempotency_key: str) -> m.ExecutionClaim | None:
+        with db.get_conn(self.path) as conn:
+            row = conn.execute("SELECT * FROM execution_claim WHERE idempotency_key=?",
+                               (idempotency_key,)).fetchone()
+            return self._claim_from_row(row) if row else None
+
+    def begin_execution_claim(self, claim: m.ExecutionClaim, *, expected_revision: int) -> tuple[m.Incident, m.ExecutionClaim, bool]:
+        """Claim a step in a short transaction.
+
+        FAILED claims may be retried. IN_FLIGHT/UNKNOWN claims are returned without
+        mutation so the executor can fail safe; CONFIRMED claims are idempotent hits.
+        """
+        claim = m.ExecutionClaim.model_validate_json(claim.model_dump_json())
+        with self._write() as conn:
+            incident = self._fetch(conn, claim.incident_id)
+            self._check(incident, expected_revision)
+            target = self._artifact(conn, incident.id, claim.intervention_id)
+            if (not isinstance(target, m.Intervention) or
+                    content_hash(target.model_dump(mode="json")) != claim.intervention_hash):
+                raise InvalidReference("execution claim is not bound to the exact intervention")
+            row = conn.execute("SELECT * FROM execution_claim WHERE idempotency_key=?",
+                               (claim.idempotency_key,)).fetchone()
+            if row:
+                existing = self._claim_from_row(row)
+                expected = (claim.incident_id, claim.intervention_id, claim.intervention_hash,
+                            claim.step_id, claim.capability, claim.request_hash)
+                actual = (existing.incident_id, existing.intervention_id, existing.intervention_hash,
+                          existing.step_id, existing.capability, existing.request_hash)
+                if actual != expected:
+                    raise InvalidReference("idempotency key is bound to a different action")
+                if existing.state != "FAILED":
+                    return incident, existing, False
+                now = utcnow()
+                attempt = existing.attempt + 1
+                conn.execute("UPDATE execution_claim SET state='IN_FLIGHT',attempt=?,started_at=?,updated_at=?,"
+                             "adapter=?,executor=?,error_message=NULL WHERE idempotency_key=? AND state='FAILED'",
+                             (attempt, now.isoformat(), now.isoformat(), claim.adapter, claim.executor,
+                              claim.idempotency_key))
+                claimed = claim.model_copy(update={"state": "IN_FLIGHT", "attempt": attempt,
+                                                   "started_at": now, "updated_at": now,
+                                                   "error_message": None})
+            else:
+                conn.execute(
+                    "INSERT INTO execution_claim "
+                    "(idempotency_key,incident_id,intervention_id,intervention_hash,step_id,"
+                    "capability,request_hash,executor,state,attempt,started_at,updated_at,error_message,adapter) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+                    claim.idempotency_key, claim.incident_id, claim.intervention_id,
+                    claim.intervention_hash, claim.step_id, claim.capability, claim.request_hash,
+                    claim.executor, "IN_FLIGHT", claim.attempt, claim.started_at.isoformat(),
+                    claim.updated_at.isoformat(), None, claim.adapter))
+                claimed = claim.model_copy(update={"state": "IN_FLIGHT"})
+            updated = self._update(conn, incident)
+            self._event(conn, updated, "EXECUTION_CLAIMED", {
+                "idempotency_key": claimed.idempotency_key, "step_id": claimed.step_id,
+                "attempt": claimed.attempt,
+            })
+            return updated, claimed, True
+
+    def finish_execution_claim(self, receipt: m.ExecutionReceipt, *, expected_revision: int) -> m.Incident:
+        """Append a terminal receipt and checkpoint the corresponding claim."""
+        receipt = m.ExecutionReceipt.model_validate_json(receipt.model_dump_json())
+        if receipt.status not in ("CONFIRMED", "FAILED", "UNKNOWN"):
+            raise ValueError("execution completion requires a terminal receipt")
+        with self._write() as conn:
+            incident = self._fetch(conn, receipt.incident_id)
+            self._check(incident, expected_revision)
+            row = conn.execute("SELECT * FROM execution_claim WHERE idempotency_key=?",
+                               (receipt.idempotency_key,)).fetchone()
+            if row is None:
+                raise InvalidReference("execution claim does not exist")
+            claim = self._claim_from_row(row)
+            expected = (receipt.incident_id, receipt.intervention_id, receipt.intervention_hash,
+                        receipt.step_id, receipt.capability, receipt.request_hash, receipt.attempt)
+            actual = (claim.incident_id, claim.intervention_id, claim.intervention_hash,
+                      claim.step_id, claim.capability, claim.request_hash, claim.attempt)
+            if actual != expected or claim.state != "IN_FLIGHT":
+                raise InvalidReference("receipt does not match the active execution claim")
+            conn.execute("INSERT INTO execution_receipt VALUES (?,?,?,?,?,?,?)",
+                         (receipt.id, incident.id, receipt.intervention_id, receipt.operation_key,
+                          receipt.status, receipt.created_at.isoformat(), receipt.model_dump_json()))
+            conn.execute("UPDATE execution_claim SET state=?,updated_at=?,error_message=? "
+                         "WHERE idempotency_key=? AND state='IN_FLIGHT'",
+                         (receipt.status, receipt.created_at.isoformat(), receipt.error_message,
+                          receipt.idempotency_key))
+            updated = self._update(conn, incident)
+            self._event(conn, updated, "EXECUTION_RECORDED", {
+                "receipt_id": receipt.id, "step_id": receipt.step_id,
+                "status": receipt.status, "attempt": receipt.attempt,
+            })
+            return updated

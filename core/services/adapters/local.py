@@ -97,6 +97,8 @@ class LocalSchedulingAdapter(SchedulingService):
 # Notifications
 # ---------------------------------------------------------------------------
 class LocalNotificationAdapter(NotificationService):
+    failure_is_definitive = True  # each SQLite send is one atomic transaction
+
     def raise_alert(self, *, equipment_id: str, severity: str,
                     summary: str, source: str = "agent") -> dict:
         now = datetime.now().isoformat(timespec="seconds")
@@ -110,11 +112,14 @@ class LocalNotificationAdapter(NotificationService):
                 "status": "OPEN", "summary": summary}
 
     def notify(self, *, recipient_id, subject: str, body: str,
-               channel: str = "sms", send: bool = True, wo_id=None) -> dict:
+               channel: str = "sms", send: bool = True, wo_id=None,
+               authorization=None) -> dict:
         preview = f"[{channel}] -> {recipient_id or 'unassigned'}: {subject}"
         if not send:
             return {"notification_id": None, "recipient_id": recipient_id, "channel": channel,
                     "subject": subject, "status": "DRAFT", "preview": preview}
+        from ...reliability.execution import require_execution_authorization
+        require_execution_authorization(authorization, capability="notification dispatch")
         with get_conn() as c:
             nid = self._insert(c, recipient_id, channel, subject, body, wo_id)
         return {"notification_id": nid, "recipient_id": recipient_id, "channel": channel,
@@ -138,6 +143,8 @@ class LocalNotificationAdapter(NotificationService):
 # CMMS — work-order authoring + governed write-back + work package
 # ---------------------------------------------------------------------------
 class LocalCmmsAdapter(CmmsService):
+    failure_is_definitive = True  # work-package assembly is one SQLite transaction
+
     def propose_work_order(self, equipment_id, failure_mode_id, technician_id,
                            detail, priority="HIGH") -> dict:
         return {
@@ -147,7 +154,9 @@ class LocalCmmsAdapter(CmmsService):
         }
 
     # -- minimal governed write-back (WO + maintenance event) --------------
-    def commit_work_order(self, proposal: dict) -> dict:
+    def commit_work_order(self, proposal: dict, *, authorization=None) -> dict:
+        from ...reliability.execution import require_execution_authorization
+        require_execution_authorization(authorization, capability="CMMS work-order commit")
         a = proposal["actions"]
         eid = proposal["equipment_id"]
         fm = proposal["failure_mode"]["failure_mode_id"]
@@ -158,7 +167,9 @@ class LocalCmmsAdapter(CmmsService):
         return {"wo_id": wo_id, "wo_number": wo_number, "status": "OPEN"}
 
     # -- full repair work package (WO + parts + labor + schedule + notify) --
-    def create_work_package(self, proposal: dict) -> dict:
+    def create_work_package(self, proposal: dict, *, authorization=None) -> dict:
+        from ...reliability.execution import require_execution_authorization
+        require_execution_authorization(authorization, capability="CMMS work-package commit")
         a = proposal["actions"]
         eid = proposal["equipment_id"]
         fm = proposal["failure_mode"]["failure_mode_id"]

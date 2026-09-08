@@ -247,15 +247,49 @@ class ApprovalDecision(Artifact):
     actor_role: Identifier
     decision: Literal["APPROVE", "REJECT"]
     rationale: str
+    context_revision: int = Field(default=1, ge=1)
 
 
 class ExecutionReceipt(Artifact):
     intervention_id: Identifier
+    intervention_hash: Identifier = "legacy-unbound"
+    step_id: Identifier = "legacy-step"
+    capability: Identifier = "legacy-capability"
+    idempotency_key: Identifier | None = None
     operation_key: Identifier
     adapter: Identifier
+    executor: Identifier = "legacy-executor"
     request_hash: Identifier
     status: Literal["CLAIMED", "CONFIRMED", "FAILED", "UNKNOWN"]
     external_ids: dict[str, str] = Field(default_factory=dict)
+    attempted_at: AwareDatetime | None = None
+    completed_at: AwareDatetime | None = None
+    attempt: int = Field(default=1, ge=1)
+    error_code: str | None = None
+    error_message: str | None = None
+
+    @model_validator(mode="after")
+    def fill_idempotency_key(self):
+        if self.idempotency_key is None:
+            object.__setattr__(self, "idempotency_key", self.operation_key)
+        return self
+
+
+class ExecutionClaim(Contract):
+    idempotency_key: Identifier
+    incident_id: Identifier
+    intervention_id: Identifier
+    intervention_hash: Identifier
+    step_id: Identifier
+    capability: Identifier
+    request_hash: Identifier
+    adapter: Identifier
+    executor: Identifier
+    state: Literal["IN_FLIGHT", "CONFIRMED", "FAILED", "UNKNOWN"]
+    attempt: int = Field(ge=1)
+    started_at: AwareDatetime
+    updated_at: AwareDatetime
+    error_message: str | None = None
 
 
 class Outcome(Artifact):
@@ -300,6 +334,9 @@ class LegacyAlert(Artifact):
     triage_score: float
     proposal: dict[str, JsonValue] | None = None
     result: dict[str, JsonValue] | None = None
+    intervention_id: str | None = None
+    approval_requirement_id: str | None = None
+    execution_receipt_ids: tuple[Identifier, ...] = ()
     simulator_progress: float = Field(ge=0)
     simulator_tick: int = Field(ge=0)
 
@@ -311,5 +348,6 @@ class IncidentEvent(Contract):
     revision: int = Field(ge=1)
     event_type: Literal["INCIDENT_OPENED", "SIGNAL_RECORDED", "PHASE_CHANGED",
                         "ARTIFACT_ADDED", "INCIDENT_ESCALATED", "INCIDENT_CLOSED",
-                        "INCIDENT_UPDATED", "APPROVAL_RECORDED", "EXECUTION_RECORDED"]
+                        "INCIDENT_UPDATED", "APPROVAL_REQUESTED", "APPROVAL_RECORDED",
+                        "EXECUTION_CLAIMED", "EXECUTION_RECORDED"]
     payload: dict[str, JsonValue]

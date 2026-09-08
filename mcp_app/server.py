@@ -114,22 +114,17 @@ def get_failure_mode(mode_code: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Governed writes (a human gates these via the app's approval flow)
+# Governed execution. The caller supplies artifact identities only; policy,
+# approval applicability, state transitions, and action parameters are loaded
+# from the shared authoritative database.
 # ---------------------------------------------------------------------------
-@mcp.tool()
-def raise_alert(equipment_id: str, severity: str, summary: str,
-                source: str = "agent") -> dict:
-    """Record a governed operational alert."""
-    return services.notifications().raise_alert(equipment_id=equipment_id, severity=severity,
-                                                summary=summary, source=source)
-
-
-@mcp.tool()
-def create_work_package(proposal: dict) -> dict:
-    """Commit a complete repair work package (work order + reserved parts + labor
-    booking + schedule hold + dispatch notification). This is the write-back path;
-    in the app it runs only after a human approves."""
-    return services.cmms().create_work_package(proposal)
+@mcp.tool(name="execute_governed_intervention")
+def governed_execute_intervention(incident_id: str, intervention_id: str) -> dict:
+    """Execute an exact persisted intervention through Operon's policy boundary."""
+    from core.reliability.execution import GovernedExecutor
+    from core.reliability.repository import IncidentRepository
+    return GovernedExecutor(IncidentRepository()).execute(
+        incident_id, intervention_id).model_dump(mode="json")
 
 
 def main() -> None:

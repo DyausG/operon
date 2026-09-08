@@ -151,7 +151,7 @@ def test_migrations_twice_preserve_existing_database_and_incidents(repo):
     seed()
     assert repo.fetch_incident(incident.id) == incident
     with db.get_conn(repo.path) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM schema_migration").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM schema_migration").fetchone()[0] == 3
         assert conn.execute("SELECT COUNT(*) FROM equipment").fetchone()[0] == 8
         assert conn.execute("SELECT COUNT(*) FROM health_score WHERE scored_at='preserved'").fetchone()[0] == 1
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
@@ -167,7 +167,8 @@ def test_migrate_pre_operon_schema_without_replacing_it(tmp_path):
     db.init_schema(path)
     with db.get_conn(path) as conn:
         assert conn.execute("SELECT plant_name FROM plant").fetchone()[0] == "Existing plant"
-        assert conn.execute("SELECT version FROM schema_migration").fetchone()[0] == "001_operon"
+        assert [row[0] for row in conn.execute("SELECT version FROM schema_migration ORDER BY version")] == [
+            "001_operon", "002_governed_execution", "003_execution_claim_adapter"]
 
 
 def test_concurrent_duplicate_admission_and_distinct_machines(repo):
@@ -236,7 +237,7 @@ def test_explicit_demo_reset_clears_incidents_but_preserves_migration(repo, rese
     reset()
     assert repo.list_active_incidents() == []
     with db.get_conn(repo.path) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM schema_migration").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM schema_migration").fetchone()[0] == 3
         assert conn.execute("SELECT COUNT(*) FROM equipment").fetchone()[0] == 8
 
 
@@ -275,7 +276,8 @@ def test_validation_approval_and_execution_records_remain_distinct(repo):
         required_roles=("operator",), minimum_distinct_approvers=1))
     decision = m.ApprovalDecision(**identity(), requirement_id=requirement.id,
         intervention_id=intervention.id, intervention_hash=intervention_hash,
-        actor_id="test-operator", actor_role="operator", decision="APPROVE", rationale="test ledger only")
+        actor_id="test-operator", actor_role="operator", decision="APPROVE", rationale="test ledger only",
+        context_revision=incident.revision)
     incident = repo.add_approval_decision(decision, expected_revision=incident.revision)
     assert repo.get_approval_decision(incident.id, decision.id) == decision
     receipt = m.ExecutionReceipt(**identity(), intervention_id=intervention.id,

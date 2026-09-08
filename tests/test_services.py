@@ -70,13 +70,11 @@ def test_notify_draft_writes_nothing(seeded_db):
         assert c.execute("SELECT COUNT(*) n FROM notification").fetchone()["n"] == 0
 
 
-def test_create_work_package_writes_all_governed_tables(seeded_db):
+def test_generic_work_package_cannot_bypass_governed_executor(seeded_db):
     from tests.conftest import sample_proposal
-    pkg = tools.commit_actions(sample_proposal())
-    assert pkg["wo_number"].startswith("WO-US01-")
-    assert pkg["package_number"].startswith("PKG-US01-")
-    assert pkg["reserved_parts"] and pkg["notification"]["status"] == "SENT"
+    with pytest.raises(TypeError):
+        tools.commit_actions(sample_proposal(), None)
     with get_conn() as c:
         for t in ("work_order", "maintenance_event", "work_package",
                   "part_reservation", "labor_booking", "notification"):
-            assert c.execute(f"SELECT COUNT(*) n FROM {t}").fetchone()["n"] == 1
+            assert c.execute(f"SELECT COUNT(*) n FROM {t}").fetchone()["n"] == 0

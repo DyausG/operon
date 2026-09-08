@@ -139,9 +139,12 @@ class MCPNotificationAdapter(NotificationService):
                                   "severity": severity, "summary": summary, "source": source})
 
     def notify(self, *, recipient_id, subject: str, body: str,
-               channel: str = "sms", send: bool = True, wo_id=None) -> dict:
+               channel: str = "sms", send: bool = True, wo_id=None,
+               authorization=None) -> dict:
         # Over MCP this drafts the page; the actual send happens server-side inside
         # create_work_package, so the client only ever needs the draft path.
+        if send:
+            raise PermissionError("MCP dispatch must use execute_governed_intervention")
         return _Bridge.get().call("notify_technician", {"technician_id": recipient_id,
                                   "subject": subject, "body": body, "channel": channel})
 
@@ -153,12 +156,11 @@ class MCPCmmsAdapter(CmmsService):
                                   "failure_mode_id": failure_mode_id, "technician_id": technician_id,
                                   "detail": detail, "priority": priority})
 
-    def create_work_package(self, proposal: dict) -> dict:
-        return _Bridge.get().call("create_work_package", {"proposal": proposal})
+    def create_work_package(self, proposal: dict, *, authorization=None) -> dict:
+        raise PermissionError("MCP work-package commits must use execute_governed_intervention")
 
-    def commit_work_order(self, proposal: dict) -> dict:
-        pkg = self.create_work_package(proposal)
-        return {"wo_id": pkg.get("wo_id"), "wo_number": pkg.get("wo_number"), "status": "OPEN"}
+    def commit_work_order(self, proposal: dict, *, authorization=None) -> dict:
+        raise PermissionError("MCP work-order commits must use execute_governed_intervention")
 
 
 # ---------------------------------------------------------------------------

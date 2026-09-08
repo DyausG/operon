@@ -5,8 +5,11 @@ Public API::
 
     from core import services
     services.inventory().check_parts("AC-COMP-01")
-    services.cmms().create_work_package(proposal)
-    services.notifications().raise_alert(equipment_id=..., severity="HIGH", summary=...)
+    services.cmms().propose_work_order(...)
+
+Consequential adapter methods require an opaque authorization minted by the
+application-owned governed executor. They are capabilities beneath that boundary,
+not public agent tools.
 
 Each accessor returns the adapter selected for that domain by
 ``SENTINEL_<DOMAIN>_ADAPTER`` (default ``local``). See ``registry`` for how to

@@ -116,7 +116,8 @@ async def test_threshold_crossing_alerts_only_degrading_machines(
     seeded_db, monkeypatch,
 ):
     engine = make_engine(monkeypatch, failure_prob=0.91)
-    monkeypatch.setattr(engine_module.agent, "decide", lambda _ctx: {"business": {}})
+    monkeypatch.setattr(StubModel, "attribute", lambda self, _features: [
+        {"feature": "torque", "label": "Torque", "value": 62.0, "contribution": 0.34}])
 
     await engine._advance()
 
@@ -183,20 +184,19 @@ async def test_explicit_reset_clears_demo_state_but_keeps_master_data(
 
 @pytest.mark.asyncio
 async def test_approval_starts_simulated_recovery(seeded_db, monkeypatch):
-    engine = make_engine(monkeypatch)
-    engine.alerts["AC-COMP-01"] = pending_alert()
+    engine = make_engine(monkeypatch, failure_prob=0.91)
+    monkeypatch.setattr(StubModel, "attribute", lambda self, _features: [
+        {"feature": "torque", "label": "Torque", "value": 62.0, "contribution": 0.34}])
+    await engine._advance()
     engine.sim.assets["AC-COMP-01"].prog = 0.9
     engine.sim.set_mode("AC-COMP-01", "arrested")
-    monkeypatch.setattr(
-        engine_module,
-        "commit_actions",
-        lambda _proposal: {"wo_number": "WO-TEST", "package_number": "WP-TEST"},
-    )
 
     response = await engine.approve("AC-COMP-01")
 
     assert response["ok"] is True
     assert engine.alerts["AC-COMP-01"]["status"] == "APPROVED"
+    assert engine.incidents["AC-COMP-01"].phase.value == "OBSERVING"
+    assert engine.alerts["AC-COMP-01"]["execution_receipt_ids"]
     assert engine.sim.assets["AC-COMP-01"].mode == "recovering"
     assert engine.status_override["AC-COMP-01"] == "SCHEDULED"
     for _ in range(5):
@@ -207,13 +207,16 @@ async def test_approval_starts_simulated_recovery(seeded_db, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_rejection_runs_asset_to_unplanned_failure(seeded_db, monkeypatch):
-    engine = make_engine(monkeypatch)
-    engine.alerts["AC-COMP-01"] = pending_alert()
+    engine = make_engine(monkeypatch, failure_prob=0.91)
+    monkeypatch.setattr(StubModel, "attribute", lambda self, _features: [
+        {"feature": "torque", "label": "Torque", "value": 62.0, "contribution": 0.34}])
+    await engine._advance()
     engine.sim.assets["AC-COMP-01"].prog = FAIL_PROG - 0.01
     engine.sim.set_mode("AC-COMP-01", "arrested")
 
     response = await engine.reject("AC-COMP-01")
     assert response == {"ok": True}
+    assert engine.incidents["AC-COMP-01"].phase.value == "ESCALATED"
     assert engine.sim.assets["AC-COMP-01"].mode == "failing"
 
     await engine._advance()
@@ -333,20 +336,26 @@ async def test_durable_alerts_recover_without_replanning_and_preserve_demo_decis
     assert final.status_override["HYD-PUMP-03"] == "DOWN"
     assert final._business_summary()["events_prevented"] == 1
     assert final._business_summary()["events_failed"] == 1
-    assert all(i.phase == IncidentPhase.OPEN for i in final.incidents.values())
+    assert final.incidents["AC-COMP-01"].phase == IncidentPhase.OBSERVING
+    assert final.incidents["HYD-PUMP-03"].phase == IncidentPhase.ESCALATED
+    assert all(final.incidents[eid].phase == IncidentPhase.AWAITING_APPROVAL
+               for eid in ("CNC-MILL-07", "COOL-PMP-09"))
     with get_conn() as conn:
         assert conn.execute("SELECT COUNT(*) FROM incident").fetchone()[0] == 4
         assert conn.execute("SELECT COUNT(*) FROM alert").fetchone()[0] == 4
         assert conn.execute("SELECT COUNT(*) FROM work_package").fetchone()[0] == 1
-        # Legacy actions must not masquerade as new governed approvals/outcomes.
-        assert conn.execute("SELECT COUNT(*) FROM approval_decision").fetchone()[0] == 0
-        assert conn.execute("SELECT COUNT(*) FROM execution_receipt").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM approval_decision").fetchone()[0] == 2
+        assert conn.execute("SELECT COUNT(*) FROM execution_receipt").fetchone()[0] == 1
+        # Execution is still not a verified outcome.
         assert conn.execute("SELECT COUNT(*) FROM incident_artifact WHERE kind='Outcome'").fetchone()[0] == 0
 
 
 @pytest.mark.asyncio
 async def test_interrupted_planning_resumes_durable_incident(seeded_db, monkeypatch, caplog):
     engine = make_engine(monkeypatch, failure_prob=0.91)
+    real_decide = engine_module.agent.decide
+    monkeypatch.setattr(StubModel, "attribute", lambda self, _features: [
+        {"feature": "torque", "label": "Torque", "value": 62.0, "contribution": 0.34}])
 
     def interrupted(_ctx):
         raise RuntimeError("planner interrupted")
@@ -363,7 +372,7 @@ async def test_interrupted_planning_resumes_durable_incident(seeded_db, monkeypa
         # A model/planner wait must not retain a SQLite writer transaction.
         with get_conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
-        return {"business": {}}
+        return real_decide(ctx)
 
     monkeypatch.setattr(engine_module.agent, "decide", resumed)
     restarted = make_engine(monkeypatch, failure_prob=0.1)

@@ -8,12 +8,10 @@ grounded in real governed data (the anti-hallucination "semantic layer" pattern)
     assign_technician()    -> best certified & available tech (WorkforceService)
     block_schedule()       -> propose a planned hold         (SchedulingService)
     propose_work_order()   -> draft a CMMS work order        (CmmsService)
-    notify_technician()    -> draft/send a dispatch page     (NotificationService)
-    raise_alert()          -> record an operational alert    (NotificationService)
+    notify_technician()    -> draft a dispatch page          (NotificationService)
 
-commit_actions() performs the governed write-back once a human approves —
-assembling a complete repair **work package** (work order + reserved parts +
-labor booking + schedule hold + dispatch notification).
+commit_actions() accepts only durable incident/intervention IDs and delegates to
+the application-owned executor. Generic proposal dictionaries are never executable.
 
 These functions keep their original signatures so callers stay decoupled from
 the backend; swap the backend per-domain with SENTINEL_<DOMAIN>_ADAPTER.
@@ -60,19 +58,24 @@ def propose_work_order(equipment_id: str, failure_mode_id: str, technician_id: s
 
 
 def notify_technician(recipient_id: str | None, subject: str, body: str,
-                      channel: str = "sms", send: bool = True, wo_id: int | None = None) -> dict:
+                      channel: str = "sms", send: bool = False, wo_id: int | None = None) -> dict:
+    if send:
+        raise PermissionError("dispatch requires a persisted Intervention and governed execution")
     return services.notifications().notify(recipient_id=recipient_id, subject=subject,
-                                           body=body, channel=channel, send=send, wo_id=wo_id)
+                                           body=body, channel=channel, send=False, wo_id=wo_id)
 
 
 def raise_alert(equipment_id: str, severity: str, summary: str, source: str = "agent") -> dict:
-    return services.notifications().raise_alert(equipment_id=equipment_id, severity=severity,
-                                                summary=summary, source=source)
+    raise PermissionError("operational alert writes are application-owned")
 
 
 # ---------------------------------------------------------------------------
 # Governed write-back (only after human approval)
 # ---------------------------------------------------------------------------
-def commit_actions(proposal: dict) -> dict:
-    """Persist the approved plan as a complete repair work package."""
-    return services.cmms().create_work_package(proposal)
+def commit_actions(incident_id: str, intervention_id: str) -> dict:
+    """Execute one exact persisted Intervention through the trusted boundary."""
+    if not isinstance(incident_id, str) or not isinstance(intervention_id, str):
+        raise TypeError("commit_actions requires incident_id and intervention_id strings")
+    from .reliability.execution import GovernedExecutor
+    from .reliability.repository import IncidentRepository
+    return GovernedExecutor(IncidentRepository()).execute(incident_id, intervention_id).model_dump(mode="json")

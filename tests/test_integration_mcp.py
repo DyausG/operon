@@ -27,3 +27,30 @@ def test_mcp_adapter_round_trips(seeded_db, monkeypatch):
     # confirm the adapter really is the MCP one, not local
     from core.services.adapters.mcp_adapter import MCPInventoryAdapter
     assert isinstance(services.inventory(), MCPInventoryAdapter)
+
+    # The transport no longer exposes raw consequential writes. Its only write
+    # entry loads durable incident/intervention state and evaluates policy.
+    from core.services.adapters.mcp_adapter import _Bridge
+    with pytest.raises(RuntimeError, match="Unknown tool"):
+        _Bridge.get().call("create_work_package", {"proposal": {}})
+    with pytest.raises(RuntimeError):
+        _Bridge.get().call("execute_governed_intervention", {
+            "incident_id": "missing", "intervention_id": "missing"})
+
+    from core.reliability.governance import ApprovalLedger
+    from core.reliability.legacy import prepare_legacy_intervention
+    from core.reliability.repository import IncidentRepository
+    from tests.conftest import sample_proposal
+    repo = IncidentRepository()
+    incident = repo.create_incident(("AC-COMP-01",), admission_key="mcp-governed-test")
+    proposal = sample_proposal()
+    proposal["criticality"] = "HIGH"
+    proposal["governance"] = {"decision": "APPROVE", "reasons": [], "conditions": []}
+    prepared = prepare_legacy_intervention(repo, incident.id, proposal)
+    ApprovalLedger(repo).decide(
+        incident.id, prepared.requirement.id, actor_id="mcp-test-manager",
+        actor_role="maintenance_approver", decision="APPROVE", rationale="MCP integration test")
+    result = _Bridge.get().call("execute_governed_intervention", {
+        "incident_id": incident.id, "intervention_id": prepared.intervention.id})
+    assert result["phase"] == "OBSERVING"
+    assert repo.list_execution_receipts(incident.id)[0].status == "CONFIRMED"

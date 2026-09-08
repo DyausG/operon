@@ -21,7 +21,9 @@ TRANSITIONS = {
     Phase.EXECUTING: {Phase.OBSERVING, Phase.EXECUTION_FAILED},
     Phase.OBSERVING: {Phase.CLOSED, Phase.INVESTIGATING},
     Phase.ESCALATED: {Phase.INVESTIGATING, Phase.CANCELLED},
-    Phase.EXECUTION_FAILED: {Phase.INVESTIGATING, Phase.ESCALATED, Phase.CANCELLED},
+    # READY is a trusted executor retry checkpoint. Policy and durable receipts
+    # still decide which failed steps may be attempted again.
+    Phase.EXECUTION_FAILED: {Phase.READY, Phase.INVESTIGATING, Phase.ESCALATED, Phase.CANCELLED},
     Phase.CLOSED: set(),
     Phase.CANCELLED: set(),
 }

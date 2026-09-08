@@ -82,7 +82,7 @@ class CmmsService(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def commit_work_order(self, proposal: dict) -> dict:
+    def commit_work_order(self, proposal: dict, *, authorization: object | None = None) -> dict:
         """Persist an approved work order + its maintenance event (the minimal
         governed write-back).
 
@@ -91,7 +91,7 @@ class CmmsService(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def create_work_package(self, proposal: dict) -> dict:
+    def create_work_package(self, proposal: dict, *, authorization: object | None = None) -> dict:
         """Assemble a complete, dispatch-ready **repair work package** atomically:
         the work order, reserved spare parts, a labor booking for the assigned
         technician, the planned schedule hold, and a dispatch notification —
@@ -124,7 +124,8 @@ class NotificationService(ABC):
 
     @abstractmethod
     def notify(self, *, recipient_id: str | None, subject: str, body: str,
-               channel: str = "sms", send: bool = True, wo_id: int | None = None) -> dict:
+               channel: str = "sms", send: bool = True, wo_id: int | None = None,
+               authorization: object | None = None) -> dict:
         """Message a recipient. With ``send=False`` returns a DRAFT preview and
         writes nothing (used while the agent is still only *proposing*); with
         ``send=True`` performs the send and records it.

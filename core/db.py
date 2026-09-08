@@ -181,7 +181,7 @@ def init_schema(path: Path | None = None) -> None:
         apply_migrations(conn)
 
 
-RELIABILITY_RESET_TABLES = ("execution_receipt", "approval_decision", "incident_event",
+RELIABILITY_RESET_TABLES = ("execution_claim", "execution_receipt", "approval_decision", "incident_event",
                             "incident_artifact", "incident")
 
 
