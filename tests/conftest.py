@@ -11,7 +11,7 @@ import pathlib
 import tempfile
 
 # --- isolate BEFORE importing core (config resolves paths/creds at import) ----
-_TMP_DB = pathlib.Path(tempfile.gettempdir()) / "sentinel_pytest_poc.db"
+_TMP_DB = pathlib.Path(tempfile.gettempdir()) / "operon_pytest_poc.db"
 os.environ["POC_DB_PATH"] = str(_TMP_DB)
 
 # Neutralize provider creds. Empty (not absent) so python-dotenv's load_dotenv
@@ -27,15 +27,13 @@ for _k in [k for k in os.environ if k.startswith("SENTINEL_") and k.endswith("_A
 import pytest  # noqa: E402
 from core.db import init_schema  # noqa: E402
 from core.seed_data import seed  # noqa: E402
-from core.db import reset_transactional  # noqa: E402
 
 
 @pytest.fixture()
 def seeded_db():
     """Fresh schema + master data + wiped transactional tables."""
     init_schema()
-    seed()
-    reset_transactional()
+    seed(reset=True)
     yield
 
 

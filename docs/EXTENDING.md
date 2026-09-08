@@ -1,6 +1,6 @@
-# Extending Sentinel — the services layer
+# Extending Operon — the services layer
 
-Sentinel is built so you can go past the on-screen demo and wire the agent to
+Operon is built so you can go past the on-screen demo and wire the agent to
 **your own systems**. The Maintenance Agent never talks to a database or an API
 directly. It calls **service interfaces**, and each interface is fulfilled by a
 swappable **adapter**. Swap the adapter, keep the agent — the classic
@@ -193,7 +193,7 @@ uv run python -m a2a_app.server           # serves on :8200 (SENTINEL_A2A_PORT)
 
 Each publishes an A2A **agent card** at
 `http://127.0.0.1:8200/<agent>/.well-known/agent.json`, so any A2A client (not
-just Sentinel) can discover and call it.
+just Operon) can discover and call it.
 
 **Point the Maintenance Agent's peers at A2A** — start the server above, then:
 

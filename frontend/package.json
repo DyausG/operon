@@ -1,9 +1,9 @@
 {
-  "name": "sentinel-frontend",
+  "name": "operon-frontend",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Sentinel — Agentic Predictive Maintenance dashboard (React + Vite)",
+  "description": "Operon — Autonomous Reliability Operations for Industrial Systems dashboard (React + Vite)",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

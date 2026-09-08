@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# Sentinel — single-container image (FastAPI + pre-built React dashboard).
+# Operon — single-container image (FastAPI + pre-built React dashboard).
 # No Node needed at build time: the React bundle is committed under frontend/dist.
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim AS base

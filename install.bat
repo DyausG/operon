@@ -1,7 +1,7 @@
 @echo off
 REM ---- First-time setup: create the uv-managed environment ----
 cd /d "%~dp0"
-echo Setting up the Sentinel POC environment with uv...
+echo Setting up the Operon environment with uv...
 echo (downloads Python 3.12 on first run if you don't have it, then installs deps)
 echo.
 uv sync

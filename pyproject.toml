@@ -1,7 +1,7 @@
 [project]
-name = "agentic-predictive-maintenance"
+name = "operon"
 version = "0.1.0"
-description = "Sentinel — a vendor-neutral Agentic Predictive-Maintenance POC (ML health model + AI maintenance agent + human-in-the-loop dashboard)"
+description = "Operon — Autonomous Reliability Operations for Industrial Systems"
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
 dependencies = [
@@ -18,6 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
+operon = "run:main"
 sentinel = "run:main"
 
 [tool.uv]

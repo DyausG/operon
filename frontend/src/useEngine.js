@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
- * Live connection to the Sentinel engine.
+ * Live connection to the Operon engine.
  *
  * Holds one WebSocket, folds the server's event stream into a single `state`
  * object (fleet, per-asset history, alerts, triage, business), and exposes the
@@ -21,7 +21,7 @@ export function useEngine() {
     tick: 0,
     plantMin: 0,
     agentMode: "deterministic",
-    meta: { appName: "Sentinel", tagline: "Agentic Predictive Maintenance", plant: "" },
+    meta: { appName: "Operon", tagline: "Autonomous Reliability Operations for Industrial Systems", plant: "" },
     triggerThreshold: 0.8,
     warnThreshold: 0.45,
     fleet: [],

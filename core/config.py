@@ -1,5 +1,5 @@
 """
-Central configuration for Sentinel — the Agentic Predictive-Maintenance POC.
+Central configuration for Operon reliability operations.
 
 Every business assumption and tunable threshold lives here and is surfaced in the
 UI, so the demo's value claims are transparent and defensible. All figures are
@@ -20,8 +20,8 @@ except Exception:
 # ---------------------------------------------------------------------------
 # Branding (generic / vendor-neutral)
 # ---------------------------------------------------------------------------
-APP_NAME = "Sentinel"
-APP_TAGLINE = "Agentic Predictive Maintenance"
+APP_NAME = "Operon"
+APP_TAGLINE = "Autonomous Reliability Operations for Industrial Systems"
 PLANT_NAME = os.getenv("POC_PLANT_NAME", "Demo Manufacturing Plant 01")
 
 # ---------------------------------------------------------------------------

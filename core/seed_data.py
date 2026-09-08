@@ -21,10 +21,17 @@ EQUIPMENT = [
     ("PRESS-08",    "Hydraulic Press 08",           "PRESS",       "HIGH",   "H"),
 ]
 
-# Sensors correspond to the AI4I feature space.
-SENSORS = [
-    ("AIRTEMP", "K"), ("PROCTEMP", "K"), ("SPEED", "rpm"), ("TORQUE", "Nm"), ("TOOLWEAR", "min"),
-]
+# Canonical mapping from simulator/model feature names to seeded sensor types.
+# Persistence imports this mapping so generated readings can only reference IDs
+# that the seed data actually creates.
+SENSOR_FEATURES = (
+    ("air_temp", "AIRTEMP", "K"),
+    ("process_temp", "PROCTEMP", "K"),
+    ("rot_speed", "SPEED", "rpm"),
+    ("torque", "TORQUE", "Nm"),
+    ("tool_wear", "TOOLWEAR", "min"),
+)
+SENSORS = [(sensor_type, unit) for _, sensor_type, unit in SENSOR_FEATURES]
 
 # id, name, title, skills(CSV), shift, available
 TECHNICIANS = [
@@ -87,7 +94,12 @@ CLASS_DEFAULT_MODE = {
 }
 
 
-def seed(reset: bool = True) -> None:
+def seed(reset: bool = False) -> None:
+    """Create missing demo master data without disturbing existing state.
+
+    ``reset=True`` remains the explicit full-demo reset path. Normal startup uses
+    the default and is safe to repeat against an existing database.
+    """
     init_schema()
     with get_conn() as conn:
         if reset:
@@ -98,27 +110,28 @@ def seed(reset: bool = True) -> None:
                       "equipment", "assembly_line", "plant"):
                 conn.execute(f"DELETE FROM {t};")
 
-        conn.execute("INSERT INTO plant VALUES (?,?,?)", ("US01", PLANT_NAME, "America/Chicago"))
-        conn.execute("INSERT INTO assembly_line VALUES (?,?,?,?)",
+        conn.execute("INSERT OR IGNORE INTO plant VALUES (?,?,?)",
+                     ("US01", PLANT_NAME, "America/Chicago"))
+        conn.execute("INSERT OR IGNORE INTO assembly_line VALUES (?,?,?,?)",
                      ("LINE-A", "US01", "Coil Assembly Line A", "ASSEMBLY"))
 
         for eid, name, cls, crit, tier in EQUIPMENT:
-            conn.execute("INSERT INTO equipment VALUES (?,?,?,?,?,?)",
+            conn.execute("INSERT OR IGNORE INTO equipment VALUES (?,?,?,?,?,?)",
                          (eid, "LINE-A", name, cls, crit, tier))
             for stype, unit in SENSORS:
-                conn.execute("INSERT INTO sensor VALUES (?,?,?,?)",
+                conn.execute("INSERT OR IGNORE INTO sensor VALUES (?,?,?,?)",
                              (f"{eid}-{stype}", eid, stype, unit))
         for row in FAILURE_MODES:
-            conn.execute("INSERT INTO failure_mode VALUES (?,?,?,?,?,?)", row)
+            conn.execute("INSERT OR IGNORE INTO failure_mode VALUES (?,?,?,?,?,?)", row)
         for row in TECHNICIANS:
-            conn.execute("INSERT INTO technician VALUES (?,?,?,?,?,?,?)",
+            conn.execute("INSERT OR IGNORE INTO technician VALUES (?,?,?,?,?,?,?)",
                          (row[0], "US01", row[1], row[2], row[3], row[4], row[5]))
         for row in PARTS:
-            conn.execute("INSERT INTO part VALUES (?,?,?,?,?,?)", row)
+            conn.execute("INSERT OR IGNORE INTO part VALUES (?,?,?,?,?,?)", row)
         for row in EQUIPMENT_PART:
-            conn.execute("INSERT INTO equipment_part VALUES (?,?,?,?)", row)
+            conn.execute("INSERT OR IGNORE INTO equipment_part VALUES (?,?,?,?)", row)
 
 
 if __name__ == "__main__":
     seed()
-    print("Seeded master data: 8 assets, 4 failure modes, 6 technicians, 7 parts.")
+    print("Verified master data: 8 assets, 4 failure modes, 6 technicians, 7 parts.")

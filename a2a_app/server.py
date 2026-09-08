@@ -1,5 +1,5 @@
 """
-Sentinel A2A peer server.
+Operon A2A peer server.
 
 Hosts two peer agents behind the A2A protocol:
 
@@ -81,7 +81,7 @@ class MonitoringExecutor(_JsonExecutor):
 # ---------------------------------------------------------------------------
 def _governance_card(url: str) -> AgentCard:
     return AgentCard(
-        name="Sentinel Governance Agent",
+        name="Operon Governance Agent",
         description="Policy authority that rules APPROVE / CONDITIONS / VETO on a proposed "
                     "maintenance work package before a human approves it.",
         url=url, version="1.0.0",
@@ -99,7 +99,7 @@ def _governance_card(url: str) -> AgentCard:
 
 def _monitoring_card(url: str) -> AgentCard:
     return AgentCard(
-        name="Sentinel Monitoring Agent",
+        name="Operon Monitoring Agent",
         description="Reliability analyst that assesses the active-alert set for systemic "
                     "patterns and recommends escalation.",
         url=url, version="1.0.0",
@@ -134,7 +134,7 @@ def build_app(base_url: str | None = None) -> Starlette:
 def main() -> None:
     host = os.getenv("SENTINEL_A2A_HOST", config.A2A_HOST)
     port = int(os.getenv("SENTINEL_A2A_PORT", str(config.A2A_PORT)))
-    print(f"  Sentinel A2A peers -> http://{host}:{port}/governance  &  /monitoring")
+    print(f"  Operon A2A peers -> http://{host}:{port}/governance  &  /monitoring")
     uvicorn.run(build_app(), host=host, port=port, log_level="warning")
 
 

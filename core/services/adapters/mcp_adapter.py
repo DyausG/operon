@@ -1,5 +1,5 @@
 """
-MCP-client adapters — fulfil the service interfaces by calling the Sentinel MCP
+MCP-client adapters — fulfil the service interfaces by calling the Operon MCP
 server (`mcp_app/server.py`) over MCP, instead of touching SQLite directly.
 
 Select per-domain with ``SENTINEL_<DOMAIN>_ADAPTER=mcp``. The agent code does not

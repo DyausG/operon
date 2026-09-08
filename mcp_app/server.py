@@ -1,5 +1,5 @@
 """
-Sentinel MCP server (FastMCP).
+Operon MCP server (FastMCP).
 
 Exposes the maintenance agent's governed capabilities as MCP **tools**, backed by
 the same services layer (`core/services/`) the in-app agent uses. This is how an

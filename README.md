@@ -1,8 +1,10 @@
 <div align="center">
-  <img src="docs/banner.svg" alt="Sentinel — agentic predictive maintenance" width="100%">
+  <img src="docs/banner.svg" alt="Operon — Autonomous Reliability Operations for Industrial Systems" width="100%">
 </div>
 
-# Sentinel · Agentic Predictive Maintenance
+# Operon
+
+**Autonomous Reliability Operations for Industrial Systems**
 
 A live, self-contained demo of the **agentic closed loop** for industrial predictive
 maintenance. An ML health model — trained on the public **UCI AI4I 2020** benchmark —
@@ -62,6 +64,9 @@ uv run python run.py       # trains model on first run, serves http://127.0.0.1:
 The demo auto-starts the moment the page loads. It runs **fully offline** with a
 deterministic agent — no cloud account required.
 
+Normal relaunches preserve the SQLite database. Use **Reset demo** in the dashboard,
+or launch with `uv run python run.py --reset-demo`, when you explicitly want a fresh run.
+
 ---
 
 ## Turning on the live agent (optional)
@@ -104,7 +109,7 @@ configuration.
 
 - **Render** — *New → Blueprint → pick this repository*. Free tier, WebSockets supported.
 - **Railway / Fly.io** — both auto-detect the `Dockerfile`; no extra config needed.
-- **Locally** — `docker build -t sentinel . && docker run -p 8000:8000 sentinel`
+- **Locally** — `docker build -t operon . && docker run -p 8000:8000 operon`
 
 The hosted demo runs the **deterministic agent** by default (`POC_FORCE_DETERMINISTIC=1` — no
 AWS creds, no cost, no shared keys). To make a deployment run the **live Bedrock agent**, set

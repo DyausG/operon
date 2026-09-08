@@ -57,8 +57,8 @@ function Header({ state, onReset, onStop, onResume }) {
       <div className="brand">
         <div className="brand-mark"><ShieldMark /></div>
         <div>
-          <h1>{meta.appName || "Sentinel"}</h1>
-          <div className="tag">{meta.tagline || "Agentic Predictive Maintenance"}</div>
+          <h1>{meta.appName || "Operon"}</h1>
+          <div className="tag">{meta.tagline || "Autonomous Reliability Operations for Industrial Systems"}</div>
         </div>
       </div>
       <div className="header-spacer" />

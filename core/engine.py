@@ -8,16 +8,17 @@ events that any transport (the FastAPI WebSocket, a notebook, a test) can consum
 from __future__ import annotations
 import asyncio
 from datetime import datetime
+import logging
 
 from . import config, agent, services
 from .db import get_conn, reset_transactional
 from .model import load_or_train
 from .simulator import PlantSimulator
-from .seed_data import CLASS_DEFAULT_MODE
+from .seed_data import CLASS_DEFAULT_MODE, SENSOR_FEATURES
 from .tools import get_failure_mode_by_code, commit_actions, raise_alert
 
-SENSOR_KEYS = ["air_temp", "process_temp", "rot_speed", "torque", "tool_wear"]
 HISTORY_CAP = 90
+logger = logging.getLogger(__name__)
 
 
 def status_for(prob: float) -> str:
@@ -120,8 +121,9 @@ class DemoEngine:
             self.histories.setdefault(eid, []).append(point)
             self.histories[eid] = self.histories[eid][-HISTORY_CAP:]
             fleet_msg.append(self._asset_summary(eid))
-            for k in SENSOR_KEYS:
-                readings.append((f"{eid}-{k.upper()}", now, float(f[k]), "GOOD"))
+            for feature_key, sensor_type, _unit in SENSOR_FEATURES:
+                readings.append((f"{eid}-{sensor_type}", now,
+                                 float(f[feature_key]), "GOOD"))
             healths.append((eid, now, pred["health_score"], pred["failure_prob"], mode["mode"]))
         self._persist(readings, healths)
 
@@ -156,14 +158,36 @@ class DemoEngine:
                 "point": self.histories[eid][-1] if self.histories.get(eid) else None}
 
     def _persist(self, readings, healths):
+        """Persist both streams independently and report any degraded write.
+
+        Telemetry and health scores deliberately use separate transactions: one
+        bad sensor record is visible in logs but cannot roll back valid health
+        scores or stop the demo loop.
+        """
+        result = {"telemetry": True, "health_scores": True}
         try:
             with get_conn() as c:
                 c.executemany("INSERT INTO sensor_reading VALUES (?,?,?,?)", readings)
+        except Exception:
+            result["telemetry"] = False
+            logger.exception(
+                "Telemetry persistence failed for %d readings (sensor IDs: %s); "
+                "continuing the demo loop",
+                len(readings), ", ".join(str(row[0]) for row in readings),
+            )
+        try:
+            with get_conn() as c:
                 c.executemany("INSERT INTO health_score "
                               "(equipment_id, scored_at, health_score, failure_prob, predicted_mode) "
                               "VALUES (?,?,?,?,?)", healths)
         except Exception:
-            pass
+            result["health_scores"] = False
+            logger.exception(
+                "Health-score persistence failed for %d scores (equipment IDs: %s); "
+                "continuing the demo loop",
+                len(healths), ", ".join(str(row[0]) for row in healths),
+            )
+        return result
 
     # -- agent + triage ----------------------------------------------------
     def _build_ctx(self, eid: str) -> dict:
@@ -193,7 +217,9 @@ class DemoEngine:
                         f"{ctx['failure_mode'].get('mode_code','?')} predicted on {eid} at "
                         f"{ctx['prediction']['failure_prob']:.0%} failure probability.", "agent")
         except Exception:
-            pass
+            logger.exception(
+                "Operational alert persistence failed for %s; continuing the demo loop", eid
+            )
         # announce the alert immediately (agent is "thinking")
         alert = {"equipment_id": eid, "equipment_name": ctx["equipment_name"],
                  "equipment_class": ctx["equipment_class"], "criticality": ctx["criticality"],

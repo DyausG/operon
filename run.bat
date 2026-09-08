@@ -1,7 +1,7 @@
 @echo off
-REM ---- Sentinel Agentic Predictive-Maintenance POC : one-click launcher ----
+REM ---- Operon : one-click launcher ----
 cd /d "%~dp0"
-echo Starting Sentinel - Agentic Predictive-Maintenance POC...
+echo Starting Operon - Autonomous Reliability Operations for Industrial Systems...
 echo.
 REM uv run auto-creates/updates the environment, so this works even without
 REM running install.bat first (it just takes a little longer the first time).

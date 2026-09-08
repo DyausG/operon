@@ -1,11 +1,12 @@
 """
-One-command launcher for the Sentinel Agentic Predictive-Maintenance POC.
+One-command launcher for Operon reliability operations.
 
     uv run python run.py        # (or double-click run.bat on Windows)
 
-Starts fresh every time: removes the previous SQLite file (master data is
-re-seeded on startup), pre-trains/loads the health model on the AI4I dataset,
-then serves the dashboard at http://127.0.0.1:8000/ and opens your browser.
+Preserves the existing SQLite database on normal startup, pre-trains/loads the
+health model on the AI4I dataset, then serves the dashboard at
+http://127.0.0.1:8000/ and opens your browser. Pass ``--reset-demo`` to perform
+an explicit full reset before launch.
 """
 from __future__ import annotations
 import os
@@ -14,6 +15,7 @@ import time
 import pathlib
 import threading
 import webbrowser
+import argparse
 
 ROOT = pathlib.Path(__file__).resolve().parent
 os.chdir(ROOT)
@@ -23,14 +25,14 @@ HOST = os.getenv("POC_HOST", "127.0.0.1")
 PORT = int(os.getenv("POC_PORT", "8000"))
 
 
-def _fresh_db() -> None:
-    for name in ("poc.db", "poc.db-journal", "poc.db-wal", "poc.db-shm"):
-        try:
-            (ROOT / "data" / name).unlink()
-        except FileNotFoundError:
-            pass
-        except Exception as e:  # noqa: BLE001
-            print(f"  (could not remove {name}: {e})")
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Launch the Operon demo")
+    parser.add_argument(
+        "--reset-demo",
+        action="store_true",
+        help="explicitly reset the demo database before starting",
+    )
+    return parser.parse_args()
 
 
 def _warm_model() -> None:
@@ -54,7 +56,11 @@ def _open_browser() -> None:
 
 def main() -> None:
     from core import config
-    _fresh_db()
+    args = _parse_args()
+    if args.reset_demo:
+        from core.seed_data import seed
+        seed(reset=True)
+        print("  Demo database reset explicitly; master data re-seeded.")
     _warm_model()
     threading.Thread(target=_open_browser, daemon=True).start()
     import uvicorn

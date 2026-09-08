@@ -11,7 +11,6 @@ from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from core import config
-from core.db import reset_transactional
 from core.seed_data import seed
 from core.engine import DemoEngine
 
@@ -22,8 +21,7 @@ engine: DemoEngine | None = None
 @app.on_event("startup")
 async def _startup():
     global engine
-    seed()
-    reset_transactional()
+    seed(reset=False)
     engine = DemoEngine()
     await engine.start()
 

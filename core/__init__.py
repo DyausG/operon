@@ -1,4 +1,4 @@
-"""Sentinel — Agentic Predictive Maintenance POC (UI-agnostic core).
+"""Operon — Autonomous Reliability Operations for Industrial Systems.
 
 This package holds all domain logic — dataset, ML model, fleet simulator,
 governed tools, the Bedrock agent, and the demo engine — with no dependency on
