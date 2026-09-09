@@ -1,4 +1,4 @@
-"""Explicit evidence allowlist. No executor, service registry, SQL, or state tools.
+"""Explicit role allowlists. No executor, service registry, SQL, or state tools.
 
 Only request_evidence can write, through the existing application EvidenceService.
 Its incident, asset, role, and purpose come from the trusted per-run scope.
@@ -12,6 +12,7 @@ from strands import ToolContext, tool
 from strands.types.tools import AgentTool
 
 from core.reliability.evidence import EvidenceService
+from core.reliability.resources import ResourceCapabilities
 from .contracts import AdvisoryContract, DiagnosticContext, Reference, Text
 
 DIAGNOSTIC_TOOL_NAMES = frozenset({
@@ -19,6 +20,19 @@ DIAGNOSTIC_TOOL_NAMES = frozenset({
     "get_related_incidents", "get_operating_context", "request_evidence",
 })
 MAX_TOOL_OUTPUT_BYTES = 48_000
+RESOURCE_TOOL_NAMES = frozenset({"check_part_availability", "inspect_available_technicians",
+                                 "inspect_maintenance_windows"})
+SPECIALIST_TOOL_NAMES = {
+    "diagnostic": DIAGNOSTIC_TOOL_NAMES,
+    "engineering": frozenset({"get_asset_context", "get_telemetry_window",
+                               "get_maintenance_history", "get_operating_context"}),
+    "operations": frozenset({"get_asset_context", "get_maintenance_history",
+                              "get_operating_context"}) | RESOURCE_TOOL_NAMES,
+    "critic": frozenset({"get_asset_context", "get_telemetry_window",
+                          "get_maintenance_history", "get_related_incidents", "request_evidence"}),
+    "planner": frozenset({"get_asset_context", "get_maintenance_history",
+                           "get_operating_context"}) | RESOURCE_TOOL_NAMES,
+}
 MAX_EVIDENCE_TOOL_CALLS = 12
 
 
@@ -46,7 +60,14 @@ def bounded_result(result: BaseModel) -> dict:
 
 def diagnostic_tools(service: EvidenceService, scope: DiagnosticContext,
                      collected_evidence_ids: set[str]) -> list[AgentTool]:
+    return specialist_tools("diagnostic", service, scope, collected_evidence_ids)
+
+
+def specialist_tools(role: str, service: EvidenceService, scope: DiagnosticContext,
+                     collected_evidence_ids: set[str], *,
+                     resources: ResourceCapabilities | None = None) -> list[AgentTool]:
     """Fresh closures per invocation; the set tracks returned citations, not domain state."""
+    allowed = SPECIALIST_TOOL_NAMES[role]
     calls = 0
 
     def check_context(context: ToolContext):
@@ -108,14 +129,41 @@ def diagnostic_tools(service: EvidenceService, scope: DiagnosticContext,
         """
         check_context(tool_context)
         query = EvidenceQuery.model_validate(query)
+        if query.capability not in allowed - {"request_evidence"}:
+            raise ValueError("unsupported evidence capability for this specialist")
         collection = await asyncio.to_thread(
-            service.request_and_collect, scope.incident_id, requested_by="diagnostic",
+            service.request_and_collect, scope.incident_id, requested_by=role,
             equipment_ids=(scope.asset_id,), question=query.question, capability=query.capability,
-            required_for="diagnosis", parameters=query.parameters,
+            required_for=getattr(scope, "evidence_purpose", "diagnosis") if role == "critic" else "diagnosis",
+            parameters=query.parameters,
         )
         result = bounded_result(collection)
         collected_evidence_ids.add(collection.evidence.id)
         return result
 
-    return [get_asset_context, get_telemetry_window, get_maintenance_history,
-            get_related_incidents, get_operating_context, request_evidence]
+    async def resource_read(name: str, limit: int, context: ToolContext):
+        check_context(context)
+        if resources is None:
+            raise ValueError("resource read capability was not supplied by application")
+        result = await asyncio.to_thread(getattr(resources, name), scope.asset_id, limit=limit)
+        return bounded_result(result)
+
+    @tool(context=True)
+    async def check_part_availability(tool_context: ToolContext, limit: int = 20) -> dict:
+        """Read scoped BOM stock and reservations; unknown BOM is not availability. Limit 1..50."""
+        return await resource_read("check_part_availability", limit, tool_context)
+
+    @tool(context=True)
+    async def inspect_available_technicians(tool_context: ToolContext, limit: int = 20) -> dict:
+        """Read same-plant skilled roster and booking counts; never assign. Limit 1..50."""
+        return await resource_read("inspect_available_technicians", limit, tool_context)
+
+    @tool(context=True)
+    async def inspect_maintenance_windows(tool_context: ToolContext, limit: int = 20) -> dict:
+        """Read same-line bookings; real maintenance-window availability remains unknown. Limit 1..50."""
+        return await resource_read("inspect_maintenance_windows", limit, tool_context)
+
+    available = [get_asset_context, get_telemetry_window, get_maintenance_history,
+                 get_related_incidents, get_operating_context, request_evidence,
+                 check_part_availability, inspect_available_technicians, inspect_maintenance_windows]
+    return [item for item in available if item.tool_name in allowed]

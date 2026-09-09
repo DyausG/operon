@@ -125,6 +125,11 @@ import core.agents.runtime
 import core.agents.contracts
 import core.agents.tools
 import core.agents.diagnostic
+import core.agents.engineering
+import core.agents.operations
+import core.agents.critic
+import core.agents.planner
+import core.agents.invocation
 import core.reliability.assessments
 import core.agent
 import server.main
