@@ -321,6 +321,15 @@ A future **Procurement Agent** would receive a shortage and validated requiremen
 
 Use the Python **agents-as-tools supervisor pattern**.
 
+Implementation checkpoint (Step 12C): `core/agents/supervisor.py` now provides a
+native Strands 1.54.0 Supervisor using async `@tool(context=True)` wrappers around
+all five specialist entry points. Strands selects delegation; application-owned
+guards in `core/reliability/orchestration.py` bound calls/evidence and assemble an
+advisory `SupervisorResult`. There is no authoritative promotion, lifecycle wiring,
+or run persistence. The historical design sketch below remains a target; see
+[STRANDS_FOUNDATION.md](STRANDS_FOUNDATION.md) for implemented APIs, limits, and
+offline validation. Live Bedrock and AgentCore remain unvalidated.
+
 The official Strands documentation supports specialist agents wrapped in custom `@tool` functions, allowing controlled inputs, error handling, and result processing. That fits Operon’s typed boundaries better than passing unconstrained specialist prose directly between agents. [Strands agents-as-tools documentation](https://strandsagents.com/docs/user-guide/concepts/multi-agent/agents-as-tools/)
 
 Version baseline:

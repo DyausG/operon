@@ -3,6 +3,7 @@ from core.reliability.evidence import EvidenceService
 from .contracts import DiagnosticAssessment, DiagnosticContext
 from .invocation import SpecialistInvocationError, invoke_specialist
 from .runtime import StrandsRuntime
+from .tools import EvidenceRequester
 
 DIAGNOSTIC_PROMPT = """You are Operon's Diagnostic Specialist. Compare competing causal hypotheses;
 identify supporting and opposing evidence and discriminating falsification tests.
@@ -20,6 +21,8 @@ DiagnosticInvocationError = SpecialistInvocationError
 
 
 async def assess_diagnosis(runtime: StrandsRuntime, service: EvidenceService,
-                           context: DiagnosticContext) -> DiagnosticAssessment:
+                           context: DiagnosticContext, *,
+                           evidence_requester: EvidenceRequester | None = None) -> DiagnosticAssessment:
     return await invoke_specialist(runtime, service, context, role="diagnostic",
-                                   prompt=DIAGNOSTIC_PROMPT, output_model=DiagnosticAssessment)
+                                   prompt=DIAGNOSTIC_PROMPT, output_model=DiagnosticAssessment,
+                                   evidence_requester=evidence_requester)

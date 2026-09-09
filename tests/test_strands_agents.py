@@ -130,7 +130,9 @@ import core.agents.operations
 import core.agents.critic
 import core.agents.planner
 import core.agents.invocation
+import core.agents.supervisor
 import core.reliability.assessments
+import core.reliability.orchestration
 import core.agent
 import server.main
 '''

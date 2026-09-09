@@ -11,7 +11,7 @@ from core.reliability.evidence import EvidenceService
 from core.reliability.resources import ResourceCapabilities
 from .contracts import DiagnosticContext, SpecialistAssessment
 from .runtime import StrandsRuntime
-from .tools import specialist_tools
+from .tools import EvidenceRequester, specialist_tools
 
 Report = TypeVar("Report", bound=SpecialistAssessment)
 
@@ -26,12 +26,15 @@ resource availability, cost, or downtime. Never approve, execute, or mutate serv
 
 
 class SpecialistInvocationError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, stop_reason: str | None = None):
+        super().__init__(message)
+        self.stop_reason = stop_reason
 
 
 async def invoke_specialist(runtime: StrandsRuntime, service: EvidenceService,
                             context: DiagnosticContext, *, role: str, prompt: str,
-                            output_model: type[Report]) -> Report:
+                            output_model: type[Report],
+                            evidence_requester: EvidenceRequester | None = None) -> Report:
     if service.capabilities.path.resolve() != service.repository.path.resolve():
         raise ValueError("evidence capabilities and repository must use the same application store")
     scope = validate_specialist_context(service.repository, context)
@@ -40,7 +43,8 @@ async def invoke_specialist(runtime: StrandsRuntime, service: EvidenceService,
     agent = runtime.create_agent(
         name=f"operon_{role}", system_prompt=prompt + "\n" + GROUNDING_PROMPT,
         output_model=output_model,
-        tools=specialist_tools(role, service, scope, collected_ids, resources=resources),
+        tools=specialist_tools(role, service, scope, collected_ids, resources=resources,
+                               evidence_requester=evidence_requester),
     )
     try:
         result = await asyncio.wait_for(
@@ -56,6 +60,7 @@ async def invoke_specialist(runtime: StrandsRuntime, service: EvidenceService,
             "Bedrock invocation failed; check credentials, region, and model access. No fallback was used."
         ) from exc
     if result.stop_reason not in {"end_turn", "tool_use"} or result.structured_output is None:
-        raise SpecialistInvocationError(f"{role} invocation incomplete: {result.stop_reason}")
+        raise SpecialistInvocationError(f"{role} invocation incomplete: {result.stop_reason}",
+                                        stop_reason=result.stop_reason)
     assessment = output_model.model_validate(result.structured_output)
     return cast(Report, validate_specialist_assessment(service.repository, assessment, scope, collected_ids))

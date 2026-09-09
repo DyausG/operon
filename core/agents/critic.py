@@ -3,6 +3,7 @@ from core.reliability.evidence import EvidenceService
 from .contracts import CriticAssessment, SpecialistContext
 from .invocation import invoke_specialist
 from .runtime import StrandsRuntime
+from .tools import EvidenceRequester
 
 CRITIC_PROMPT = """You are Operon's Critic / Validator Specialist. Actively seek reasons the supplied
 subject could be wrong. Challenge unsupported claims, contradictions, ignored
@@ -18,6 +19,8 @@ reference the exact supplied domain artifact.
 
 
 async def review_assessment(runtime: StrandsRuntime, service: EvidenceService,
-                           context: SpecialistContext) -> CriticAssessment:
+                           context: SpecialistContext, *,
+                           evidence_requester: EvidenceRequester | None = None) -> CriticAssessment:
     return await invoke_specialist(runtime, service, context, role="critic",
-                                   prompt=CRITIC_PROMPT, output_model=CriticAssessment)
+                                   prompt=CRITIC_PROMPT, output_model=CriticAssessment,
+                                   evidence_requester=evidence_requester)

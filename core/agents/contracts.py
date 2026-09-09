@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from core.reliability.models import Diagnosis, Evidence, IncidentPhase, Intervention, Score, ValidationVerdict
 
@@ -195,3 +195,101 @@ class SpecialistContext(DiagnosticContext):
         if any(item.assessment.incident_id != self.incident_id for item in self.advisory_inputs):
             raise ValueError("advisory input belongs to a different incident")
         return self
+
+
+SpecialistRole = Literal["diagnostic", "engineering", "operations", "critic", "planner"]
+AdvisoryDisposition = Literal["ADVISORY_CONCLUSION", "UNRESOLVED", "NEEDS_EVIDENCE", "BLOCKED", "ESCALATED"]
+
+
+class SupervisorBounds(AdvisoryContract):
+    """Application settings, never model-selected tool arguments."""
+    max_delegations: int = Field(default=10, strict=True, ge=1, le=12)
+    max_iterations: int = Field(default=12, strict=True, ge=1, le=12)
+    max_role_invocations: int = Field(default=3, strict=True, ge=1, le=4)
+    max_evidence_requests: int = Field(default=3, strict=True, ge=0, le=10)
+    max_tool_calls: int = Field(default=24, strict=True, ge=1, le=64)
+    timeout_seconds: float = Field(default=240, gt=0, le=600)
+
+
+class DelegationQuery(AdvisoryContract):
+    question: Text
+    input_assessment_keys: tuple[Reference, ...] = Field(default=(), max_length=5)
+
+
+class EvidenceFollowup(AdvisoryContract):
+    assessment_key: Reference
+    need_index: int = Field(strict=True, ge=0, le=9)
+    query_parameters: dict[str, JsonValue] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def bounded_parameters(self):
+        if len(self.model_dump_json().encode()) > 4000:
+            raise ValueError("evidence followup exceeds 4000 bytes")
+        return self
+
+
+class SupervisorDecision(AdvisoryContract):
+    """Native model output. All references are checked against the actual run."""
+    incident_id: Reference
+    run_id: Reference
+    disposition: AdvisoryDisposition
+    reasoning_summary: Text
+    evidence_used: References = ()
+    candidate_diagnosis_key: Reference | None = None
+    engineering_key: Reference | None = None
+    operations_key: Reference | None = None
+    critic_keys: References = ()
+    maintenance_plan_key: Reference | None = None
+    unresolved_evidence_needs: tuple[EvidenceNeed, ...] = Field(default=(), max_length=20)
+    blockers: Observations = ()
+
+
+class DelegationRecord(AdvisoryContract):
+    key: Reference
+    role: SpecialistRole
+    question: Text
+    input_revision: int = Field(ge=1)
+    input_assessment_keys: References
+    evidence_ids: References
+    status: Literal["SUCCEEDED", "FAILED", "CANCELLED"]
+    error_code: Reference | None = None
+
+
+class EvidenceRequestRecord(AdvisoryContract):
+    requested_by: Literal["supervisor", "diagnostic", "critic"]
+    capability: Reference
+    question: Text
+    status: Literal["COLLECTED", "UNAVAILABLE", "FAILED", "CANCELLED"]
+    evidence_id: Reference | None = None
+    request_id: Reference | None = None
+    error_code: Reference | None = None
+
+
+class SupervisorResult(AdvisoryContract):
+    """Application-assembled advisory audit; never a promotable domain Artifact.
+
+    Assessments retain full citations and uncertainty. Keys identify ephemeral
+    packets, not durable Diagnosis/Intervention records. Counters are not model claims.
+    """
+    incident_id: Reference
+    run_id: Reference
+    input_revision: int = Field(ge=1)
+    disposition: AdvisoryDisposition
+    decision: SupervisorDecision | None
+    assessments: tuple[AdvisoryInput, ...] = Field(max_length=17)
+    delegations: tuple[DelegationRecord, ...] = Field(max_length=12)
+    evidence_requests: tuple[EvidenceRequestRecord, ...] = Field(max_length=10)
+    evidence_used: References
+    candidate_diagnosis_key: Reference | None
+    engineering_key: Reference | None
+    operations_key: Reference | None
+    critic_keys: References
+    maintenance_plan_key: Reference | None
+    unresolved_evidence_needs: tuple[EvidenceNeed, ...] = Field(max_length=256)
+    # Union of bounded specialist observations; retain objections without truncation.
+    blockers: tuple[Text, ...] = Field(max_length=2048)
+    human_review_required: Literal[True] = True
+    termination_reason: Literal["MODEL_COMPLETED", "LIMIT_EXHAUSTED", "TIMEOUT", "MODEL_FAILED", "INVALID_OUTPUT"]
+    exhausted_limits: References
+    tool_calls: int = Field(ge=0, le=64)
+    bounds: SupervisorBounds

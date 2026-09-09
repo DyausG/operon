@@ -1,10 +1,10 @@
-# Strands foundation and independent specialists (Steps 12A–12B)
+# Strands foundation, specialists, and Reliability Supervisor (Steps 12A–12C)
 
 Strands supplies model interaction, tool selection, and Pydantic structured output.
 Operon supplies evidence capabilities and owns persistence, lifecycle, validation,
-promotion, approval, and execution. Five independent specialists are available;
-the running demo/provider path is unchanged. No supervisor or automatic sequencing
-is implemented.
+promotion, approval, and execution. Five independent specialists and a native
+Reliability Supervisor are available through explicit application entry points.
+The running demo/provider path remains unchanged; lifecycle integration is deferred.
 
 ## SDK and runtime
 
@@ -115,8 +115,8 @@ invoke the governed executor. Requesting evidence may append only the existing
 evidence/request records and corresponding incident revisions/events.
 
 Each specialist has a narrow prompt, an explicit capability allowlist,
-and application validation around its advisory contract. A later supervisor can
-wrap these entry points as native Strands agents-as-tools. Add independent review,
+and application validation around its advisory contract. The supervisor now wraps
+these entry points as native Strands agents-as-tools. Add independent review,
 revision/freshness checks, cancellation handling, and promotion in application code
 before integrating them into lifecycle or governance. Do not pass repositories or
 consequential service methods as tools.
@@ -213,11 +213,169 @@ Schema consistency rejects unconditional feasibility with missing constraints or
 blockers, and advisory acceptance with unresolved objections. None of these checks
 is authoritative engineering validation or governance policy.
 
-The future Reliability Supervisor can call these same functions through native
-agents-as-tools wrappers. Application code must still choose trusted scope,
-validate freshness, handle late/cancelled results, independently review advice,
-promote artifacts, and apply governance. This stage adds none of those orchestration
-or promotion behaviors.
+The Reliability Supervisor calls these same functions through native agents-as-tools
+wrappers. Application code still chooses trusted scope, independently reviews advice,
+validates freshness before promotion, promotes artifacts, and applies governance.
+The run guards handle bounds and cancellation; they confer no domain authority.
+
+## Reliability Supervisor: native delegation
+
+`core/agents/supervisor.py` supplies `supervise_reliability` and the native Agent
+factory. The mechanism is **async `strands.tool(context=True)` agents-as-tools**:
+the supervisor is a native `strands.Agent` with six decorated tools. Strands'
+event loop selects and executes those tools using `SequentialToolExecutor`.
+Five tools call the existing specialist entry points, each of which creates a
+fresh native Agent and awaits `Agent.invoke_async` with its own structured-output
+contract and original tool allowlist. Validated `AdvisoryInput` JSON returns to
+the supervisor in a native tool-result content block. No application loop selects
+the specialist order, and no specialist output is accepted by parsing prose.
+
+The sixth tool, `acquire_requested_evidence`, refers to a supplied Diagnostic or
+Critic assessment key and a zero-based evidence-need index. Its capability and
+question come from that validated report. Parameters pass the existing bounded
+capability schemas. There are no direct asset/database reads or consequential
+operational tools in the supervisor allowlist.
+
+The installed **1.54.0** source was audited before implementation: `Agent`,
+`invoke_async`, `Limits`, the async decorator, sequential executor, tool hooks,
+and structured-output behavior are exercised offline. The installed Agent also
+supports `Agent.as_tool(name=..., preserve_context=False, delegate=False)` and
+direct Agents in `tools`. Its adapter accepts a free-form `input` string, calls
+the child streaming API, and returns text. Custom decorated wrappers fit this
+step better: they reuse the existing validated entry points, pass trusted invocation
+scope and explicit child limits, and return bounded typed assessment JSON. The
+supervisor uses those genuine native custom tools rather than the convenience
+adapter. See the official
+[agents-as-tools pattern](https://strandsagents.com/docs/user-guide/concepts/multi-agent/agents-as-tools/)
+and [custom tools](https://strandsagents.com/docs/user-guide/concepts/tools/custom-tools/).
+
+The conceptual workflow is Diagnostic → Critic → justified evidence → Diagnostic
+refinement → Engineering → Operations → Critic → Planner. The prompt guides that
+workflow, while model-selected delegation also supports early stops and different
+orders. Application completeness checks determine whether an advisory conclusion
+is structurally supported; they do not drive a fixed pipeline or establish truth.
+
+## Application run boundary and contracts
+
+`core/reliability/orchestration.py` owns disposable `SupervisorRun` bookkeeping,
+scope/reference checks, dependency closure, budgets, evidence collection, and final
+result assembly. It calls only existing evidence/application boundaries. It never
+adds Diagnosis, Intervention, ValidationVerdict, ApprovalRequirement, or Outcome,
+changes lifecycle phase, reserves stock, assigns labor, books downtime, writes CMMS
+operations, or invokes consequential execution. No new run/audit persistence or
+schema migration is introduced. EvidenceService may append its existing evidence,
+request, resolution, incident revision, and event records.
+
+`SupervisorDecision` is the native Pydantic model output: incident/run identity,
+advisory disposition and reasoning, evidence citations, typed-role assessment keys,
+unanswered evidence needs, and blockers. Extra fields and invented or out-of-scope
+references are rejected. It cannot supply audit counters or authoritative objects.
+
+The application returns a frozen `SupervisorResult`, containing the validated
+decision (or null on failure), effective advisory disposition, actual delegations,
+complete validated assessments and citations, evidence acquisition records, current
+diagnostic/engineering/operations/plan keys, critic keys, unresolved needs, blockers,
+termination reason, configured bounds, and exhausted limits. All keys identify
+ephemeral advice, not durable diagnosis or intervention records. All results require
+human review, including `ADVISORY_CONCLUSION`; that label never grants approval.
+
+The effective disposition conservatively retains unknown engineering constraints,
+operational blockers, critic objections, failed acquisitions, and model/tool errors.
+An optimistic model summary cannot erase these findings. A supported conclusion
+requires all five roles, a recommended hypothesis, current linked engineering and
+operations advice, critic review of those current inputs, and a planner proposal
+with known risk/exposure metadata. Re-review of an unchanged subject cannot erase
+earlier objections. A revised report needs a new review; old reports remain in the
+audit. These are structural completeness checks, not causal validation or policy.
+
+Contexts are prepared with `prepare_specialist_context`. Each delegation receives
+the application's selected asset, evidence, and artifacts, plus only the requested
+advisory reports and their complete transitive dependencies. The existing limits
+remain: 20 evidence records, 10 selected artifacts, five advisory reports, and
+64,000 bytes per context. Unknown keys and cyclic dependencies fail. A dependency
+closure exceeding five reports is blocked without stripping provenance. Fresh
+evidence is included in subsequent packets, whose durable content is rechecked.
+There is no unrestricted database dump and no model-selectable incident or asset.
+
+## Orchestration bounds and evidence loop
+
+| Bound | Default | Configurable maximum / behavior |
+|---|---:|---|
+| Supervisor model turns | 12 | 12, native `limits.turns`; overrides the specialist-oriented runtime turn setting for the supervisor only |
+| Supervisor tool calls | 24 | 64, native `BeforeToolCallEvent` guard counts even malformed/unknown calls and structured output; excess cancels the loop |
+| Specialist invocations | 10 | 12 total, including failures/cancellations |
+| Invocations of one role | 3 | 4, shared across that role's fresh Agents |
+| Evidence acquisition rounds | 3 | 10, or 0 to disable; one attempted request per round, shared by supervisor, Diagnostic, and Critic |
+| Entire supervisor invocation | 240 seconds | 600 seconds, includes awaited nested specialists and evidence collection |
+| Each specialist invocation | Runtime default 90 seconds / 6 turns | Existing runtime settings and capability-call limits remain in force |
+
+Supervisor and specialist token budgets use the existing runtime's native soft
+output/total-token caps (defaults 8,000/32,000 each). They are per Agent invocation,
+not an aggregate billing meter. The total number of such invocations is bounded;
+the default run can invoke at most one supervisor and ten specialists. A response
+may overshoot a token cap before the SDK checks it. Model transport timeouts and
+retry settings remain as documented above; live model/credential construction is
+explicit and precedes the invocation deadline.
+
+Delegation fingerprints use role, complete selected report keys, and evidence IDs.
+Rephrasing a question with identical inputs reuses the successful result; identical
+failed work is not restarted. Changed evidence or report inputs permits refinement,
+subject to total/per-role limits. There is no recursive supervisor tool available
+to specialists. Tools remain sequential within each Agent.
+
+Diagnostic and Critic retain their independent `request_evidence` tools. An optional
+application callback in their invocation path enforces the same run-wide evidence
+budget as the supervisor tool. It binds incident/asset/purpose, rechecks capability
+parameters, and calls `EvidenceService.request_and_collect`. Normalized identical
+capability/parameter/purpose requests reuse returned durable provenance even if
+question text changes; failed identical requests are not retried during that run.
+Unsupported and failed acquisition attempts consume the shared budget. Capability
+calls rejected before acquisition still consume the existing per-specialist tool
+budget or supervisor tool budget. No evidence is invented.
+
+Collection results are checked against persisted evidence and resolution records,
+and oversized output fails without truncation. Missing evidence remains explicit:
+`UNAVAILABLE` records can be cited as missing data; successful collection alone
+does not mean a diagnostic question is resolved. Diagnostic refinement and fresh
+critic review may establish a more complete advisory packet. Unsupported inspection
+and OEM retrieval stay unresolved. Resource reads remain local, read-only snapshots;
+this step does not create durable resource-evidence capabilities.
+
+Model failures, invalid final references/output, specialist failures, evidence
+failures, and exhausted budgets produce bounded unresolved/blocked/escalated results.
+Native structured-output validation may give the model a correction turn within its
+limits; invalid data never joins the accepted report set. Caller cancellation is
+propagated and timeout returns a structured escalation snapshot. An already-running
+SDK request or synchronous evidence worker may finish under its own limits after
+cancellation. Committed evidence remains durable; late worker results cannot modify
+the returned run snapshot. A cancelled request record may therefore lack the IDs of
+evidence subsequently committed by that worker. Future application reconciliation
+must inspect durable records; this step introduces no background task manager.
+
+## Calling the supervisor
+
+```python
+from core.agents.contracts import SupervisorBounds
+from core.agents.supervisor import supervise_reliability
+from core.reliability.assessments import prepare_specialist_context
+
+# repository, runtime and evidence_service are explicitly configured by the app.
+context = prepare_specialist_context(
+    repository, incident_id, asset_id=asset_id, run_id=run_id,
+    evidence_ids=selected_evidence_ids,
+    question="Investigate competing causes and propose supported next steps.",
+)
+advice = await supervise_reliability(
+    runtime, evidence_service, context,
+    bounds=SupervisorBounds(max_delegations=10, max_evidence_requests=3),
+)
+# advice is advisory data. It must not be dispatched as an executable command.
+```
+
+An optional `specialist_runtime` supports a separately injected native Model/runtime
+for specialist calls. Offline tests script only the Model boundary and exercise
+actual nested Strands loops. Each run and each specialist conversation is fresh;
+do not share mutable scripted model state between concurrent incident runs.
 
 ## Scope and verification
 
@@ -227,11 +385,12 @@ Assessment names distinguish advice from the authoritative artifacts in the sket
 The legacy deterministic fallback remains available; no second agent framework or
 new deterministic diagnostic workflow is introduced.
 
-Supervisor orchestration, the full diagnostic workflow,
-promotion, live fallback integration, AgentCore, RAG, procurement, outcome
-verification, provider migration, and frontend work remain deferred.
+Full authoritative promotion and lifecycle integration (Step 13), freshness locks,
+durable orchestration restart/reconciliation, live fallback integration, AgentCore,
+RAG/OEM ingestion, procurement, outcome verification, provider migration, and frontend
+work remain deferred. No public README changes or deployment are part of Step 12C.
 
-Run `uv run pytest tests/test_strands_agents.py tests/test_specialists.py` for native SDK construction,
+Run `uv run pytest tests/test_supervisor.py tests/test_strands_agents.py tests/test_specialists.py` for native SDK construction,
 scripted model/tool/structured-output cycles, import checks, budget/error behavior,
 and authoritative-state invariants. The existing test network guard blocks outbound
 connections and DNS; the import smoke test installs its guard before Operon imports.
@@ -241,8 +400,11 @@ Known limitations: no OEM specifications/manual retrieval; no real production
 calendar, qualification-expiry records, or dated booking overlap checks; local
 resource observations may include seeded demo data. Prompts and scripted native
 model tests verify integration contracts and state boundaries, not live-model
-reasoning quality or factual truth of narrative claims. Real Bedrock access and
-live specialist-quality evaluation have not been run. No semantic validator can
+reasoning quality or factual truth of narrative claims. Long dependency chains can
+exceed the five-report/64 KB packet bound and require a new application-selected
+investigation packet. No durability or concurrent-run freshness lock is claimed.
+Real Bedrock access, live supervisor/specialist-quality evaluation, and AgentCore
+functionality have not been validated. No semantic validator can
 infer missing engineering facts from a valid citation alone.
 
 API references: [1.54.0 release](https://pypi.org/project/strands-agents/1.54.0/),

@@ -6,12 +6,13 @@ Its incident, asset, role, and purpose come from the trusted per-run scope.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 
 from pydantic import AwareDatetime, BaseModel, Field, JsonValue, model_validator
 from strands import ToolContext, tool
 from strands.types.tools import AgentTool
 
-from core.reliability.evidence import EvidenceService
+from core.reliability.evidence import EvidenceCollection, EvidenceService
 from core.reliability.resources import ResourceCapabilities
 from .contracts import AdvisoryContract, DiagnosticContext, Reference, Text
 
@@ -48,6 +49,10 @@ class EvidenceQuery(AdvisoryContract):
         return self
 
 
+# Optional application guard shared by all evidence writers in a supervisor run.
+EvidenceRequester = Callable[[str, DiagnosticContext, EvidenceQuery], Awaitable[EvidenceCollection]]
+
+
 def bounded_result(result: BaseModel) -> dict:
     """Never silently truncate provenance or present partial content as complete."""
     if len(result.model_dump_json().encode()) > MAX_TOOL_OUTPUT_BYTES:
@@ -65,7 +70,8 @@ def diagnostic_tools(service: EvidenceService, scope: DiagnosticContext,
 
 def specialist_tools(role: str, service: EvidenceService, scope: DiagnosticContext,
                      collected_evidence_ids: set[str], *,
-                     resources: ResourceCapabilities | None = None) -> list[AgentTool]:
+                     resources: ResourceCapabilities | None = None,
+                     evidence_requester: EvidenceRequester | None = None) -> list[AgentTool]:
     """Fresh closures per invocation; the set tracks returned citations, not domain state."""
     allowed = SPECIALIST_TOOL_NAMES[role]
     calls = 0
@@ -131,12 +137,15 @@ def specialist_tools(role: str, service: EvidenceService, scope: DiagnosticConte
         query = EvidenceQuery.model_validate(query)
         if query.capability not in allowed - {"request_evidence"}:
             raise ValueError("unsupported evidence capability for this specialist")
-        collection = await asyncio.to_thread(
-            service.request_and_collect, scope.incident_id, requested_by=role,
-            equipment_ids=(scope.asset_id,), question=query.question, capability=query.capability,
-            required_for=getattr(scope, "evidence_purpose", "diagnosis") if role == "critic" else "diagnosis",
-            parameters=query.parameters,
-        )
+        if evidence_requester is not None:
+            collection = await evidence_requester(role, scope, query)
+        else:
+            collection = await asyncio.to_thread(
+                service.request_and_collect, scope.incident_id, requested_by=role,
+                equipment_ids=(scope.asset_id,), question=query.question, capability=query.capability,
+                required_for=getattr(scope, "evidence_purpose", "diagnosis") if role == "critic" else "diagnosis",
+                parameters=query.parameters,
+            )
         result = bounded_result(collection)
         collected_evidence_ids.add(collection.evidence.id)
         return result
