@@ -45,6 +45,8 @@ class SpecialistAssessment(AdvisoryContract):
     # Application-assigned packet keys, explicitly NOT durable artifact IDs.
     input_assessment_keys: References = ()
     uncertainties: Observations = ()
+    reviewed_intervention_id: Reference | None = None
+    reviewed_intervention_hash: Reference | None = None
 
 
 class DiagnosticAssessment(SpecialistAssessment):
@@ -181,6 +183,9 @@ class SpecialistContext(DiagnosticContext):
     question: Text = "Assess the supplied inputs within your specialist responsibility."
     lifecycle_state: IncidentPhase
     evidence_purpose: Literal["diagnosis", "intervention"] = "diagnosis"
+    run_purpose: Literal["INVESTIGATION", "DIAGNOSIS", "INTERVENTION_REVIEW"] = "INVESTIGATION"
+    review_target_id: Reference | None = None
+    review_target_hash: Reference | None = None
     artifacts: tuple[Diagnosis | Intervention | ValidationVerdict, ...] = Field(default=(), max_length=10)
     advisory_inputs: tuple[AdvisoryInput, ...] = Field(default=(), max_length=5)
 
@@ -289,7 +294,8 @@ class SupervisorResult(AdvisoryContract):
     # Union of bounded specialist observations; retain objections without truncation.
     blockers: tuple[Text, ...] = Field(max_length=2048)
     human_review_required: Literal[True] = True
-    termination_reason: Literal["MODEL_COMPLETED", "LIMIT_EXHAUSTED", "TIMEOUT", "MODEL_FAILED", "INVALID_OUTPUT"]
+    termination_reason: Literal["MODEL_COMPLETED", "LIMIT_EXHAUSTED", "TIMEOUT", "MODEL_FAILED", "INVALID_OUTPUT", "CANCELLED"]
     exhausted_limits: References
     tool_calls: int = Field(ge=0, le=64)
     bounds: SupervisorBounds
+    invalid_output: bool = False

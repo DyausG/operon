@@ -18,7 +18,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, mod
 from core import config, db
 from core.seed_data import EQUIPMENT
 from . import models as m
-from .repository import IncidentRepository, content_hash, new_id, utcnow
+from .repository import IncidentRepository, content_hash, new_id, source_state_hash, utcnow
 
 
 class UnsupportedEvidenceCapability(ValueError):
@@ -666,14 +666,22 @@ class EvidenceService:
         artifacts = self.repository.list_artifacts(incident_id)
         matching = [item for item in artifacts
                     if isinstance(item, m.EvidenceRequest) and item.request_key == request_key]
+        previous_request = previous_evidence = None
         if matching and matching[-1].status != "OPEN":
             request = matching[-1]
             evidence = self.repository.get_artifact(incident_id, request.resolved_by_evidence_ids[0])
             assert isinstance(evidence, m.Evidence)
-            return EvidenceCollection(
-                request=request, evidence=evidence,
-                result=self.capabilities.parse_result(capability, evidence.payload), reused=True,
-            )
+            with db.get_conn(self.repository.path) as conn:
+                current_source = source_state_hash(conn, incident_id)
+            if evidence.source_state_hash == current_source:
+                return EvidenceCollection(
+                    request=request, evidence=evidence,
+                    result=self.capabilities.parse_result(capability, evidence.payload), reused=True,
+                )
+            # A stale cached read cannot satisfy a fresh promotion run. Preserve
+            # both old records and append a new request/evidence generation.
+            previous_request, previous_evidence = request, evidence
+            matching = []
 
         incident = self.repository.fetch_incident(incident_id)
         if matching:
@@ -683,6 +691,7 @@ class EvidenceService:
                 id=new_id(), incident_id=incident_id, created_at=utcnow(), requested_by=requested_by,
                 equipment_ids=equipment_ids, question=question.strip(), capability=capability,
                 parameters=normalized, request_key=request_key, required_for=required_for,
+                supersedes_id=previous_request.id if previous_request else None,
             )
             incident = self.repository.add_artifact(request, expected_revision=incident.revision)
 
@@ -692,6 +701,8 @@ class EvidenceService:
             evidence = existing[-1]
             result = self.capabilities.parse_result(capability, evidence.payload)
         else:
+            with db.get_conn(self.repository.path) as conn:
+                source_checkpoint = source_state_hash(conn, incident_id)
             result = self.capabilities.collect(
                 capability, equipment_ids[0], normalized, incident_id=incident_id,
             )
@@ -724,6 +735,8 @@ class EvidenceService:
                 source_system=result.provenance.source_system,
                 request_id=request.id, collection_key=request_key,
                 summary=self._summary(result), payload=payload,
+                source_state_hash=source_checkpoint,
+                supersedes_id=previous_evidence.id if previous_evidence else None,
             )
             incident = self.repository.fetch_incident(incident_id)
             incident = self.repository.add_artifact(evidence, expected_revision=incident.revision)

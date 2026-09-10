@@ -70,7 +70,8 @@ def delegation_context(repository: IncidentRepository, initial: SpecialistContex
         repository, initial.incident_id, asset_id=initial.asset_id, run_id=initial.run_id,
         evidence_ids=evidence_ids, artifact_ids=tuple(item.id for item in initial.artifacts),
         advisory_inputs=tuple(advice[key] for key in selected),
-        evidence_purpose=initial.evidence_purpose, question=question,
+        evidence_purpose=initial.evidence_purpose, run_purpose=initial.run_purpose, question=question,
+        review_target_id=initial.review_target_id, review_target_hash=initial.review_target_hash,
     )
 
 
@@ -98,9 +99,18 @@ def latest_assessments(advice: dict[str, AdvisoryInput]) -> dict[str, str]:
             if isinstance(item.assessment, cls)}
 
 
-def conclusion_gaps(advice: dict[str, AdvisoryInput]) -> tuple[str, ...]:
+def conclusion_gaps(advice: dict[str, AdvisoryInput], purpose="INVESTIGATION") -> tuple[str, ...]:
     """Conservative completeness checks, explicitly not technical or policy approval."""
     latest = latest_assessments(advice)
+    if purpose == "DIAGNOSIS":
+        diagnostic = latest.get("diagnostic")
+        reviewed = any(isinstance(item.assessment, CriticAssessment)
+                       and item.assessment.subject_id == diagnostic
+                       and item.assessment.recommendation == "ACCEPT" for item in advice.values())
+        return () if diagnostic and reviewed else ("Selected diagnosis requires explicit critic review.",)
+    if purpose == "INTERVENTION_REVIEW":
+        return () if {"engineering", "operations", "critic"} <= latest.keys() else (
+            "Exact draft requires engineering, operations, and critic review.",)
     if set(latest) != set(ROLE_CONTRACTS):
         return ("All five specialist roles are required for a supported maintenance conclusion.",)
     diagnostic = advice[latest["diagnostic"]].assessment
@@ -361,7 +371,7 @@ class SupervisorRun:
         for request in self.requests:
             if request.status != "COLLECTED":
                 needs.append(EvidenceNeed(capability=request.capability, question=request.question))
-        gaps = conclusion_gaps(self.advice)
+        gaps = conclusion_gaps(self.advice, self.scope.run_purpose)
         blockers.extend((*sorted(self.errors), *gaps))
         disposition = decision.disposition if decision else "ESCALATED"
         if self.exhausted:
@@ -390,4 +400,5 @@ class SupervisorRun:
             unresolved_evidence_needs=tuple(dict.fromkeys(needs)), blockers=tuple(dict.fromkeys(blockers)),
             termination_reason=reason, exhausted_limits=tuple(sorted(self.exhausted)),
             tool_calls=self.tool_calls, bounds=self.bounds,
+            invalid_output=self.invalid_output,
         )

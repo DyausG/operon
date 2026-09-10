@@ -13,7 +13,7 @@ from core.agents.contracts import (
     EngineeringAssessment, MaintenancePlanAssessment, OperationsAssessment, SpecialistContext,
 )
 from .models import Diagnosis, Evidence, Intervention, ValidationVerdict
-from .repository import IncidentRepository, InvalidReference
+from .repository import IncidentRepository, InvalidReference, content_hash
 
 
 def prepare_diagnostic_context(repository: IncidentRepository, incident_id: str, *,
@@ -48,6 +48,8 @@ def prepare_specialist_context(repository: IncidentRepository, incident_id: str,
                                artifact_ids: tuple[str, ...] = (),
                                advisory_inputs: tuple[AdvisoryInput, ...] = (),
                                evidence_purpose: Literal["diagnosis", "intervention"] = "diagnosis",
+                               run_purpose: Literal["INVESTIGATION", "DIAGNOSIS", "INTERVENTION_REVIEW"] = "INVESTIGATION",
+                               review_target_id: str | None = None, review_target_hash: str | None = None,
                                question: str = "Assess the supplied inputs within your specialist responsibility.") -> SpecialistContext:
     base = prepare_diagnostic_context(repository, incident_id, asset_id=asset_id,
                                       run_id=run_id, evidence_ids=evidence_ids)
@@ -59,7 +61,8 @@ def prepare_specialist_context(repository: IncidentRepository, incident_id: str,
     context = SpecialistContext(**(base.model_dump() | {"question": question}),
                                 lifecycle_state=repository.fetch_incident(incident_id).phase,
                                 artifacts=artifacts, advisory_inputs=advisory_inputs,
-                                evidence_purpose=evidence_purpose)
+                                evidence_purpose=evidence_purpose, run_purpose=run_purpose,
+                                review_target_id=review_target_id, review_target_hash=review_target_hash)
     return validate_specialist_context(repository, context)
 
 
@@ -83,6 +86,11 @@ def validate_specialist_context(repository: IncidentRepository,
                 set(step.equipment_ids) - {scope.asset_id} for step in item.steps):
             raise InvalidReference("context intervention outside selected asset")
     if isinstance(scope, SpecialistContext):
+        if scope.run_purpose == "INTERVENTION_REVIEW":
+            target = next((item for item in scope.artifacts if item.id == scope.review_target_id), None)
+            if (not isinstance(target, Intervention) or target.status != "DRAFT"
+                    or content_hash(target.model_dump(mode="json")) != scope.review_target_hash):
+                raise InvalidReference("exact draft review context requires the stored target and hash")
         for item in scope.advisory_inputs:
             if item.key in item.assessment.input_assessment_keys:
                 raise InvalidReference("advisory input cannot cite itself")
@@ -114,6 +122,13 @@ def validate_specialist_assessment(repository: IncidentRepository, assessment: A
             raise InvalidReference("required artifact reference is absent or has the wrong type")
         if repository.get_artifact(scope.incident_id, key) != artifacts[key]:
             raise InvalidReference("artifact reference differs from durable record")
+
+    if validated.reviewed_intervention_id is not None:
+        require_artifact(validated.reviewed_intervention_id, Intervention)
+        if content_hash(artifacts[validated.reviewed_intervention_id].model_dump(mode="json")) != validated.reviewed_intervention_hash:
+            raise InvalidReference("review must bind the exact draft hash")
+    elif validated.reviewed_intervention_hash is not None:
+        raise InvalidReference("review hash requires a draft identity")
 
     if isinstance(validated, EngineeringAssessment):
         if validated.diagnosis_id:

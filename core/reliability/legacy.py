@@ -1,4 +1,9 @@
-"""Narrow adapter from the existing demo proposal to durable typed artifacts."""
+"""Deprecated compatibility-only authority shortcut pending Step 13B.
+
+These artifacts have no PromotionRecord or promotion-owned authority pointer and
+must never satisfy the new PromotionService lineage checks. Existing engine demo
+behavior is retained until its separate lifecycle replacement.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass

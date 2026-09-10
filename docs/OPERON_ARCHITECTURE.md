@@ -5,9 +5,143 @@ The central architectural change is this: a prediction opens an incident. Specia
 Product name: **Operon**  
 Tagline: **Autonomous Reliability Operations for Industrial Systems**
 
-This plan follows inspection of the requested source directories, all existing tests, configuration, launchers, and deployment files. I also checked official Strands documentation and the published 1.54.0 release. I did not modify files, install dependencies, run tests that create files, run migrations, or commit anything.
+This document retains the original architecture roadmap below. The implementation
+checkpoint here supersedes historical implementation-status statements in that
+roadmap. Runtime behavior and contracts are described in
+[STRANDS_FOUNDATION.md](STRANDS_FOUNDATION.md).
 
-**A. Current architecture**
+**Implemented checkpoint: Step 13A — authoritative promotion boundary**
+
+**Agents reason. The application owns authority.** Five native Strands specialists
+and the native agents-as-tools Reliability Supervisor produce advisory reports.
+`core/reliability/promotion.py` now supplies the separate trusted application
+boundary that may promote sufficiently validated reasoning. The existing engine
+still uses its deprecated compatibility path; its replacement is Step 13B.
+
+```mermaid
+flowchart TD
+    E[Committed durable evidence] --> S[Atomic run claim and SupervisorRunSnapshot]
+    S --> A[Native Strands reasoning outside transaction]
+    A --> R[Persisted advisory SupervisorReport]
+    R --> D[Application diagnosis gates]
+    T[Trusted inspection confirmation] --> D
+    D --> DP[Atomic Hypotheses + Diagnosis + application verdict + lineage + pointer]
+    DP --> B[Application WorkPackageBinding and DRAFT Intervention]
+    RC[Trusted dated resource evidence and explicit business estimates] --> B
+    B --> RS[Fresh exact-draft review run]
+    RS --> RR[Persisted advisory review report]
+    RR --> I[Application intervention gates]
+    I --> IP[Atomic VALIDATED Intervention + application verdict + lineage + pointer]
+    IP --> F[Approval and execution integration deferred to 13B]
+```
+
+`SupervisorRunSnapshot` freezes incident, asset, application run ID, stage, committed
+input revision, complete bounded input packet, evidence/artifact manifests, bounds,
+runtime/model identity and prompt/schema/SDK versions. `active_run_id` is claimed in
+the same `BEGIN IMMEDIATE` transaction that inserts the snapshot. A new claim
+invalidates older runs. Bedrock/model invocation and external services never run
+inside that transaction. This implementation accepts fresh advisory packets;
+optional carried advisory inputs are not exposed by the durable wrapper.
+
+`SupervisorReport` stores the full `SupervisorResult` JSON and result hash with
+run/snapshot references, input/completion/checkpoint revisions, evidence manifest,
+terminal and stale classifications, and timestamp. Stored JSON is explicitly parsed
+as `SupervisorResult` on load. A report remains advisory regardless of schema
+validity, Critic recommendation, or successful completion. Cancelled native runs
+preserve their partial audit; automatic process-crash reconciliation is deferred.
+
+Revision semantics are strict: claim commits input revision `r`; reasoning must
+finish at `r`; report persistence advances to checkpoint `r+1`; promotion requires
+that exact checkpoint. Any intervening revision, including same-run evidence
+acquisition, requires another run over committed evidence. The original input
+revision is never rewritten. Unresolved requests, superseded evidence/artifacts,
+foreign scope, mismatched manifests and stale assessment dependencies block.
+
+Raw operational freshness is independent of incident revisions. Evidence and runs
+carry a source hash over local operational rows, other incident revisions and a
+durable source generation. Migration 004 installs the source counter and triggers
+for raw source changes, including changes later reverted. Promotion checks the
+manifest under its transaction lock. Version 1 conservatively invalidates on
+unrelated local source changes too; external source adapters and narrower source
+versioning are deferred. Historical evidence without this checkpoint must be
+collected again before new promotion.
+Source-aware EvidenceService cache refresh appends superseding request/evidence
+records while preserving the old audit. Durable resource confirmation also retains
+the actual checked inventory quantities, rather than only an availability claim.
+
+Diagnosis requires successful canonical diagnostic advice with a recommended
+hypothesis, grounded nonempty support, no contradictions or unresolved evidence,
+explicit current Critic review, and independent typed
+`TrustedTechnicalConfirmation`. Only a trusted application submission can persist
+this positive confirmation via reserved `Evidence(kind="inspection")`: exact
+incident/asset/mechanism, optional failure-mode code, durable technical evidence,
+performed checks/results, observation time, source/actor and explicit simulation
+provenance. Matching is exact; no fuzzy model reconciliation, confidence threshold,
+classifier probability or SHAP attribution establishes a cause. New authoritative
+numerical causal confidence remains unset. Authentication of submitters belongs
+to the caller; 13A exposes no public confirmation endpoint or new identity system.
+
+Diagnosis promotion atomically inserts new competing `Hypothesis` IDs, an accepted
+`Diagnosis`, an application `ValidationVerdict(ACCEPT)`, `PromotionRecord`, the
+current diagnosis pointer and `DIAGNOSIS_VALIDATED` phase. Alternatives, citations
+and suggested tests survive translation; suggested tests are never recorded as
+performed. **CriticAssessment ACCEPT is not ValidationVerdict ACCEPT.** Application
+verdicts include validator identity, policy version, input revision, exact target
+hash and deterministic check results; Critic findings remain review provenance.
+
+Planner prose cannot become executable parameters. `WorkPackageBinding` supplies
+trusted structured equipment/failure-mode/technician IDs, BOM quantities, confirmed
+dated availability/window, reviewed instructions, preconditions, explicit cost,
+downtime, avoided loss, business version and risk/safety data. Missing required
+values block; planner exposure is never substituted for business estimates. A
+trusted `ResourceConfirmation` persists dated resource evidence and checks actual
+local BOM stock less reservations, technician identity, same plant and exact class
+qualification. Roster or schedule `UNKNOWN`, including no bookings, is insufficient.
+
+The resulting `DRAFT Intervention` contains one `create_work_package` step validated
+through existing `WorkPackageParameters`. Physical maintenance instructions live
+inside the package; reservation/notification behavior remains with the governed
+adapter. Its current parameter schema requires a validated failure-mode ID and
+durable classifier context; that classifier field conveys no diagnostic authority.
+
+A fresh `INTERVENTION_REVIEW` run carries exact draft ID/hash through every
+delegation. Current Engineering must cover that draft with `FEASIBLE`, considered
+constraints, no missing constraints, blockers or safety concerns. Operations must
+be `FEASIBLE`, cover the exact draft/current engineering and cite dated durable
+resources. Critic must cover the draft and both current assessments without any
+outstanding rejection or evidence need. Application gates repeat source freshness,
+diagnosis promotion lineage, resource/identity checks, exact parameters, capability
+scope and explicit business assumptions.
+
+The final `VALIDATED Intervention` preserves the reviewed executable content,
+including evidence and risk metadata. Only application envelope fields may change.
+Risk is conservatively `HIGH`. The artifact, accepting application verdict,
+promotion record, current intervention pointer and `INTERVENTION_VALIDATED` phase
+commit together. No approval authority is created by this command.
+
+Promotion records retain incident/run/stage, report/target hashes, input/output
+revisions, verdict/policy, advisory-key-to-durable-ID mapping, evidence, diagnosis
+lineage, exact reviewed draft and deterministic idempotency identity. Successful
+retry lookup occurs before freshness rejection; changed payloads conflict, identical
+concurrent attempts commit once, and retries never reactivate superseded artifacts.
+The existing immutable artifact store holds the new kinds. Additive migration
+`004_authoritative_promotion.sql` enforces unique snapshot/run, report/run and
+promotion/incident/run/stage, idempotency and target indexes. Old data and artifact
+hashes survive; no legacy records are backfilled as promoted.
+
+`prepare_legacy_intervention()` is deprecated compatibility-only. Its artifacts
+lack these promotion records/pointers and fail the new lineage APIs. The state graph
+still checks only graph legality; application commands establish authority and
+include necessary phase transitions in their atomic commit. Failure injection,
+concurrent retries, native SDK review, stale sources, migration preservation and
+legacy exclusion are exercised offline in `tests/test_promotion.py`.
+
+Step 13B still owns engine/lifecycle replacement, approval API/UI binding and final
+execution integration. No AgentCore, live Bedrock verification, retrieval/OEM/RAG,
+procurement, systemic investigation, outcome verification, dashboard redesign,
+PLC control, new prediction model or infrastructure is included in 13A.
+
+**A. Original architecture inventory (historical roadmap baseline)**
 
 The current execution path is:
 
@@ -242,7 +376,8 @@ Future capabilities fit these boundaries:
 
 All agent outputs are typed reports or proposed commands. None receives unrestricted SQL, shell access, or direct mutation tools.
 
-“Write” below means submitting a permitted result through the incident coordinator. The coordinator is the only writer of authoritative incident state.
+“Write” below means submitting advisory findings to trusted application commands.
+Repository/application services are the only writers of authoritative incident state.
 
 | Agent | Responsibility and invocation |
 |---|---|
@@ -250,7 +385,7 @@ All agent outputs are typed reports or proposed commands. None receives unrestri
 | Diagnostic Agent | Investigates telemetry and history, develops competing root causes, assesses confidence, and identifies discriminating evidence. Invoked initially and whenever new evidence could change the diagnosis. |
 | Engineering Agent | Checks technical applicability, component constraints, operating envelopes, and intervention compatibility. Invoked when diagnosis depends on engineering constraints and for every technical intervention before execution. |
 | Operations Agent | Assesses criticality, production consequences, feasible timing, resource contention, and business impact. Invoked when prioritization, timing, downtime, or affected production matters. |
-| Critic / Validator | Independently challenges diagnosis and intervention support, searches for contradictions, attempts falsification, and issues an enforceable verdict. Mandatory before diagnosis acceptance and before intervention release. |
+| Critic / Validator | Independently challenges diagnosis and intervention support and returns advisory findings. Its review is mandatory input to application validation; it cannot issue authoritative verdicts. |
 | Maintenance Planner | Converts an accepted diagnosis into a feasible, executable maintenance proposal using current service capabilities. Invoked after diagnosis validation and when a plan needs revision. |
 
 Detailed contracts:
@@ -290,9 +425,9 @@ Detailed contracts:
 5. **Critic / Validator**
 
    - **Inputs:** Candidate diagnosis or intervention, evidence references, competing hypotheses, engineering findings, unresolved requests.
-   - **Outputs:** `ValidationVerdict`: `ACCEPT`, `REJECT`, or `NEEDS_EVIDENCE`; challenges, falsification attempts, blocking issues, and explicit evidence requests.
+   - **Outputs:** advisory `CriticAssessment`: `ACCEPT`, `REJECT`, or `NEEDS_EVIDENCE`, challenges, contradictions and explicit evidence requests. Only application promotion creates `ValidationVerdict`.
    - **Tools:** Independent retrieval of telemetry, history, document excerpts, related-asset evidence, and deterministic constraint checks.
-   - **State:** Reads underlying evidence independently; submits immutable verdicts and challenges. Cannot silently rewrite the proposal.
+   - **State:** Reads underlying evidence independently; submits advisory reviews and challenges. Cannot silently rewrite the proposal or grant authority.
    - **Separate-agent justification:** It has a different objective: actively find why the proposed conclusion or intervention might be wrong.
 
    Adversarial behavior must be testable. For example:
@@ -308,7 +443,7 @@ Detailed contracts:
 6. **Maintenance Planner**
 
    - **Inputs:** Accepted diagnosis, engineering constraints, operational constraints, current parts/labor/window evidence.
-   - **Outputs:** `Intervention`: ordered steps, required parts and quantities, technician requirements, proposed booking, work-order draft, notification draft, verification criteria, estimated impact.
+   - **Outputs:** `MaintenancePlanAssessment`: advisory ordered steps, resource requirements, verification criteria and exposure assumptions. Application binding and exact-draft review are required before an authoritative `Intervention` exists.
    - **Tools:** Existing inventory, workforce, scheduling, CMMS drafting, notification drafting, and impact calculation.
    - **State:** Reads accepted findings and current resources; submits intervention versions. Cannot reserve, dispatch, approve, or mark work complete.
    - **Separate-agent justification:** It solves execution feasibility after investigative uncertainty has been addressed.
@@ -321,12 +456,13 @@ A future **Procurement Agent** would receive a shortage and validated requiremen
 
 Use the Python **agents-as-tools supervisor pattern**.
 
-Implementation checkpoint (Step 12C): `core/agents/supervisor.py` now provides a
+Native orchestration checkpoint (Steps 12C–13A): `core/agents/supervisor.py` provides a
 native Strands 1.54.0 Supervisor using async `@tool(context=True)` wrappers around
 all five specialist entry points. Strands selects delegation; application-owned
 guards in `core/reliability/orchestration.py` bound calls/evidence and assemble an
-advisory `SupervisorResult`. There is no authoritative promotion, lifecycle wiring,
-or run persistence. The historical design sketch below remains a target; see
+advisory `SupervisorResult`. Step 13A adds the separate persisted run/report and
+application promotion boundary described above; lifecycle wiring remains 13B.
+The historical design sketch below remains a target; see
 [STRANDS_FOUNDATION.md](STRANDS_FOUNDATION.md) for implemented APIs, limits, and
 offline validation. Live Bedrock and AgentCore remain unvalidated.
 
@@ -997,4 +1133,5 @@ Show concise findings and evidence references in the timeline, not an unrestrict
 - A cloud migration that makes the demo dependent on cloud availability.
 - Another privacy-sanitization pass.
 
-This is the architecture plan only. Implementation remains paused pending your explicit approval.
+The roadmap beyond the Step 13A checkpoint remains deferred; the implemented
+promotion boundary is described at the start of this document.

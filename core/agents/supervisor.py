@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 
 from strands import Agent, ToolContext, tool
 from strands.hooks import AfterToolCallEvent, BeforeToolCallEvent
@@ -27,6 +28,14 @@ SUPERVISOR_TOOL_NAMES = frozenset({
 })
 
 SUPERVISOR_PROMPT = """You are Operon's Reliability Supervisor, an advisory reasoning orchestrator.
+Honor context.run_purpose: DIAGNOSIS requires diagnostic and explicit critic review.
+INTERVENTION_REVIEW requires engineering, operations and critic review of the exact
+supplied DRAFT Intervention. All three must return reviewed_intervention_id and its
+exact artifact hash (provided in the application question). Do not change the draft.
+Engineering must reference the current durable diagnosis. Operations and Critic must
+reference the supplied draft; Critic must explicitly cover current engineering and
+operations input_assessment_keys. No new diagnostic or planner report is required
+for this stage. Unknown constraints and dated availability remain blocking.
 Choose specialist tools according to the incident's evidence and unanswered questions.
 A useful workflow is Diagnostic -> Critic -> justified evidence -> Diagnostic refinement
 when needed -> Engineering -> Operations -> Critic -> Maintenance Planner. Adapt it:
@@ -95,7 +104,8 @@ def create_supervisor_agent(run: SupervisorRun) -> Agent:
 
 async def supervise_reliability(runtime: StrandsRuntime, service: EvidenceService,
                                 context: SpecialistContext, *, bounds: SupervisorBounds | None = None,
-                                specialist_runtime: StrandsRuntime | None = None) -> SupervisorResult:
+                                specialist_runtime: StrandsRuntime | None = None,
+                                cancellation_result_handler: Callable[[SupervisorResult], None] | None = None) -> SupervisorResult:
     """Application entry point. Context/configuration errors fail before model access.
 
     Model/tool failures return bounded advisory escalation. Caller cancellation is
@@ -132,6 +142,9 @@ async def supervise_reliability(runtime: StrandsRuntime, service: EvidenceServic
         reason = "INVALID_OUTPUT"
     except asyncio.CancelledError:
         agent.cancel()
+        run.closed = True
+        if cancellation_result_handler is not None:
+            cancellation_result_handler(run.finish(None, "CANCELLED"))
         raise
     except Exception:
         reason = "INVALID_OUTPUT" if run.invalid_output else "MODEL_FAILED"

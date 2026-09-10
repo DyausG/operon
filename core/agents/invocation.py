@@ -5,6 +5,7 @@ import asyncio
 from typing import TypeVar, cast
 
 from botocore.exceptions import BotoCoreError, ClientError
+from strands.hooks import AfterToolCallEvent
 
 from core.reliability.assessments import validate_specialist_assessment, validate_specialist_context
 from core.reliability.evidence import EvidenceService
@@ -22,6 +23,10 @@ or collected durable evidence IDs. Read observations lack a new evidence ID;
 never invent one. Local advisory keys are not durable domain IDs or acceptance.
 Expose uncertainty and missing information. Never fabricate evidence, constraints,
 resource availability, cost, or downtime. Never approve, execute, or mutate services.
+In INTERVENTION_REVIEW, review the exact supplied draft and return the application
+context.review_target_id and context.review_target_hash as reviewed_intervention_id
+and reviewed_intervention_hash. Engineering references its durable diagnosis;
+Operations and Critic reference the draft. Critic explicitly cites current inputs.
 """
 
 
@@ -46,6 +51,12 @@ async def invoke_specialist(runtime: StrandsRuntime, service: EvidenceService,
         tools=specialist_tools(role, service, scope, collected_ids, resources=resources,
                                evidence_requester=evidence_requester),
     )
+    invocation_errors = []
+    def track_error(event: AfterToolCallEvent):
+        if event.result["status"] == "error":
+            invocation_errors.append(event.tool_use["name"])
+    if getattr(scope, "run_purpose", "INVESTIGATION") != "INVESTIGATION":
+        agent.hooks.add_callback(AfterToolCallEvent, track_error)
     try:
         result = await asyncio.wait_for(
             agent.invoke_async(
@@ -62,5 +73,7 @@ async def invoke_specialist(runtime: StrandsRuntime, service: EvidenceService,
     if result.stop_reason not in {"end_turn", "tool_use"} or result.structured_output is None:
         raise SpecialistInvocationError(f"{role} invocation incomplete: {result.stop_reason}",
                                         stop_reason=result.stop_reason)
+    if invocation_errors:
+        raise SpecialistInvocationError("durable promotion run contained invalid output or a failed tool invocation")
     assessment = output_model.model_validate(result.structured_output)
     return cast(Report, validate_specialist_assessment(service.repository, assessment, scope, collected_ids))

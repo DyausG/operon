@@ -9,7 +9,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Annotated, Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, model_serializer, model_validator
 
 Identifier = Annotated[str, Field(min_length=1)]
 Score = Annotated[float, Field(ge=0, le=1)]
@@ -53,6 +53,8 @@ class Incident(Record):
     triage_score: float = Field(default=0, ge=0)
     demo_run_id: str | None = None
     active_run_id: str | None = None
+    current_diagnosis_id: str | None = None
+    current_intervention_id: str | None = None
     mode: Literal["LIVE", "DETERMINISTIC", "MIXED"] = "DETERMINISTIC"
     artifact_ids: tuple[Identifier, ...] = ()
     signal_evidence_ids: tuple[Identifier, ...] = ()
@@ -62,6 +64,16 @@ class Incident(Record):
 
 class Artifact(Record):
     incident_id: Identifier
+
+    @model_serializer(mode="wrap")
+    def preserve_pre_promotion_hashes(self, handler):
+        value = handler(self)
+        # Additive optional metadata must not alter hashes of pre-004 artifacts.
+        for field in ("source_state_hash", "validator_identity", "validation_policy_version", "binding_id",
+                      "check_results", "risk_metadata"):
+            if field in value and value[field] in (None, {}):
+                value.pop(field)
+        return value
 
 
 class Attribution(Contract):
@@ -109,6 +121,8 @@ class Evidence(Artifact):
     collection_key: str | None = None
     derived_from_ids: tuple[Identifier, ...] = ()
     supersedes_id: str | None = None
+    # Application-captured raw local source checkpoint, separate from revisions.
+    source_state_hash: str | None = None
 
     @model_validator(mode="after")
     def validate_signal(self):
@@ -141,7 +155,7 @@ class Hypothesis(Artifact):
     status: Literal["OPEN", "SUPPORTED", "REFUTED", "UNRESOLVED"] = "OPEN"
     supporting_evidence_ids: tuple[Identifier, ...] = ()
     contradicting_evidence_ids: tuple[Identifier, ...] = ()
-    confidence: Score
+    confidence: Score | None
     confidence_basis: str
     calibrated: Literal[False] = False
     falsification_tests: tuple[str, ...]
@@ -157,7 +171,7 @@ class Diagnosis(Artifact):
     evidence_ids: tuple[Identifier, ...]
     alternative_hypothesis_ids: tuple[Identifier, ...] = ()
     unresolved_assumptions: tuple[str, ...] = ()
-    confidence: Score
+    confidence: Score | None
     status: Literal["CANDIDATE", "ACCEPTED", "SUPERSEDED"] = "CANDIDATE"
     supersedes_id: str | None = None
 
@@ -174,6 +188,9 @@ class ValidationVerdict(Artifact):
     blocking_issues: tuple[str, ...] = ()
     evidence_request_ids: tuple[Identifier, ...] = ()
     validator_run_id: Identifier
+    validator_identity: str | None = None
+    validation_policy_version: str | None = None
+    check_results: dict[str, bool] = Field(default_factory=dict)
 
 
 class InterventionStep(Record):
@@ -201,6 +218,8 @@ class Intervention(Artifact):
     status: Literal["DRAFT", "VALIDATED", "AWAITING_APPROVAL", "READY", "EXECUTING",
                     "DISPATCHED", "REJECTED", "SUPERSEDED"] = "DRAFT"
     supersedes_id: str | None = None
+    binding_id: str | None = None
+    risk_metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_order(self):
@@ -213,6 +232,173 @@ class Intervention(Artifact):
             raise ValueError("both window boundaries are required")
         if self.window_start and self.window_end <= self.window_start:
             raise ValueError("window end must follow start")
+        return self
+
+
+class SupervisorRunSnapshot(Artifact):
+    """Application-owned immutable input checkpoint; persisted before invocation."""
+    asset_id: Identifier
+    run_id: Identifier
+    stage: Literal["DIAGNOSIS", "INTERVENTION_REVIEW"]
+    input_revision: int = Field(ge=1)
+    evidence_manifest: dict[str, Identifier]
+    input_artifact_manifest: dict[str, Identifier]
+    advisory_input_manifest: dict[str, Identifier] = Field(default_factory=dict)
+    source_state_hash: Identifier
+    context_payload: dict[str, JsonValue]
+    bounds: dict[str, JsonValue]
+    runtime_identity: dict[str, JsonValue]
+    version_identity: dict[str, Identifier]
+
+
+class SupervisorReport(Artifact):
+    snapshot_id: Identifier
+    asset_id: Identifier
+    run_id: Identifier
+    result_payload: dict[str, JsonValue]
+    result_hash: Identifier
+    input_revision: int = Field(ge=1)
+    completion_revision: int = Field(ge=1)
+    checkpoint_revision: int = Field(ge=1)
+    evidence_manifest: dict[str, Identifier]
+    completion: Literal["MODEL_COMPLETED", "LIMIT_EXHAUSTED", "TIMEOUT", "MODEL_FAILED", "INVALID_OUTPUT", "CANCELLED"]
+    stale_reasons: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_result_payload(self):
+        # Runtime-only import: the domain module does not import agents at startup.
+        # Stored JSON is always parsed as the explicit contract, never unpickled.
+        from core.agents.contracts import SupervisorResult
+        from .repository import content_hash
+        result = SupervisorResult.model_validate(self.result_payload)
+        if (result.incident_id, result.run_id, result.input_revision) != (
+                self.incident_id, self.run_id, self.input_revision):
+            raise ValueError("report result scope differs from wrapper")
+        if result.termination_reason != self.completion:
+            raise ValueError("report completion differs from result")
+        if content_hash(self.result_payload) != self.result_hash:
+            raise ValueError("report result hash mismatch")
+        return self
+
+
+class PromotionRecord(Artifact):
+    run_id: Identifier
+    stage: Literal["diagnosis", "intervention"]
+    source_report_id: Identifier
+    source_report_hash: Identifier
+    validation_policy_version: Identifier
+    input_revision: int = Field(ge=1)
+    output_revision: int = Field(ge=1)
+    target_id: Identifier
+    target_hash: Identifier
+    verdict_id: Identifier
+    advisory_artifact_mapping: dict[str, Identifier]
+    evidence_manifest: dict[str, Identifier]
+    idempotency_key: Identifier
+    request_hash: Identifier
+    source_diagnosis_promotion_id: str | None = None
+    reviewed_draft_id: str | None = None
+    reviewed_content_hash: str | None = None
+
+
+class PerformedCheck(Contract):
+    check: Identifier
+    result: Identifier
+    passed: Literal[True]
+
+
+class TrustedTechnicalConfirmation(Contract):
+    incident_id: Identifier
+    asset_id: Identifier
+    confirmed_mechanism: Identifier
+    failure_mode_code: str | None = None
+    supporting_evidence_ids: tuple[Identifier, ...] = Field(min_length=1)
+    performed_checks: tuple[PerformedCheck, ...] = Field(min_length=1)
+    observed_at: AwareDatetime
+    source: Identifier
+    actor_id: Identifier
+    provenance: Literal["OBSERVED", "SIMULATED"]
+
+
+class WorkPackagePart(Contract):
+    part_id: Identifier
+    quantity: int = Field(strict=True, gt=0)
+
+
+class ConfirmedInventory(Contract):
+    part_id: Identifier
+    part_number: Identifier
+    on_hand_quantity: int = Field(ge=0)
+    reserved_quantity: int = Field(ge=0)
+    required_quantity: int = Field(gt=0)
+
+
+class ResourceConfirmation(Contract):
+    """Trusted dated attestation; roster absence of bookings cannot create this."""
+    incident_id: Identifier
+    asset_id: Identifier
+    technician_id: Identifier
+    qualification: Identifier
+    qualification_valid_until: AwareDatetime
+    available_start: AwareDatetime
+    available_end: AwareDatetime
+    window_start: AwareDatetime
+    window_end: AwareDatetime
+    window_confirmed: Literal[True]
+    parts: tuple[WorkPackagePart, ...] = Field(min_length=1)
+    observed_at: AwareDatetime
+    source: Identifier
+    actor_id: Identifier
+    provenance: Literal["OBSERVED", "SIMULATED"]
+    # Always recomputed from local records by trusted submission, never accepted
+    # as caller-supplied proof. Retains quantities after operational rows change.
+    inventory_snapshot: tuple[ConfirmedInventory, ...] = ()
+
+    @model_validator(mode="after")
+    def dated_scope(self):
+        if not (self.available_start <= self.window_start < self.window_end <= self.available_end
+                and self.qualification_valid_until >= self.window_end):
+            raise ValueError("dated availability and qualification must cover confirmed window")
+        if len({part.part_id for part in self.parts}) != len(self.parts):
+            raise ValueError("duplicate parts")
+        return self
+
+
+class WorkPackageBinding(Artifact):
+    """Trusted concrete inputs. Unknown executable/business fields have no defaults."""
+    diagnosis_id: Identifier
+    source_report_id: Identifier
+    source_plan_key: Identifier
+    asset_id: Identifier
+    failure_mode_id: Identifier
+    technician_id: Identifier
+    parts: tuple[WorkPackagePart, ...] = Field(min_length=1)
+    resource_confirmation_id: Identifier
+    signal_evidence_id: Identifier
+    window_start: AwareDatetime
+    window_end: AwareDatetime
+    duration_minutes: int = Field(strict=True, gt=0)
+    work_instructions: tuple[Identifier, ...] = Field(min_length=1)
+    technical_preconditions: tuple[Identifier, ...] = Field(min_length=1)
+    verification_criteria: tuple[Identifier, ...] = Field(min_length=1)
+    evidence_ids: tuple[Identifier, ...] = Field(min_length=1)
+    estimated_cost: float = Field(strict=True, ge=0)
+    estimated_downtime_minutes: int = Field(strict=True, ge=0)
+    estimated_avoided_loss: float = Field(strict=True, ge=0)
+    business_assumption_version: Identifier
+    safety_review: Identifier
+    safety_relevant: bool = Field(strict=True)
+    reversible: bool = Field(strict=True)
+    external_commitment: bool = Field(strict=True)
+
+    @model_validator(mode="after")
+    def binding_window(self):
+        if (self.window_end - self.window_start).total_seconds() < self.duration_minutes * 60:
+            raise ValueError("duration exceeds confirmed window")
+        if self.estimated_downtime_minutes < self.duration_minutes:
+            raise ValueError("downtime must cover maintenance duration")
+        if len({part.part_id for part in self.parts}) != len(self.parts):
+            raise ValueError("duplicate parts")
         return self
 
 

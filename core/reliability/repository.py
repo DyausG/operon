@@ -43,7 +43,10 @@ class InactiveIncident(ValueError):
 ARTIFACT_TYPES = {cls.__name__: cls for cls in (
     m.Evidence, m.EvidenceRequest, m.Hypothesis, m.Diagnosis, m.ValidationVerdict,
     m.Intervention, m.AgentAction, m.ApprovalRequirement, m.Outcome, m.LegacyAlert,
+    m.SupervisorRunSnapshot, m.SupervisorReport, m.PromotionRecord, m.WorkPackageBinding,
 )}
+PROMOTION_OWNED_TYPES = (m.SupervisorRunSnapshot, m.SupervisorReport, m.PromotionRecord, m.WorkPackageBinding)
+TRUSTED_EVIDENCE_CAPABILITIES = frozenset({"operon.confirm_mechanism", "operon.confirm_resources"})
 REFERENCE_TYPES = {
     "derived_from_ids": m.Evidence, "resolved_by_evidence_ids": m.Evidence,
     "supporting_evidence_ids": m.Evidence, "contradicting_evidence_ids": m.Evidence,
@@ -68,6 +71,24 @@ def new_id() -> str:
 def content_hash(value: dict) -> str:
     return sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
                              allow_nan=False).encode()).hexdigest()
+
+
+def source_state_hash(conn, incident_id: str) -> str:
+    """Conservative local source checkpoint. No adapter/network calls under lock.
+
+    All local operational tables are covered, including raw telemetry and booking
+    changes that do not advance incident revisions. Unrelated assets can invalidate
+    a run in v1; narrowing this requires source-specific versioning in a later step.
+    """
+    tables = ("plant", "assembly_line", "equipment", "sensor", "sensor_reading", "health_score",
+              "failure_mode", "technician", "part", "equipment_part", "work_order",
+              "maintenance_event", "part_reservation", "labor_booking", "work_package")
+    values = {table: [dict(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY rowid")]
+              for table in tables}
+    values["other_incidents"] = [dict(row) for row in conn.execute(
+        "SELECT incident_id,revision FROM incident WHERE incident_id<>? ORDER BY incident_id", (incident_id,))]
+    values["source_generation"] = conn.execute("SELECT generation FROM promotion_source_clock WHERE singleton=1").fetchone()[0]
+    return content_hash(values)
 
 
 class IncidentRepository:
@@ -188,7 +209,7 @@ class IncidentRepository:
             return [ARTIFACT_TYPES[row[0]].model_validate_json(row[1]) for row in conn.execute(
                 "SELECT kind,body_json FROM incident_artifact WHERE incident_id=? ORDER BY rowid", (incident_id,))]
 
-    def _validate_references(self, conn, incident, artifact):
+    def _validate_references(self, conn, incident, artifact, *, historical_input=False):
         scope = getattr(artifact, "equipment_ids", ())
         if isinstance(artifact, m.LegacyAlert):
             scope = (artifact.equipment_id,)
@@ -214,6 +235,8 @@ class IncidentRepository:
         if isinstance(artifact, m.Evidence):
             if artifact.content_hash != content_hash(artifact.payload):
                 raise InvalidReference("evidence content hash does not match payload")
+            if artifact.source_state_hash is not None and artifact.source_state_hash != source_state_hash(conn, incident.id):
+                raise StaleRevision("raw sources changed during evidence collection")
         if isinstance(artifact, (m.ValidationVerdict, m.ApprovalRequirement, m.ApprovalDecision)):
             target_id = artifact.target_id if isinstance(artifact, m.ValidationVerdict) else artifact.intervention_id
             expected_hash = artifact.target_hash if isinstance(artifact, m.ValidationVerdict) else artifact.intervention_hash
@@ -227,10 +250,11 @@ class IncidentRepository:
                 raise InvalidReference("decision does not match approval requirement")
             if artifact.context_revision != incident.revision:
                 raise StaleRevision("approval decision context is stale")
-        if hasattr(artifact, "input_revision") and artifact.input_revision != incident.revision:
+        if not historical_input and hasattr(artifact, "input_revision") and artifact.input_revision != incident.revision:
             raise StaleRevision("artifact input revision is stale")
 
-    def _add_artifact(self, conn, incident, artifact):
+    def _store_artifact(self, conn, incident, artifact, *, historical_input=False):
+        """Private insert primitive. Promotion groups inserts and one state checkpoint."""
         cls = ARTIFACT_TYPES.get(type(artifact).__name__)
         if cls is not type(artifact):
             raise ValueError("unsupported artifact type")
@@ -238,18 +262,21 @@ class IncidentRepository:
         artifact = cls.model_validate_json(artifact.model_dump_json())
         if artifact.incident_id != incident.id:
             raise InvalidReference("wrong incident")
-        self._validate_references(conn, incident, artifact)
+        self._validate_references(conn, incident, artifact, historical_input=historical_input)
         conn.execute("INSERT INTO incident_artifact VALUES (?,?,?,?,?,?,?)",
                      (artifact.id, incident.id, cls.__name__, artifact.schema_version,
                       artifact.created_at.isoformat(), content_hash(artifact.model_dump(mode="json")),
                       artifact.model_dump_json()))
+
+    def _add_artifact(self, conn, incident, artifact):
+        self._store_artifact(conn, incident, artifact)
         changes = {"artifact_ids": (*incident.artifact_ids, artifact.id)}
         if isinstance(artifact, m.Evidence) and artifact.kind == "model_signal":
             changes["signal_evidence_ids"] = (*incident.signal_evidence_ids, artifact.id)
         if isinstance(artifact, m.LegacyAlert):
             changes["legacy_alert_id"] = artifact.id
         incident = self._update(conn, incident, **changes)
-        self._event(conn, incident, "ARTIFACT_ADDED", {"artifact_id": artifact.id, "kind": cls.__name__})
+        self._event(conn, incident, "ARTIFACT_ADDED", {"artifact_id": artifact.id, "kind": type(artifact).__name__})
         if isinstance(artifact, m.ApprovalRequirement):
             self._event(conn, incident, "APPROVAL_REQUESTED", {
                 "requirement_id": artifact.id,
@@ -277,6 +304,9 @@ class IncidentRepository:
         return incident
 
     def add_artifact(self, artifact: m.Artifact, *, expected_revision: int) -> m.Incident:
+        if isinstance(artifact, PROMOTION_OWNED_TYPES) or (
+                isinstance(artifact, m.Evidence) and artifact.source_capability in TRUSTED_EVIDENCE_CAPABILITIES):
+            raise InvalidReference("promotion-owned records require the trusted PromotionService command")
         with self._write() as conn:
             incident = self._fetch(conn, artifact.incident_id)
             self._check(incident, expected_revision)

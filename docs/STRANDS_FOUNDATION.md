@@ -1,10 +1,11 @@
-# Strands foundation, specialists, and Reliability Supervisor (Steps 12A–12C)
+# Strands foundation and application promotion boundary (Steps 12A–13A)
 
 Strands supplies model interaction, tool selection, and Pydantic structured output.
 Operon supplies evidence capabilities and owns persistence, lifecycle, validation,
 promotion, approval, and execution. Five independent specialists and a native
 Reliability Supervisor are available through explicit application entry points.
-The running demo/provider path remains unchanged; lifecycle integration is deferred.
+Step 13A adds durable application run/report storage and authoritative promotion.
+The running demo/provider path remains unchanged; engine integration is deferred to 13B.
 
 ## SDK and runtime
 
@@ -91,7 +92,7 @@ inputs are capped at 4,000 bytes and unsupported capabilities fail explicitly.
 Read observations need `request_evidence` before they can be cited as new durable
 evidence. Only successfully returned request evidence IDs join the citation set.
 
-## Advisory output and future promotion
+## Advisory output and separate application promotion
 
 `DiagnosticAssessment`, `EngineeringAssessment`, `OperationsAssessment`,
 `CriticAssessment`, and `MaintenancePlanAssessment` are bounded Pydantic reports.
@@ -103,12 +104,14 @@ advice, never executable parameters or policy decisions.
 ```text
 Strands DiagnosticAssessment
     -> application schema, incident, and supplied/collected citation checks
-    -> future independently reviewed Hypothesis / Diagnosis promotion
+    -> persisted advisory SupervisorReport
+    -> independent application PromotionService gates
+    -> atomic Hypothesis / Diagnosis promotion
 ```
 
-The current application validator only checks structure and reference scope. It
-does not establish causal truth, evidence sufficiency, freshness, or approval.
-Promotion is deliberately deferred. The specialist cannot write Diagnosis,
+The specialist validator in `assessments.py` checks structure and reference scope.
+It does not establish causal truth, evidence sufficiency, freshness, or approval.
+Step 13A implements these separate promotion prerequisites in `promotion.py`. The specialist cannot write Diagnosis,
 ValidationVerdict, Intervention, ApprovalRequirement, or Outcome; it cannot change
 phase, reserve parts, book labor, commit a schedule, dispatch notifications, or
 invoke the governed executor. Requesting evidence may append only the existing
@@ -116,9 +119,9 @@ evidence/request records and corresponding incident revisions/events.
 
 Each specialist has a narrow prompt, an explicit capability allowlist,
 and application validation around its advisory contract. The supervisor now wraps
-these entry points as native Strands agents-as-tools. Add independent review,
-revision/freshness checks, cancellation handling, and promotion in application code
-before integrating them into lifecycle or governance. Do not pass repositories or
+these entry points as native Strands agents-as-tools. `PromotionService` adds
+independent review, revision/freshness checks, cancellation reporting, and atomic
+promotion. Lifecycle orchestration and governance integration remain Step 13B. Do not pass repositories or
 consequential service methods as tools.
 
 ## Independent specialist APIs and tools
@@ -163,7 +166,8 @@ labels and reports `UNKNOWN`: there is no persisted production calendar or dated
 maintenance-window source. Empty bookings never imply an available production window.
 Resource results are snapshots, not reservations or new durable Evidence. Agents
 can reference their source record IDs in observations but cannot cite them as
-Evidence IDs. Durable resource-evidence collection remains a later application task.
+Evidence IDs. Step 13A provides a separate trusted application submission for
+durable dated resource confirmation; agents cannot invoke it.
 
 ## Bounded inputs and reference validation
 
@@ -171,10 +175,11 @@ Evidence IDs. Durable resource-evidence collection remains a later application t
 `DiagnosticContext` with lifecycle state, up to 10 selected durable domain artifacts,
 and up to five supplied `AdvisoryInput` reports. The whole packet, including its
 maximum 20 evidence records, remains capped at 64,000 bytes. Artifact snapshots
-retain their durable IDs and status; no new persistence model is introduced.
+retain their durable IDs and status. The lower-level context remains disposable;
+`PromotionService` freezes its complete payload in a durable run snapshot.
 
 An `AdvisoryInput.key` is an application-assigned local packet label, never a
-durable assessment ID. This supports review before authoritative promotion exists:
+durable assessment ID. This supports advisory review independently of promotion:
 
 ```python
 from core.agents.contracts import AdvisoryInput
@@ -262,8 +267,8 @@ scope/reference checks, dependency closure, budgets, evidence collection, and fi
 result assembly. It calls only existing evidence/application boundaries. It never
 adds Diagnosis, Intervention, ValidationVerdict, ApprovalRequirement, or Outcome,
 changes lifecycle phase, reserves stock, assigns labor, books downtime, writes CMMS
-operations, or invokes consequential execution. No new run/audit persistence or
-schema migration is introduced. EvidenceService may append its existing evidence,
+operations, or invokes consequential execution. Step 13A wraps this lower-level
+runner with separate durable run/report commands. EvidenceService may append evidence,
 request, resolution, incident revision, and event records.
 
 `SupervisorDecision` is the native Pydantic model output: incident/run identity,
@@ -282,7 +287,7 @@ human review, including `ADVISORY_CONCLUSION`; that label never grants approval.
 The effective disposition conservatively retains unknown engineering constraints,
 operational blockers, critic objections, failed acquisitions, and model/tool errors.
 An optimistic model summary cannot erase these findings. A supported conclusion
-requires all five roles, a recommended hypothesis, current linked engineering and
+in the default `INVESTIGATION` purpose requires all five roles, a recommended hypothesis, current linked engineering and
 operations advice, critic review of those current inputs, and a planner proposal
 with known risk/exposure metadata. Re-review of an unchanged subject cannot erase
 earlier objections. A revised report needs a new review; old reports remain in the
@@ -339,7 +344,7 @@ and oversized output fails without truncation. Missing evidence remains explicit
 does not mean a diagnostic question is resolved. Diagnostic refinement and fresh
 critic review may establish a more complete advisory packet. Unsupported inspection
 and OEM retrieval stay unresolved. Resource reads remain local, read-only snapshots;
-this step does not create durable resource-evidence capabilities.
+these tools cannot create the trusted dated resource confirmation required for promotion.
 
 Model failures, invalid final references/output, specialist failures, evidence
 failures, and exhausted budgets produce bounded unresolved/blocked/escalated results.
@@ -377,6 +382,171 @@ for specialist calls. Offline tests script only the Model boundary and exercise
 actual nested Strands loops. Each run and each specialist conversation is fresh;
 do not share mutable scripted model state between concurrent incident runs.
 
+## Step 13A: persisted runs and authoritative promotion
+
+**Agents reason. The application owns authority.** `SupervisorResult` remains
+advisory, including a schema-valid result with Critic `ACCEPT`. No agent tool
+exposes `PromotionService`, trusted confirmation submission, or authority pointers.
+The existing direct `supervise_reliability` API remains an advisory-only API.
+
+The trusted application uses `PromotionService.run_supervisor(...)`. It calls
+`start_run(...)` to claim an application-assigned `active_run_id` and persist one
+immutable `SupervisorRunSnapshot` in a short `BEGIN IMMEDIATE` transaction. The
+snapshot includes incident/asset/stage, the committed input revision, exact evidence
+and artifact hashes, the complete input packet, bounds, runtime settings and model
+implementation/configuration identity, prompt/schema hashes, SDK version and time.
+This version starts fresh advisory packets; its advisory input manifest is empty.
+Prior planner advice is referenced through its durable source report when binding
+a draft, rather than injecting caller-supplied advisory JSON into a new run.
+
+Model invocation starts **after** the transaction commits. On return, the private
+application completion command persists one terminal `SupervisorReport`: snapshot
+reference, complete result JSON and hash, input/completion/checkpoint revisions,
+evidence manifest, termination classification, staleness reasons and completion
+time. Loading a report explicitly validates its JSON as `SupervisorResult`.
+Cancellation retains the native partial audit and propagates cancellation; model
+construction failures also leave a terminal failed report. Process death can leave
+a snapshot without a report; automatic recovery/reconciliation remains deferred.
+
+The revision sequence is explicit:
+
+```text
+incident revision r
+  -> atomic run claim + snapshot at input revision r+1
+  -> model reasoning, with no application write transaction held
+  -> completion observes c; report commits checkpoint c+1
+  -> promotion requires c == r+1 and current revision == c+1
+  -> all promoted artifacts + pointer + phase commit in one revision c+2
+```
+
+Any incident revision change during reasoning makes the report ineligible,
+including evidence requested and acquired by the same run. The original input
+revision is never rewritten. Such a report remains an evidence-acquisition audit;
+a new run over the committed evidence is required. Later evidence, superseded
+sources, unresolved durable evidence requests, or a newer active run also block
+promotion. An old run's late report is retained with a stale classification.
+
+Raw operational changes are checked independently. Migration 004 adds a local
+source generation counter with insert/update/delete triggers over the operational
+source tables. Run snapshots and application-collected evidence retain a hash of
+the raw source rows, generation and other incidents' revisions. Promotion compares
+these under the same SQLite write lock; even a source change followed by restoration
+invalidates the checkpoint. Version 1 deliberately uses a broad local manifest, so
+unrelated asset changes can require fresh collection and reasoning. Older evidence
+without a source checkpoint is not eligible for new promotion. No external adapter
+or model call happens inside a promotion transaction.
+EvidenceService refreshes stale cached source reads into new superseding evidence
+and request records; unchanged-source retries retain their existing identities.
+
+### Diagnosis
+
+`submit_technical_confirmation` accepts a typed `TrustedTechnicalConfirmation`
+from a trusted application caller and stores it as `Evidence(kind="inspection")`.
+It records exact incident/asset/mechanism, optional validated failure-mode code,
+durable supporting evidence, checks actually performed and their results,
+observation time, actor/source and explicit `OBSERVED` or `SIMULATED` provenance.
+Submission verifies supporting technical evidence; classifier/model evidence alone
+is insufficient. The reserved confirmation capability cannot be written through
+the generic public repository method and is not an agent tool. Authentication of
+the submitting inspector/dispatcher belongs to the calling application; no public
+submission endpoint or identity system is added in 13A.
+
+`promote_diagnosis` loads a report by ID; it never accepts a result payload. It
+requires a fresh successful run, no cancellation/timeouts/invalid outputs/limits/
+failed invocations, canonical diagnostic advice from that run, a recommended
+hypothesis with nonempty uncontradicted technical support, explicit Critic review
+of the unchanged selected assessment, no unresolved requests or objections, valid
+evidence closure, and an **exact** compatible trusted mechanism confirmation.
+Missing confirmation raises `PromotionRefused(disposition="NEEDS_EVIDENCE")`.
+There is no confidence threshold, fuzzy reconciliation or SHAP causal inference.
+
+The transaction creates new application IDs for competing `Hypothesis` artifacts,
+an accepted `Diagnosis`, an application `ValidationVerdict(ACCEPT)`, a
+`PromotionRecord`, `current_diagnosis_id`, and `DIAGNOSIS_VALIDATED`. The record maps
+report-local hypothesis keys to durable IDs and records report/target hashes,
+policy, input/output revisions, verdict, evidence and idempotency identity.
+Alternative hypotheses and suggested falsification tests survive translation.
+Suggested tests do not become performed falsification attempts. Numerical causal
+confidence is `None`; advisory confidence stays in the report. Critic findings are
+preserved in reports and verdict challenges.
+
+**CriticAssessment(ACCEPT) != ValidationVerdict(ACCEPT).** Application verdicts
+carry validator identity `operon.application.promotion`, policy
+`operon-promotion-1`, original input revision, exact target hash and named
+deterministic check results. They are constructed only after these gates pass.
+
+### Exact draft review and intervention promotion
+
+`create_draft` requires current diagnosis promotion lineage and structured trusted
+`WorkPackageBinding` fields: source plan/report, equipment, validated failure-mode
+ID, qualified technician, BOM quantities, dated confirmed availability/window,
+duration, reviewed instructions, technical preconditions, evidence, explicit cost,
+downtime, avoided loss, business assumption version and safety/risk metadata.
+There are no zero defaults for missing business values. Planner exposure is never
+substituted for cost or avoided loss. This first adapter path requires a validated
+failure-mode ID; diagnoses without one remain non-executable through this path.
+
+`submit_resource_confirmation` persists a separate typed, dated trusted resource
+attestation as resource evidence. It checks the actual local BOM, stock less
+reservations, same-plant technician identity and exact equipment-class skill.
+The resource evidence retains the application-checked part numbers, on-hand and
+reserved quantities and required quantities for later audit.
+Availability, qualification validity and production-window confirmation must cover
+the dated work interval. Read-only workforce/schedule snapshots with `UNKNOWN`
+remain insufficient; an absence of bookings supplies no confirmation. No inventory
+reservation, schedule booking or notification is made here.
+
+The application stores the binding and a `DRAFT Intervention` together, entering
+`PLANNING` if necessary. It contains one governed `create_work_package` step;
+physical instructions remain inside that step. The existing `WorkPackageParameters`
+contract validates concrete parameters. Its legacy classifier-context field comes
+from a durable model signal and has no causal confidence or business meaning.
+
+A fresh run with `stage="INTERVENTION_REVIEW"` receives the current diagnosis,
+application verdict and exact draft. `review_target_id`/`review_target_hash` survive
+every delegation; Engineering, Operations and Critic explicitly return that pair.
+Engineering must be `FEASIBLE` with reviewed constraints, no missing constraints,
+blockers or safety concerns. Operations must be `FEASIBLE`, cite durable resource
+confirmation and current engineering advice. Critic must review the exact draft
+and the current engineering/operations inputs without outstanding objections.
+For these durable stages, failed specialist tools or invalid intermediate output
+make the invocation ineligible even if the model later emits a valid schema.
+
+`promote_intervention` independently repeats freshness, lineage, resource, window,
+identity, parameter, capability and business checks. It produces a `VALIDATED`
+artifact whose executable content hash equals the reviewed draft's; only identity,
+timestamp, status, revision and supersession envelope fields may differ. Any
+substantive change requires a new binding/draft/review. Application risk is
+conservatively `HIGH`. The accepting verdict, promotion lineage including the
+diagnosis promotion and draft hash, `current_intervention_id`, and
+`INTERVENTION_VALIDATED` transition commit atomically. No approval is created.
+
+### Retry, migration and compatibility
+
+Promotion identity is deterministic per incident/run/stage. Successful lookup
+precedes revision/freshness rejection, so a retry returns the original record/IDs.
+A changed command payload under that identity is a conflict. `BEGIN IMMEDIATE`
+and unique indexes serialize concurrent attempts. Retrying an old success never
+writes pointers or reactivates superseded authority. Rollback tests inject failure
+after every artifact, pointer/revision and event write for both promotion stages.
+
+Migration `004_authoritative_promotion.sql` uses the existing immutable artifact
+store for snapshots, reports, bindings and promotion records. Unique indexes enforce
+one snapshot/run, one terminal report/run, one promotion/incident/run/stage,
+idempotency identity and target. It is additive and repeat-safe under the existing
+migration ledger. Optional new metadata does not change hashes of old artifacts;
+legacy records receive no promotion backfill.
+
+`prepare_legacy_intervention` is explicitly deprecated and compatibility-only.
+Its artifacts lack new promotion lineage and authority pointers, and cannot satisfy
+new promotion APIs. Its existing engine/governance behavior remains pending 13B.
+The pure state graph still grants no authority; promotion commands establish the
+prerequisites and include their phase transition in the same transaction.
+
+Run `uv run pytest tests/test_promotion.py` for durable/native paths, negative gates,
+source freshness, exact review, rollback, concurrency, migration and legacy checks.
+These tests require neither AWS credentials nor network access.
+
 ## Scope and verification
 
 No material architecture deviations. The package lives at `core/agents/` as allowed
@@ -385,10 +555,10 @@ Assessment names distinguish advice from the authoritative artifacts in the sket
 The legacy deterministic fallback remains available; no second agent framework or
 new deterministic diagnostic workflow is introduced.
 
-Full authoritative promotion and lifecycle integration (Step 13), freshness locks,
-durable orchestration restart/reconciliation, live fallback integration, AgentCore,
+Engine/lifecycle integration (Step 13B), durable orchestration restart/reconciliation,
+live fallback integration, AgentCore,
 RAG/OEM ingestion, procurement, outcome verification, provider migration, and frontend
-work remain deferred. No public README changes or deployment are part of Step 12C.
+work remain deferred. No public README changes or deployment are part of Step 13A.
 
 Run `uv run pytest tests/test_supervisor.py tests/test_strands_agents.py tests/test_specialists.py` for native SDK construction,
 scripted model/tool/structured-output cycles, import checks, budget/error behavior,
@@ -402,7 +572,8 @@ resource observations may include seeded demo data. Prompts and scripted native
 model tests verify integration contracts and state boundaries, not live-model
 reasoning quality or factual truth of narrative claims. Long dependency chains can
 exceed the five-report/64 KB packet bound and require a new application-selected
-investigation packet. No durability or concurrent-run freshness lock is claimed.
+investigation packet. Lower-level direct specialist/supervisor calls remain advisory
+and disposable; only the PromotionService wrapper establishes a durable run checkpoint.
 Real Bedrock access, live supervisor/specialist-quality evaluation, and AgentCore
 functionality have not been validated. No semantic validator can
 infer missing engineering facts from a valid citation alone.
