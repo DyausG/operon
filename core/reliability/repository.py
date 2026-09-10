@@ -503,14 +503,21 @@ class IncidentRepository:
             })
             return updated, claimed, True
 
-    def finish_execution_claim(self, receipt: m.ExecutionReceipt, *, expected_revision: int) -> m.Incident:
-        """Append a terminal receipt and checkpoint the corresponding claim."""
+    def finish_execution_claim(self, receipt: m.ExecutionReceipt, *, expected_revision: int | None = None) -> m.Incident:
+        """Append a terminal receipt and checkpoint the corresponding claim.
+
+        The completion CAS is the claim identity (key, attempt, IN_FLIGHT), not the
+        pre-call incident revision: a consequential external action already happened,
+        and evidence arriving during the call must never lose its receipt. Callers may
+        still pass an explicit revision when they require it.
+        """
         receipt = m.ExecutionReceipt.model_validate_json(receipt.model_dump_json())
         if receipt.status not in ("CONFIRMED", "FAILED", "UNKNOWN"):
             raise ValueError("execution completion requires a terminal receipt")
         with self._write() as conn:
             incident = self._fetch(conn, receipt.incident_id)
-            self._check(incident, expected_revision)
+            if expected_revision is not None:
+                self._check(incident, expected_revision)
             row = conn.execute("SELECT * FROM execution_claim WHERE idempotency_key=?",
                                (receipt.idempotency_key,)).fetchone()
             if row is None:

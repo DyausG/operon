@@ -204,11 +204,22 @@ class ExecutionPolicy:
 
 
 class ApprovalLedger:
-    """Trusted application commands for requesting and recording approvals."""
+    """Legacy/compatibility approval commands for non-promoted interventions.
+
+    Since Step 13B, application-promoted interventions are approved only through
+    core.reliability.lifecycle.LifecycleService, whose requirement creation and
+    decision recording are each atomic with their phase transition. This ledger
+    refuses promoted targets so legacy machinery cannot mint authority for them.
+    """
 
     def __init__(self, repository: IncidentRepository, policy: ExecutionPolicy | None = None):
         self.repository = repository
         self.policy = policy or ExecutionPolicy()
+
+    def _refuse_promoted(self, incident_id: str, intervention_id: str) -> None:
+        if any(isinstance(item, m.PromotionRecord) and item.target_id == intervention_id
+               for item in self.repository.list_artifacts(incident_id)):
+            raise PermissionError("promoted interventions use LifecycleService approval commands")
 
     def evaluate(self, incident_id: str, intervention_id: str) -> PolicyEvaluation:
         incident = self.repository.fetch_incident(incident_id)
@@ -221,6 +232,7 @@ class ApprovalLedger:
                                                                             intervention_id=intervention_id))
 
     def request(self, incident_id: str, intervention_id: str) -> m.ApprovalRequirement | None:
+        self._refuse_promoted(incident_id, intervention_id)
         incident = self.repository.fetch_incident(incident_id)
         intervention = self.repository.get_artifact(incident_id, intervention_id)
         if not isinstance(intervention, m.Intervention):
@@ -260,6 +272,9 @@ class ApprovalLedger:
         requirement = self.repository.get_artifact(incident_id, requirement_id)
         if not isinstance(requirement, m.ApprovalRequirement):
             raise InvalidReference("approval requirement not found")
+        self._refuse_promoted(incident_id, requirement.intervention_id)
+        if requirement.policy_version != POLICY_VERSION or requirement.mode != "HUMAN":
+            raise PermissionError("requirement belongs to the lifecycle approval boundary")
         if not actor_id.strip() or not actor_role.strip() or not rationale.strip():
             raise ValueError("approval actor, role, and rationale are required")
         record = m.ApprovalDecision(

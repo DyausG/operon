@@ -348,10 +348,10 @@ function AlertCard({ a, expanded, onToggle, approve, reject }) {
               <>
                 <GovernanceVerdict g={p.governance} />
                 <div className="actions-row">
-                  <button className="btn-approve" onClick={() => approve(a.equipment_id)}>
+                  <button className="btn-approve" onClick={() => approve(a)}>
                     ✓ Approve &amp; dispatch
                   </button>
-                  <button className="btn-reject" onClick={() => reject(a.equipment_id)}>Reject</button>
+                  <button className="btn-reject" onClick={() => reject(a)}>Reject</button>
                 </div>
               </>
             )}

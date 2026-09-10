@@ -2,15 +2,97 @@
 
 Explicitly local: no registry selection, assignment, schedule proposal, or CMMS
 write method is called. These observations neither reserve nor guarantee resources.
+
+The module-level ``require_*`` rules below are the single deterministic source of
+truth for "is this technician/part usable right now". PromotionService applies
+them at promotion and governance time; the local CMMS adapter re-applies them
+inside the very transaction that reserves parts and books labor, so a check that
+passed earlier is never trusted at dispatch.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import Field
 
 from core import db
 from .evidence import CapabilityProvenance, DataOrigin, EvidenceCapabilities, ReadContract
+
+
+class ResourceUnavailable(ValueError):
+    """A deterministic dispatch resource rule failed against the current local rows.
+
+    Raised before any consequential row is written; when raised inside a write
+    transaction the caller rolls that transaction back, so the failure is
+    definitive for execution retry purposes (nothing was committed).
+    """
+    failure_is_definitive = True
+
+
+def require_qualified_technician(conn, asset_id: str, technician_id: str):
+    """Technician exists, is available, is on the asset's plant and holds the exact class skill."""
+    asset = conn.execute("SELECT e.*, l.plant_id FROM equipment e JOIN assembly_line l USING(line_id) "
+                         "WHERE equipment_id=?", (asset_id,)).fetchone()
+    tech = conn.execute("SELECT * FROM technician WHERE technician_id=?", (technician_id,)).fetchone()
+    if not (asset and tech and tech["available"] == 1 and tech["plant_id"] == asset["plant_id"]):
+        raise ResourceUnavailable("invalid or unavailable technician")
+    skills = {item.strip().upper() for item in (tech["skills"] or "").split(",")}
+    if asset["equipment_class"].upper() not in skills:
+        raise ResourceUnavailable("technician lacks exact recorded qualification")
+    return asset, tech
+
+
+def require_part_stock(conn, part_id: str, required_qty: int) -> dict:
+    """Recorded on-hand stock minus RESERVED reservations covers ``required_qty``."""
+    row = conn.execute(
+        "SELECT p.part_id, p.part_number, p.on_hand_qty, "
+        "(SELECT COALESCE(SUM(pr.qty),0) FROM part_reservation pr "
+        "WHERE pr.part_id=p.part_id AND pr.status='RESERVED') reserved_qty "
+        "FROM part p WHERE p.part_id=?", (part_id,)).fetchone()
+    if (row is None or not row["part_number"] or row["on_hand_qty"] is None or row["reserved_qty"] < 0
+            or not isinstance(required_qty, int) or required_qty < 1
+            or row["on_hand_qty"] - row["reserved_qty"] < required_qty):
+        raise ResourceUnavailable(f"insufficient uncommitted stock for part {part_id}")
+    return dict(row)
+
+
+def parse_window_interval(label) -> tuple[datetime, datetime] | None:
+    """``start/end`` ISO-8601 interval, as written by promoted work packages; else None."""
+    if not isinstance(label, str) or label.count("/") != 1:
+        return None
+    try:
+        start, end = (datetime.fromisoformat(part) for part in label.split("/"))
+    except ValueError:
+        return None
+    return (start, end) if start < end else None
+
+
+def require_no_booking_conflict(conn, technician_id: str, window_label) -> None:
+    """Reject a provable overlap between the intended window and an active booking.
+
+    Limitation: labor_booking stores only a free-text ``window_label`` and a
+    duration. A conflict is provable only when both the intended window and the
+    existing BOOKED/STARTED booking carry dated ``start/end`` intervals that can be
+    compared. Undated legacy labels (``HH:MM–HH:MM``) or mixed naive/aware dates
+    cannot prove either a conflict or its absence and are not enforced.
+    """
+    intended = parse_window_interval(window_label)
+    if intended is None:
+        return
+    rows = conn.execute("SELECT booking_id, window_label FROM labor_booking WHERE technician_id=? "
+                        "AND status IN ('BOOKED','STARTED')", (technician_id,)).fetchall()
+    for row in rows:
+        existing = parse_window_interval(row["window_label"])
+        if existing is None:
+            continue
+        try:
+            overlaps = intended[0] < existing[1] and existing[0] < intended[1]
+        except TypeError:  # naive vs aware datetimes are not comparable; not provable
+            continue
+        if overlaps:
+            raise ResourceUnavailable(
+                f"technician {technician_id} already has active booking {row['booking_id']} overlapping the window")
 
 
 class ResourceQuery(ReadContract):

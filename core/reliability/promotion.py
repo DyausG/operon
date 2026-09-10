@@ -17,6 +17,7 @@ from core.agents.contracts import (
 from . import models as m
 from .governance import WorkPackageParameters
 from .repository import IncidentRepository, InvalidReference, StaleRevision, content_hash, new_id, source_state_hash, utcnow
+from .resources import ResourceUnavailable, require_part_stock, require_qualified_technician
 from .state import validate_transition
 
 POLICY_VERSION = "operon-promotion-1"
@@ -157,13 +158,13 @@ class PromotionService:
         return evidence
 
     def _resource_rows(self, conn, asset_id, technician_id, parts):
-        asset = conn.execute("SELECT e.*, l.plant_id FROM equipment e JOIN assembly_line l USING(line_id) "
-                             "WHERE equipment_id=?", (asset_id,)).fetchone()
-        tech = conn.execute("SELECT * FROM technician WHERE technician_id=?", (technician_id,)).fetchone()
-        _require(asset and tech and tech["available"] == 1 and tech["plant_id"] == asset["plant_id"],
-                 "invalid or unavailable technician", evidence=True)
-        skills = {item.strip().upper() for item in (tech["skills"] or "").split(",")}
-        _require(asset["equipment_class"].upper() in skills, "technician lacks exact recorded qualification", evidence=True)
+        # Technician and stock rules are the shared deterministic dispatch rules; the
+        # local CMMS adapter re-applies the same functions inside its reservation
+        # transaction, so promotion-time success is never trusted at dispatch.
+        try:
+            asset, _ = require_qualified_technician(conn, asset_id, technician_id)
+        except ResourceUnavailable as exc:
+            raise PromotionRefused(str(exc), disposition="NEEDS_EVIDENCE") from exc
         rows = {}
         bom = {row["part_id"]: row for row in conn.execute(
             "SELECT ep.*,p.part_number,p.on_hand_qty FROM equipment_part ep JOIN part p USING(part_id) "
@@ -171,12 +172,13 @@ class PromotionService:
         _require(bom and set(bom) == {part.part_id for part in parts}, "binding must cover the recorded BOM exactly", evidence=True)
         for part in parts:
             row = bom[part.part_id]
-            reserved = conn.execute("SELECT COALESCE(SUM(qty),0) FROM part_reservation "
-                                    "WHERE part_id=? AND status='RESERVED'", (part.part_id,)).fetchone()[0]
-            _require(reserved >= 0 and row["part_number"] and row["qty_per_service"] is not None
-                     and part.quantity >= row["qty_per_service"] and row["on_hand_qty"] is not None
-                     and row["on_hand_qty"] - reserved >= part.quantity, "insufficient parts or unknown BOM quantities", evidence=True)
-            rows[part.part_id] = dict(row) | {"reserved_quantity": reserved}
+            _require(row["qty_per_service"] is not None and part.quantity >= row["qty_per_service"],
+                     "insufficient parts or unknown BOM quantities", evidence=True)
+            try:
+                stock = require_part_stock(conn, part.part_id, part.quantity)
+            except ResourceUnavailable as exc:
+                raise PromotionRefused("insufficient parts or unknown BOM quantities", disposition="NEEDS_EVIDENCE") from exc
+            rows[part.part_id] = dict(row) | {"reserved_quantity": stock["reserved_qty"]}
         return asset, rows
 
     @staticmethod
@@ -416,10 +418,18 @@ class PromotionService:
             self._current(conn, incident.id, artifact)
         requests = self._all(conn, incident.id, m.EvidenceRequest)
         superseded = {item.supersedes_id for item in requests}
-        _require(not any(item.id not in superseded and item.status != "SATISFIED" for item in requests),
+        current_requests = [item for item in requests if item.id not in superseded]
+        _require(not any(item.status == "OPEN" for item in current_requests),
                  "unresolved durable evidence request", evidence=True)
-        _require(all(item.resolved_by_evidence_ids and set(item.resolved_by_evidence_ids) <= evidence.keys()
-                     for item in requests if item.id not in superseded),
+        # Step 13B correction: a request resolved only by SUSPECT/MISSING evidence
+        # (UNAVAILABLE capability, partial baseline context) can never be part of a
+        # packet under the GOOD-quality rule above, so it does not block. Resolved
+        # GOOD evidence, including stale GOOD evidence, must still be in the packet.
+        def grounded(item):
+            resolved = [self._get(conn, incident.id, key, m.Evidence) for key in item.resolved_by_evidence_ids]
+            return bool(resolved) and (set(item.resolved_by_evidence_ids) <= evidence.keys()
+                                       or all(record.quality != "GOOD" for record in resolved))
+        _require(all(grounded(item) for item in current_requests),
                  "resolved evidence request is not grounded in the reviewed evidence packet", evidence=True)
         result, advice = self._audit_result(snapshot, report)
         return snapshot, report, result, advice, evidence

@@ -151,7 +151,7 @@ def test_migrations_twice_preserve_existing_database_and_incidents(repo):
     seed()
     assert repo.fetch_incident(incident.id) == incident
     with db.get_conn(repo.path) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM schema_migration").fetchone()[0] == 4
+        assert conn.execute("SELECT COUNT(*) FROM schema_migration").fetchone()[0] == 5
         assert conn.execute("SELECT COUNT(*) FROM equipment").fetchone()[0] == 8
         assert conn.execute("SELECT COUNT(*) FROM health_score WHERE scored_at='preserved'").fetchone()[0] == 1
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
@@ -168,7 +168,8 @@ def test_migrate_pre_operon_schema_without_replacing_it(tmp_path):
     with db.get_conn(path) as conn:
         assert conn.execute("SELECT plant_name FROM plant").fetchone()[0] == "Existing plant"
         assert [row[0] for row in conn.execute("SELECT version FROM schema_migration ORDER BY version")] == [
-            "001_operon", "002_governed_execution", "003_execution_claim_adapter", "004_authoritative_promotion"]
+            "001_operon", "002_governed_execution", "003_execution_claim_adapter", "004_authoritative_promotion",
+            "005_reliability_lifecycle"]
 
 
 def test_concurrent_duplicate_admission_and_distinct_machines(repo):
@@ -237,7 +238,7 @@ def test_explicit_demo_reset_clears_incidents_but_preserves_migration(repo, rese
     reset()
     assert repo.list_active_incidents() == []
     with db.get_conn(repo.path) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM schema_migration").fetchone()[0] == 4
+        assert conn.execute("SELECT COUNT(*) FROM schema_migration").fetchone()[0] == 5
         assert conn.execute("SELECT COUNT(*) FROM equipment").fetchone()[0] == 8
 
 

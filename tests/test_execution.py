@@ -353,3 +353,21 @@ def test_public_mutation_surfaces_cannot_bypass_governance(repo):
     assert "raise_alert" not in exposed
     assert "execute_governed_intervention" in exposed
     assert tools.check_parts("AC-COMP-01")["parts"]
+
+
+def test_failure_status_prefers_the_exception_own_definitive_declaration():
+    from core.reliability.execution import failure_status
+    from core.reliability.resources import ResourceUnavailable
+
+    class Blanket:
+        failure_is_definitive = True
+
+    class Unsure:
+        pass
+    # A pre-commit rejection raised inside the adapter's rolled-back transaction is definitive
+    # even when the adapter itself does not claim every failure is.
+    assert failure_status(Unsure(), ResourceUnavailable("no stock")) == "FAILED"
+    assert failure_status(Blanket(), ResourceUnavailable("no stock")) == "FAILED"
+    assert failure_status(Blanket(), RuntimeError("rejected")) == "FAILED"
+    assert failure_status(Unsure(), TimeoutError("lost")) == "UNKNOWN"
+    assert failure_status(Unsure(), RuntimeError("rejected")) == "UNKNOWN"

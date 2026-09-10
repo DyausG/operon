@@ -27,9 +27,13 @@ class StubModel:
         return []
 
 
-def make_engine(monkeypatch: pytest.MonkeyPatch, failure_prob: float = 0.1):
+def make_engine(monkeypatch: pytest.MonkeyPatch, failure_prob: float = 0.1, *, legacy: bool = False):
+    """Step 13B: the engine defaults to the authoritative lifecycle. Tests that
+    characterize the deprecated proposal/approval demo shortcut opt in explicitly
+    with ``legacy=True`` (equivalent to OPERON_LEGACY_DEMO=1); that path manufactures
+    no application promotion lineage and is retained only as compatibility/demo code."""
     monkeypatch.setattr(engine_module, "load_or_train", lambda: StubModel(failure_prob))
-    return engine_module.DemoEngine()
+    return engine_module.DemoEngine(legacy_demo=legacy)
 
 
 def pending_alert(proposal: dict | None = None) -> dict:
@@ -115,7 +119,8 @@ def test_bad_telemetry_is_logged_without_rolling_back_health_score(
 async def test_threshold_crossing_alerts_only_degrading_machines(
     seeded_db, monkeypatch,
 ):
-    engine = make_engine(monkeypatch, failure_prob=0.91)
+    # Legacy demo: PENDING_APPROVAL immediately after the deterministic proposal.
+    engine = make_engine(monkeypatch, failure_prob=0.91, legacy=True)
     monkeypatch.setattr(StubModel, "attribute", lambda self, _features: [
         {"feature": "torque", "label": "Torque", "value": 62.0, "contribution": 0.34}])
 
@@ -184,7 +189,7 @@ async def test_explicit_reset_clears_demo_state_but_keeps_master_data(
 
 @pytest.mark.asyncio
 async def test_approval_starts_simulated_recovery(seeded_db, monkeypatch):
-    engine = make_engine(monkeypatch, failure_prob=0.91)
+    engine = make_engine(monkeypatch, failure_prob=0.91, legacy=True)
     monkeypatch.setattr(StubModel, "attribute", lambda self, _features: [
         {"feature": "torque", "label": "Torque", "value": 62.0, "contribution": 0.34}])
     await engine._advance()
@@ -207,7 +212,7 @@ async def test_approval_starts_simulated_recovery(seeded_db, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_rejection_runs_asset_to_unplanned_failure(seeded_db, monkeypatch):
-    engine = make_engine(monkeypatch, failure_prob=0.91)
+    engine = make_engine(monkeypatch, failure_prob=0.91, legacy=True)
     monkeypatch.setattr(StubModel, "attribute", lambda self, _features: [
         {"feature": "torque", "label": "Torque", "value": 62.0, "contribution": 0.34}])
     await engine._advance()
@@ -300,7 +305,7 @@ async def test_application_startup_preserves_persisted_state(seeded_db, monkeypa
 async def test_durable_alerts_recover_without_replanning_and_preserve_demo_decisions(seeded_db, monkeypatch):
     from core.reliability.models import IncidentPhase
 
-    engine = make_engine(monkeypatch, failure_prob=0.91)
+    engine = make_engine(monkeypatch, failure_prob=0.91, legacy=True)
     monkeypatch.setattr(StubModel, "attribute", lambda self, _features: [
         {"feature": "torque", "label": "Torque", "value": 62.0, "contribution": 0.34}])
     # Use the real deterministic planner and local service/CMMS writes.
@@ -312,7 +317,7 @@ async def test_durable_alerts_recover_without_replanning_and_preserve_demo_decis
         pytest.fail("pending proposals should be reconstructed without model/planner calls")
 
     monkeypatch.setattr(engine_module.agent, "decide", no_replanning)
-    restarted = make_engine(monkeypatch, failure_prob=0.91)
+    restarted = make_engine(monkeypatch, failure_prob=0.91, legacy=True)
     assert {eid: incident.id for eid, incident in restarted.incidents.items()} == original_ids
     assert restarted.snapshot()["alerts"] == engine.snapshot()["alerts"]
     await restarted._advance()
@@ -324,14 +329,14 @@ async def test_durable_alerts_recover_without_replanning_and_preserve_demo_decis
     restarted.sim.assets["HYD-PUMP-03"].prog = FAIL_PROG - 0.01
     assert (await restarted.reject("HYD-PUMP-03"))["ok"]
 
-    again = make_engine(monkeypatch, failure_prob=0.91)
+    again = make_engine(monkeypatch, failure_prob=0.91, legacy=True)
     assert again.alerts["AC-COMP-01"]["status"] == "APPROVED"
     assert again.sim.assets["AC-COMP-01"].mode == "recovering"
     assert again.alerts["HYD-PUMP-03"]["status"] == "REJECTED"
     assert again.sim.assets["HYD-PUMP-03"].mode == "failing"
     await again._advance()
     assert again.alerts["HYD-PUMP-03"]["status"] == "FAILED"
-    final = make_engine(monkeypatch)
+    final = make_engine(monkeypatch, legacy=True)
     assert final.alerts["HYD-PUMP-03"]["status"] == "FAILED"
     assert final.status_override["HYD-PUMP-03"] == "DOWN"
     assert final._business_summary()["events_prevented"] == 1
@@ -352,7 +357,7 @@ async def test_durable_alerts_recover_without_replanning_and_preserve_demo_decis
 
 @pytest.mark.asyncio
 async def test_interrupted_planning_resumes_durable_incident(seeded_db, monkeypatch, caplog):
-    engine = make_engine(monkeypatch, failure_prob=0.91)
+    engine = make_engine(monkeypatch, failure_prob=0.91, legacy=True)
     real_decide = engine_module.agent.decide
     monkeypatch.setattr(StubModel, "attribute", lambda self, _features: [
         {"feature": "torque", "label": "Torque", "value": 62.0, "contribution": 0.34}])
@@ -375,7 +380,7 @@ async def test_interrupted_planning_resumes_durable_incident(seeded_db, monkeypa
         return real_decide(ctx)
 
     monkeypatch.setattr(engine_module.agent, "decide", resumed)
-    restarted = make_engine(monkeypatch, failure_prob=0.1)
+    restarted = make_engine(monkeypatch, failure_prob=0.1, legacy=True)
     assert len(restarted._resume) == 4
     await restarted._advance()
     assert restarted._resume == set()
@@ -386,7 +391,7 @@ async def test_interrupted_planning_resumes_durable_incident(seeded_db, monkeypa
 
 @pytest.mark.asyncio
 async def test_admission_failure_is_visible_and_does_not_start_planner(seeded_db, monkeypatch, caplog):
-    engine = make_engine(monkeypatch, failure_prob=0.91)
+    engine = make_engine(monkeypatch, failure_prob=0.91, legacy=True)
 
     def unavailable(*args, **kwargs):
         raise RuntimeError("database unavailable")

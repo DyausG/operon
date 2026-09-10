@@ -70,7 +70,7 @@ class Artifact(Record):
         value = handler(self)
         # Additive optional metadata must not alter hashes of pre-004 artifacts.
         for field in ("source_state_hash", "validator_identity", "validation_policy_version", "binding_id",
-                      "check_results", "risk_metadata"):
+                      "check_results", "risk_metadata", "promotion_id"):
             if field in value and value[field] in (None, {}):
                 value.pop(field)
         return value
@@ -431,6 +431,8 @@ class ApprovalRequirement(Artifact):
     expires_at: AwareDatetime | None = None
     status: Literal["PENDING", "SATISFIED", "REJECTED", "EXPIRED", "INVALIDATED"] = "PENDING"
     supersedes_id: str | None = None
+    # Step 13B lifecycle requirements bind the exact application promotion lineage.
+    promotion_id: str | None = None
 
 
 class ApprovalDecision(Artifact):
@@ -442,6 +444,7 @@ class ApprovalDecision(Artifact):
     decision: Literal["APPROVE", "REJECT"]
     rationale: str
     context_revision: int = Field(default=1, ge=1)
+    promotion_id: str | None = None
 
 
 class ExecutionReceipt(Artifact):

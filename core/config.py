@@ -72,6 +72,27 @@ OEE_BASELINE = 0.712
 OEE_TARGET = 0.855
 
 # ---------------------------------------------------------------------------
+# Step 13B lifecycle boundaries.
+#
+# The durable authoritative lifecycle (admission -> investigation -> promotion ->
+# approval -> governed execution) is the default engine path. The pre-13B demo
+# shortcut (prepare_legacy_intervention) is deprecated compatibility code and runs
+# only when explicitly enabled. Trusted confirmation/binding HTTP endpoints are
+# disabled unless the deployment explicitly declares its host boundary trusted.
+# ---------------------------------------------------------------------------
+def _flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in ("1", "true", "yes")
+
+
+def legacy_demo_enabled() -> bool:
+    return _flag("OPERON_LEGACY_DEMO")
+
+
+def trusted_submissions_enabled() -> bool:
+    return _flag("OPERON_TRUSTED_SUBMISSIONS")
+
+
+# ---------------------------------------------------------------------------
 # Agentic AI — pluggable LLM provider with a graceful deterministic fallback.
 #
 # For this POC-demo phase the default is **Google Gemini** (generous free tier —

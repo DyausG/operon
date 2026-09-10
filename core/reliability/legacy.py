@@ -1,12 +1,15 @@
-"""Deprecated compatibility-only authority shortcut pending Step 13B.
+"""DEPRECATED compatibility-only demo shortcut. Not the authoritative path.
 
-These artifacts have no PromotionRecord or promotion-owned authority pointer and
-must never satisfy the new PromotionService lineage checks. Existing engine demo
-behavior is retained until its separate lifecycle replacement.
+Step 13B replaced this with core.reliability.lifecycle.LifecycleService. These
+artifacts carry no PromotionRecord, application ValidationVerdict identity, or
+authority pointers, so they fail every PromotionService lineage check and are
+refused by the lifecycle approval/execution commands. The engine only calls this
+when OPERON_LEGACY_DEMO is explicitly enabled; every call emits DeprecationWarning.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+import warnings
 
 from . import models as m
 from .governance import ApprovalLedger
@@ -30,6 +33,9 @@ def prepare_legacy_intervention(repository: IncidentRepository, incident_id: str
     The original proposal remains a UI compatibility snapshot. It is never passed
     to execution; this adapter copies its known fields into a validated step schema.
     """
+    warnings.warn("prepare_legacy_intervention is deprecated compatibility code; it manufactures no "
+                  "application promotion lineage and is not the Operon authoritative path",
+                  DeprecationWarning, stacklevel=2)
     incident = repository.fetch_incident(incident_id)
     existing = [a for a in repository.list_artifacts(incident_id)
                 if isinstance(a, m.Intervention)]

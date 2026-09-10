@@ -1,4 +1,10 @@
-"""Governed, idempotent execution of persisted Intervention artifacts."""
+"""Governed, idempotent execution of persisted Intervention artifacts.
+
+Since Step 13B this executor serves only non-promoted (legacy/compatibility)
+interventions. Anything with PromotionService lineage is delegated to
+core.reliability.lifecycle.LifecycleService, which owns the atomic READY ->
+EXECUTING claim, exact approval checks and claim-identity receipts.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -29,6 +35,19 @@ class ExecutionAuthorization:
     idempotency_key: str
     executor: str
     _seal: object = field(repr=False)
+
+
+def failure_status(adapter, exc: BaseException) -> str:
+    """Terminal receipt status for an adapter exception: FAILED only when definitive.
+
+    An exception that declares ``failure_is_definitive`` (raised by the adapter
+    inside its own write transaction before any consequential commit, e.g. a
+    dispatch-time resource rejection) is definitive regardless of the adapter's
+    blanket flag. Otherwise the adapter's flag decides, defaulting to UNKNOWN.
+    """
+    if getattr(exc, "failure_is_definitive", False) is True:
+        return "FAILED"
+    return "FAILED" if getattr(adapter, "failure_is_definitive", False) else "UNKNOWN"
 
 
 def require_execution_authorization(value: object, *, capability: str) -> ExecutionAuthorization:
@@ -181,7 +200,17 @@ class GovernedExecutor:
             deferred_step_ids=tuple(deferred), external_objects=external,
         )
 
+    def _promoted(self, incident_id: str, intervention_id: str) -> bool:
+        return any(isinstance(item, m.PromotionRecord) and item.target_id == intervention_id
+                   for item in self.repository.list_artifacts(incident_id))
+
     def execute(self, incident_id: str, intervention_id: str) -> ExecutionReport:
+        if self._promoted(incident_id, intervention_id):
+            # Application-promoted interventions execute only through the Step 13B
+            # lifecycle boundary: atomic eligibility/claim, exact human approval, and
+            # claim-identity receipts. This legacy executor never evaluates them.
+            from .lifecycle import LifecycleService
+            return LifecycleService(self.repository).execute(incident_id, intervention_id)
         incident, intervention, artifacts, decisions = self._load(incident_id, intervention_id)
         executable_steps = [step for step in intervention.steps
                             if CAPABILITY_POLICY[step.capability].executable_now]
@@ -273,14 +302,15 @@ class GovernedExecutor:
             try:
                 result = self._execute_step(adapter, incident, intervention, step, claim)
             except Exception as exc:
-                terminal_status = "FAILED" if getattr(adapter, "failure_is_definitive", False) else "UNKNOWN"
+                terminal_status = failure_status(adapter, exc)
                 failed = self._receipt(
                     incident, intervention, step, claim, status=terminal_status,
                     error_code=type(exc).__name__,
                     error_message=str(exc),
                 )
-                incident = self.repository.finish_execution_claim(failed,
-                                                                  expected_revision=incident.revision)
+                # Claim-identity CAS: evidence arriving during the external call must
+                # not lose the receipt of an action that already happened.
+                incident = self.repository.finish_execution_claim(failed)
                 receipt_ids.append(failed.id)
                 self._fail_phase(incident.id, f"step {step.id} failed")
                 report = self._report(incident.id, intervention.id, receipt_ids, skipped,
@@ -291,8 +321,7 @@ class GovernedExecutor:
                 incident, intervention, step, claim, status="CONFIRMED",
                 external_ids=self._external_ids(result),
             )
-            incident = self.repository.finish_execution_claim(confirmed,
-                                                              expected_revision=incident.revision)
+            incident = self.repository.finish_execution_claim(confirmed)
             receipt_ids.append(confirmed.id)
             external.update(confirmed.external_ids)
 

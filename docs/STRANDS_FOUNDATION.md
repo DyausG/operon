@@ -1,11 +1,13 @@
-# Strands foundation and application promotion boundary (Steps 12A–13A)
+# Strands foundation and application promotion boundary (Steps 12A–13B)
 
 Strands supplies model interaction, tool selection, and Pydantic structured output.
 Operon supplies evidence capabilities and owns persistence, lifecycle, validation,
 promotion, approval, and execution. Five independent specialists and a native
 Reliability Supervisor are available through explicit application entry points.
 Step 13A adds durable application run/report storage and authoritative promotion.
-The running demo/provider path remains unchanged; engine integration is deferred to 13B.
+Step 13B binds that promotion boundary into the durable incident lifecycle, the
+atomic approval flow and governed execution (`core/reliability/lifecycle.py`); the
+engine drives it by default and the old proposal shortcut is opt-in legacy code.
 
 ## SDK and runtime
 
@@ -539,13 +541,163 @@ legacy records receive no promotion backfill.
 
 `prepare_legacy_intervention` is explicitly deprecated and compatibility-only.
 Its artifacts lack new promotion lineage and authority pointers, and cannot satisfy
-new promotion APIs. Its existing engine/governance behavior remains pending 13B.
-The pure state graph still grants no authority; promotion commands establish the
-prerequisites and include their phase transition in the same transaction.
+new promotion APIs. Since Step 13B the engine calls it only when `OPERON_LEGACY_DEMO`
+is set, it emits `DeprecationWarning`, and the lifecycle approval/execution commands
+refuse its artifacts. The pure state graph still grants no authority; promotion and
+lifecycle commands establish the prerequisites and include their phase transition
+in the same transaction.
 
 Run `uv run pytest tests/test_promotion.py` for durable/native paths, negative gates,
 source freshness, exact review, rollback, concurrency, migration and legacy checks.
 These tests require neither AWS credentials nor network access.
+
+## Step 13B: lifecycle, approval and governed execution
+
+`LifecycleService` (`core/reliability/lifecycle.py`) is the trusted application
+owner of every transition after promotion. It is not an agent tool, it invokes
+models only through `PromotionService.run_supervisor`, and every authoritative
+command is one `BEGIN IMMEDIATE` transaction that re-derives authority from durable
+pointers plus `PromotionService._lineage(current=True)`. Phase alone proves nothing:
+an incident moved to `READY` by graph-legal transitions without a `PromotionRecord`
+is refused by every lifecycle command (`AuthorityRefused`).
+
+The durable flow is:
+
+```text
+ModelSignal -> admit_signal (atomic)                          OPEN
+  -> DeterministicInvestigator baseline evidence              INVESTIGATING
+  -> LifecycleService.diagnose: refresh stale baseline reads,
+     start_run + SupervisorRunSnapshot, native supervisor,
+     SupervisorReport, promote_diagnosis                      DIAGNOSIS_VALIDATED
+       NEEDS_EVIDENCE / UNRESOLVED / no trusted confirmation  AWAITING_EVIDENCE
+       failed, exhausted, BLOCKED, ESCALATED, gate failure    ESCALATED
+       report stale (concurrent change)                       stays INVESTIGATING (bounded retry)
+  -> submit_technical_confirmation (trusted)   AWAITING_EVIDENCE -> INVESTIGATING
+  -> LifecycleService.plan: create_draft (binding + DRAFT)    PLANNING
+     fresh INTERVENTION_REVIEW run, promote_intervention      INTERVENTION_VALIDATED
+     request_approval (deterministic governance)              AWAITING_APPROVAL
+       NEEDS_EVIDENCE at planning                             stays PLANNING (new binding required)
+       governance BLOCKED / unsafe review                     ESCALATED
+  -> decide_approval APPROVE (exact identifiers)              READY
+     decide_approval REJECT                                   ESCALATED
+  -> execute: claim transaction                               EXECUTING
+     adapter call with no lock held
+     receipt transaction   CONFIRMED                          OBSERVING
+                           FAILED / UNKNOWN                   EXECUTION_FAILED
+  -> retry_execution (only after definitive FAILED)           READY
+```
+
+Nothing in 13B verifies outcomes or closes incidents. **Execution SUCCESS means
+the commanded work-package action was confirmed by the adapter; it does not mean
+the machine recovered.** No `Outcome` is created and `CLOSED` is never reached.
+
+### Governance
+
+`LifecycleService._governance` is deterministic and consumes only the exact
+promoted `Intervention`, its `PromotionRecord`, its `WorkPackageBinding` and local
+rows. Checks: one governed `create_work_package` step, valid `WorkPackageParameters`
+matching the binding, permitted risk and policy-bound risk metadata, the confirmed
+window has not started, resources (same-plant qualified technician, BOM stock less
+reservations) can still be established, and no application verdict rejects the
+target. Blockers raise `GovernanceBlocked` and are never converted into an approval
+request. A passing assessment always yields `REQUIRES_HUMAN_APPROVAL`: in 13B every
+promoted work package is an external, safety-relevant, irreversible commitment.
+Critic `ACCEPT`, planner advice, supervisor disposition and legacy
+`LocalGovernanceAdapter` output play no part.
+
+### Approval (authorization, not validation)
+
+`request_approval` runs authority + governance and, in the same transaction, inserts
+an `ApprovalRequirement` bound to incident, exact intervention ID and hash,
+`promotion_id`, `operon-lifecycle-1`, `HUMAN` mode, the approver role, and an expiry
+bounded by the confirmed window start, then transitions to `AWAITING_APPROVAL`.
+Concurrent requests serialize on the incident revision; a retry with the current
+revision returns the existing pending requirement. Migration 005 additionally
+enforces one decision per requirement per actor.
+
+`decide_approval` requires the caller's exact `requirement_id`, `intervention_id`,
+`intervention_hash` and `context_revision`. In one transaction it rejects stale
+context revisions, wrong phases, superseded or expired requirements, hash or ID
+mismatches, mismatched promotion lineage, wrong roles, blank rationale, conflicting
+duplicates, decisions after new technical evidence invalidated lineage, and any
+governance blocker; then it inserts the `ApprovalDecision` (with `promotion_id`) and
+moves `AWAITING_APPROVAL -> READY` (APPROVE) or `-> ESCALATED` (REJECT). An identical
+decision from the same actor is returned idempotently without any write. Approval
+creates no `ValidationVerdict`; the only verdicts are promotion verdicts.
+
+### Execution claim, adapter call, receipt
+
+`execute` resolves the CMMS adapter before any lock, then in one transaction
+requires phase `READY`, current lineage, `VALIDATED` status, exact ID/hash,
+deterministic governance, a current requirement bound to the same promotion, an
+`APPROVED` state, valid parameters, and an idempotency key (identical derivation to
+`GovernedExecutor`) whose claim is absent or definitively `FAILED`. `IN_FLIGHT`
+raises `ExecutionBusy`; `UNKNOWN`/`CONFIRMED` raise `ReconciliationRequired`. The
+claim insert/update, `READY -> EXECUTING` and the `EXECUTION_CLAIMED` event commit
+together, so two callers cannot dispatch the same action. The adapter is invoked with
+the sealed `ExecutionAuthorization` outside any transaction.
+
+`record_receipt` CASes on the claim identity (key, attempt, `IN_FLIGHT`), never on
+the pre-call incident revision. New evidence arriving during the external call
+advances the revision but cannot lose the receipt; the receipt, claim state and
+phase (`CONFIRMED -> OBSERVING`, `FAILED`/`UNKNOWN -> EXECUTION_FAILED`) commit
+together, always against the intervention that was dispatched. If the phase left
+`EXECUTING` through another command, the receipt is still recorded and an
+`INCIDENT_UPDATED` reconciliation event is appended. Duplicate completion callbacks
+with the same status are idempotent; conflicting ones raise `ReconciliationRequired`.
+Afterwards `_lineage` reports the new-evidence condition, so approval/execution
+authority is re-evaluated without erasing what happened. `UNKNOWN` is never replayed:
+`execute` and `retry_execution` refuse until a human reconciles.
+`GovernedExecutor.finish_execution_claim` received the same claim-identity CAS,
+because the old revision CAS could drop a receipt after a real external action.
+
+### Recovery
+
+`LifecycleService.recover()` reconciles every active incident from durable pointers:
+authority validity via lineage, current requirement and approval state, latest claim,
+receipts. An `IN_FLIGHT` claim older than the ambiguity window becomes an `UNKNOWN`
+receipt plus `EXECUTION_FAILED`; nothing is ever dispatched during recovery. A crash
+after the atomic approval leaves a reconstructible `READY`; dispatch then requires an
+explicit `execute` command or API call. An old promotion retry still returns the old
+record without pointer writes, and the old intervention cannot execute.
+
+### Engine and API
+
+`DemoEngine` admits signals, runs the deterministic investigation and, when a
+supervisor runtime is configured (`agent_mode() == "bedrock"` or an injected runtime),
+schedules bounded, serialized `diagnose` attempts. Trusted confirmations, bindings,
+approvals and execution arrive through `LifecycleService` calls or the API:
+`POST /api/approve|reject/{equipment_id}` now require the exact requirement,
+intervention, hash and context revision in the body (the dashboard sends them from
+the alert projection); `POST /api/incidents/{id}/approval|execute` and
+`GET /api/incidents/{id}` expose the same identifiers; typed trusted submission
+endpoints (`confirmations/technical`, `confirmations/resource`, `drafts`) are disabled
+unless `OPERON_TRUSTED_SUBMISSIONS=1` declares the host boundary trusted. No endpoint
+accepts `PromotionRecord`, `ValidationVerdict`, `SupervisorReport` or other authority
+JSON. `OPERON_LEGACY_DEMO=1` re-enables the deprecated proposal shortcut.
+
+### 13A corrections made for integration
+
+Two narrow corrections were required, both documented in code:
+
+1. `IncidentRepository.finish_execution_claim` and `LifecycleService.record_receipt`
+   use the execution claim identity as completion CAS (see above).
+2. `PromotionService._fresh` still blocks on OPEN durable evidence requests and on
+   resolved GOOD evidence missing from the packet, but no longer blocks on requests
+   whose only resolution is SUSPECT/MISSING evidence (UNAVAILABLE capability, partial
+   baseline context). Such evidence can never enter a packet under the GOOD-quality
+   rule, so the old check made promotion impossible for any investigated incident.
+
+### Known conflict: whole-store source checkpoint versus live operation
+
+13A's `source_state_hash` covers every operational table (including streaming
+`sensor_reading`/`health_score`) and other incidents' revisions. Consequently a run
+is stale whenever the simulator persists a tick or another incident advances. The
+lifecycle refreshes stale baseline reads before each diagnosis run and the engine
+serializes reasoning, but promotion still requires quiescent raw sources between
+evidence collection, reasoning and promotion (for example, the plant stream paused
+via `/api/stop`, as the offline engine tests do). Source-specific versioning remains
+the deferred fix; 13B deliberately did not weaken the checkpoint.
 
 ## Scope and verification
 
@@ -555,10 +707,17 @@ Assessment names distinguish advice from the authoritative artifacts in the sket
 The legacy deterministic fallback remains available; no second agent framework or
 new deterministic diagnostic workflow is introduced.
 
-Engine/lifecycle integration (Step 13B), durable orchestration restart/reconciliation,
-live fallback integration, AgentCore,
-RAG/OEM ingestion, procurement, outcome verification, provider migration, and frontend
-work remain deferred. No public README changes or deployment are part of Step 13A.
+Live fallback integration, AgentCore, RAG/OEM ingestion, procurement, outcome
+verification, automatic closure, provider migration, source-specific freshness
+versioning, host authentication and frontend redesign remain deferred after 13B.
+
+Run `uv run pytest tests/test_reliability_lifecycle.py tests/test_engine_lifecycle.py`
+for the 13B lifecycle: atomic approval/claim/receipt transactions with rollback
+injection, concurrency (two approval requests, two executions, duplicate decisions
+and callbacks), stale/superseded approvals, governance blocks, the evidence-during-
+execution race for CONFIRMED/FAILED/UNKNOWN, UNKNOWN non-replay, restart after claim
+or approval, legacy artifacts and phase-only incidents refused, and the engine/API
+contract. These tests require neither AWS credentials nor network access.
 
 Run `uv run pytest tests/test_supervisor.py tests/test_strands_agents.py tests/test_specialists.py` for native SDK construction,
 scripted model/tool/structured-output cycles, import checks, budget/error behavior,

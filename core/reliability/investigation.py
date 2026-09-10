@@ -24,6 +24,17 @@ class InvestigationResult(BaseModel):
     action_id: str
 
 
+# Baseline capabilities, questions and parameters shared by the initial deterministic
+# investigation and by lifecycle refreshes of stale baseline evidence before a run.
+BASELINE_CAPABILITIES = (
+    ("get_asset_context", "Collect persisted asset and sensor context.", {}),
+    ("get_telemetry_window", "Collect the bounded recent telemetry window.", {"sample_limit": 60}),
+    ("get_maintenance_history", "Collect persisted maintenance history.", {"limit": 20}),
+    ("get_related_incidents", "Collect other persisted incidents for this asset.", {"limit": 20}),
+    ("get_operating_context", "Collect the persisted operating context.", {}),
+)
+
+
 class DeterministicInvestigator:
     """Collect source records while leaving all causal conclusions unresolved."""
 
@@ -44,14 +55,10 @@ class DeterministicInvestigator:
             reason="deterministic baseline evidence collection started",
         )
         asset_id = incident.equipment_ids[0]
-        specifications = (
-            ("get_asset_context", "Collect persisted asset and sensor context.", {}),
-            ("get_telemetry_window", "Collect the bounded recent telemetry window.",
-             {"sample_limit": telemetry_sample_limit}),
-            ("get_maintenance_history", "Collect persisted maintenance history.", {"limit": 20}),
-            ("get_related_incidents", "Collect other persisted incidents for this asset.", {"limit": 20}),
-            ("get_operating_context", "Collect the persisted operating context.", {}),
-        )
+        specifications = tuple(
+            (capability, question, {**parameters, "sample_limit": telemetry_sample_limit}
+             if capability == "get_telemetry_window" else parameters)
+            for capability, question, parameters in BASELINE_CAPABILITIES)
         collections: list[EvidenceCollection] = []
         for capability, question, parameters in specifications:
             collections.append(self.evidence_service.request_and_collect(

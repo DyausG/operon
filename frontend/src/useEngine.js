@@ -75,9 +75,20 @@ export function useEngine() {
     };
   }, [applySnapshot]);
 
-  const post = useCallback((path) => fetch(path, { method: "POST" }).catch(() => {}), []);
-  const approve = useCallback((id) => post(`/api/approve/${id}`), [post]);
-  const reject = useCallback((id) => post(`/api/reject/${id}`), [post]);
+  const post = useCallback((path, body) => fetch(path, {
+    method: "POST",
+    ...(body ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}),
+  }).catch(() => {}), []);
+  // Approval intent must name the exact requirement/intervention/hash/revision the
+  // operator saw; the server rejects stale or equipment-only intent.
+  const intent = (a) => a?.lifecycle?.requirement_id ? {
+    requirement_id: a.lifecycle.requirement_id,
+    intervention_id: a.lifecycle.intervention_id,
+    intervention_hash: a.lifecycle.intervention_hash,
+    context_revision: a.lifecycle.context_revision,
+  } : undefined;
+  const approve = useCallback((a) => post(`/api/approve/${a?.equipment_id ?? a}`, intent(a)), [post]);
+  const reject = useCallback((a) => post(`/api/reject/${a?.equipment_id ?? a}`, intent(a)), [post]);
   const reset = useCallback(() => post("/api/reset"), [post]);
   const stop = useCallback(() => post("/api/stop"), [post]);
   const resume = useCallback(() => post("/api/start"), [post]);

@@ -169,30 +169,47 @@ class LocalCmmsAdapter(CmmsService):
     # -- full repair work package (WO + parts + labor + schedule + notify) --
     def create_work_package(self, proposal: dict, *, authorization=None) -> dict:
         from ...reliability.execution import require_execution_authorization
+        from ...reliability.resources import (require_no_booking_conflict, require_part_stock,
+                                              require_qualified_technician)
         require_execution_authorization(authorization, capability="CMMS work-package commit")
         a = proposal["actions"]
         eid = proposal["equipment_id"]
         fm = proposal["failure_mode"]["failure_mode_id"]
         tech_rec = a.get("technician") or None
         tech = tech_rec["technician_id"] if tech_rec else None
+        sched = a.get("schedule", {})
+        critical = [(p, int(p.get("qty_per_service", 1) or 1))
+                    for p in a.get("parts", {}).get("parts", []) if p.get("is_critical_spare")]
         now = datetime.now().isoformat(timespec="seconds")
 
         with get_conn() as c:
+            # BEGIN IMMEDIATE takes the write lock before the availability reads, so
+            # the revalidation below and the reservations/booking that depend on it
+            # are one serialized unit: two packages can never both pass on the same
+            # last unit of stock or the same technician window. Earlier validation
+            # (promotion, governance) is deliberately not trusted here. Any failure
+            # raises before a single consequential row exists and get_conn rolls
+            # back, so the failure is definitive for the caller.
+            c.execute("BEGIN IMMEDIATE")
+            for p, qty in critical:
+                require_part_stock(c, p["part_id"], qty)
+            if tech:
+                require_qualified_technician(c, eid, tech)
+                # Limitation: only dated start/end window labels prove an overlap;
+                # see require_no_booking_conflict.
+                require_no_booking_conflict(c, tech, sched.get("window"))
+
             wo_id, wo_number = self._insert_work_order(c, eid, fm, tech, a, now, proposal)
 
             # 1. reserve the critical spares from the asset's bill-of-materials
             reserved = []
-            for p in a.get("parts", {}).get("parts", []):
-                if not p.get("is_critical_spare"):
-                    continue
-                qty = int(p.get("qty_per_service", 1) or 1)
+            for p, qty in critical:
                 c.execute(
                     """INSERT INTO part_reservation (wo_id, part_id, qty, status, reserved_at)
                        VALUES (?,?,?,?,?)""", (wo_id, p["part_id"], qty, "RESERVED", now))
                 reserved.append({"part_number": p.get("part_number"), "qty": qty})
 
             # 2. book the assigned technician into the planned window
-            sched = a.get("schedule", {})
             booking = None
             if tech:
                 c.execute(

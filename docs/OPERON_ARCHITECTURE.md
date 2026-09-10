@@ -10,13 +10,61 @@ checkpoint here supersedes historical implementation-status statements in that
 roadmap. Runtime behavior and contracts are described in
 [STRANDS_FOUNDATION.md](STRANDS_FOUNDATION.md).
 
-**Implemented checkpoint: Step 13A — authoritative promotion boundary**
+**Implemented checkpoint: Step 13B — lifecycle and governed execution integration**
 
 **Agents reason. The application owns authority.** Five native Strands specialists
 and the native agents-as-tools Reliability Supervisor produce advisory reports.
-`core/reliability/promotion.py` now supplies the separate trusted application
-boundary that may promote sufficiently validated reasoning. The existing engine
-still uses its deprecated compatibility path; its replacement is Step 13B.
+`core/reliability/promotion.py` supplies the trusted application boundary that may
+promote sufficiently validated reasoning (Step 13A). `core/reliability/lifecycle.py`
+(Step 13B) binds that boundary into the durable incident lifecycle, the atomic
+approval flow and governed execution, and the engine drives it by default. The
+invariant `prediction != diagnosis != intervention != approval != execution != outcome`
+is enforced by distinct records: advisory reports, application promotion records and
+verdicts, deterministic governance assessments, human approval decisions, execution
+claims, execution receipts, and (deferred) outcome verification.
+
+```mermaid
+flowchart TD
+    P[Model signal] --> O[OPEN: atomic admission]
+    O --> I[INVESTIGATING: deterministic baseline evidence]
+    I --> R[Durable supervisor run and report]
+    R --> D[Application diagnosis promotion]
+    D --> PL[PLANNING: trusted binding and DRAFT]
+    PL --> RV[Fresh exact-draft review]
+    RV --> IV[INTERVENTION_VALIDATED: application promotion]
+    IV --> G[Deterministic governance]
+    G --> AA[AWAITING_APPROVAL: requirement, one transaction]
+    AA --> RD[READY: exact human approval, one transaction]
+    RD --> EX[EXECUTING: eligibility and claim, one transaction]
+    EX --> AD[Adapter call, no lock held]
+    AD --> RC[Receipt against claim identity]
+    RC --> OB[OBSERVING on CONFIRMED]
+    RC --> EF[EXECUTION_FAILED on FAILED or UNKNOWN]
+```
+
+Lifecycle commands never infer authority from phase. Each one revalidates the
+current promoted intervention's complete lineage (promotion record, application
+verdict, exact hashes, exact draft review, diagnosis lineage, non-supersession, no
+newer technical evidence) under the same `BEGIN IMMEDIATE` transaction that performs
+its state change. The legacy `prepare_legacy_intervention` shortcut is opt-in
+(`OPERON_LEGACY_DEMO=1`), warns on use, and its artifacts are refused by the
+lifecycle and by the legacy `ApprovalLedger`/`GovernedExecutor` once an intervention
+carries promotion lineage. Governance is deterministic and blocks rather than
+requesting approval when eligibility cannot be established; every promoted work
+package requires exact human approval. Approval authorizes an exact intervention
+hash under an exact requirement and context revision, and never validates. The
+execution claim protects `READY -> EXECUTING` against concurrent callers; receipts
+are recorded with the claim identity as CAS, so evidence arriving during the external
+call cannot erase what physically happened. `UNKNOWN` requires human reconciliation
+and is never replayed. Execution `CONFIRMED` means the commanded work-package action
+was confirmed, not that the asset recovered; `OBSERVING` awaits deferred outcome
+verification and no automatic `CLOSED` exists. Migration
+`005_reliability_lifecycle.sql` adds only indexes (one decision per requirement per
+actor; requirement and promotion lookups). Details, the two narrow 13A corrections,
+and the known whole-store freshness conflict are in
+[STRANDS_FOUNDATION.md](STRANDS_FOUNDATION.md#step-13b-lifecycle-approval-and-governed-execution).
+
+**Step 13A — authoritative promotion boundary (retained description)**
 
 ```mermaid
 flowchart TD
@@ -32,7 +80,7 @@ flowchart TD
     RS --> RR[Persisted advisory review report]
     RR --> I[Application intervention gates]
     I --> IP[Atomic VALIDATED Intervention + application verdict + lineage + pointer]
-    IP --> F[Approval and execution integration deferred to 13B]
+    IP --> F[Step 13B lifecycle: governance, approval, execution]
 ```
 
 `SupervisorRunSnapshot` freezes incident, asset, application run ID, stage, committed
@@ -134,12 +182,14 @@ lack these promotion records/pointers and fail the new lineage APIs. The state g
 still checks only graph legality; application commands establish authority and
 include necessary phase transitions in their atomic commit. Failure injection,
 concurrent retries, native SDK review, stale sources, migration preservation and
-legacy exclusion are exercised offline in `tests/test_promotion.py`.
+legacy exclusion are exercised offline in `tests/test_promotion.py`; lifecycle,
+approval, execution, race and recovery behavior in `tests/test_reliability_lifecycle.py`
+and `tests/test_engine_lifecycle.py`.
 
-Step 13B still owns engine/lifecycle replacement, approval API/UI binding and final
-execution integration. No AgentCore, live Bedrock verification, retrieval/OEM/RAG,
-procurement, systemic investigation, outcome verification, dashboard redesign,
-PLC control, new prediction model or infrastructure is included in 13A.
+No AgentCore, live Bedrock verification, retrieval/OEM/RAG, procurement, systemic
+investigation, outcome verification, automatic closure, dashboard redesign, host
+authentication, PLC control, new prediction model or infrastructure is included
+through 13B.
 
 **A. Original architecture inventory (historical roadmap baseline)**
 
@@ -1133,5 +1183,5 @@ Show concise findings and evidence references in the timeline, not an unrestrict
 - A cloud migration that makes the demo dependent on cloud availability.
 - Another privacy-sanitization pass.
 
-The roadmap beyond the Step 13A checkpoint remains deferred; the implemented
-promotion boundary is described at the start of this document.
+The roadmap beyond the Step 13B checkpoint remains deferred; the implemented
+promotion and lifecycle boundaries are described at the start of this document.
