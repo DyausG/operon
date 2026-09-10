@@ -28,9 +28,14 @@ from .execution import (
     ExecutionBusy, ExecutionFailed, ExecutionReport, GovernedExecutor, _AUTHORITY_SEAL, failure_status,
 )
 from .governance import CAPABILITY_POLICY, WorkPackageParameters, artifact_hash, validate_step_parameters
-from .investigation import BASELINE_CAPABILITIES, DeterministicInvestigator, InvestigationResult
+from .freshness import revalidate
+from .investigation import (
+    BASELINE_CAPABILITIES, PINNED_BOUNDARY, DeterministicInvestigator, InvestigationResult, baseline_parameters,
+)
 from .promotion import CONFIRM_MECHANISM, POLICY_VERSION as PROMOTION_POLICY, PromotionRefused, PromotionService
-from .repository import IncidentRepository, InvalidReference, StaleRevision, content_hash, new_id, source_state_hash, utcnow
+from .repository import (
+    IncidentRepository, InvalidReference, StaleRevision, content_hash, manifest_authority, new_id, utcnow,
+)
 from .state import validate_transition
 
 POLICY_VERSION = "operon-lifecycle-1"
@@ -318,19 +323,25 @@ class LifecycleService:
         return self.investigator.investigate(incident_id)
 
     def refresh_baseline_evidence(self, incident_id: str, asset_id: str, evidence_service) -> tuple[str, ...]:
-        """Re-request baseline reads whose raw-source checkpoint went stale (INVESTIGATING only).
+        """Re-request baseline reads whose dependency manifest no longer validates (INVESTIGATING only).
 
-        13A's whole-store source checkpoint conservatively invalidates evidence when any
-        local operational row or another incident's revision changes. EvidenceService
-        reuses fresh records and appends superseding ones for stale reads; nothing here
-        touches trusted confirmations, which must be resubmitted by their trusted actor.
+        Each baseline request is re-issued with its own stored parameters, including
+        the application-pinned snapshot boundary, so EvidenceService reuses records
+        whose exact source reads are unchanged and appends superseding ones only when
+        a read they depend on changed. Unrelated telemetry, incidents, technicians or
+        bookings therefore cause no refresh. Nothing here touches trusted
+        confirmations, which must be resubmitted by their trusted actor.
         """
         from .evidence import SUPPORTED_CAPABILITIES
         incident = self.repository.fetch_incident(incident_id)
         _require(incident.phase in {m.IncidentPhase.INVESTIGATING, m.IncidentPhase.AWAITING_EVIDENCE},
                  "baseline refresh is only valid before diagnosis authority exists")
-        requests = [a for a in self.repository.list_artifacts(incident_id) if isinstance(a, m.EvidenceRequest)]
+        artifacts = self.repository.list_artifacts(incident_id)
+        requests = [a for a in artifacts if isinstance(a, m.EvidenceRequest)]
+        evidence = {a.id: a for a in artifacts if isinstance(a, m.Evidence)}
         superseded = {item.supersedes_id for item in requests if item.supersedes_id}
+        baseline = {(capability, question) for capability, question, _ in BASELINE_CAPABILITIES}
+        collected_at = utcnow()
         refreshed = []
         # Every current durable read request is re-issued with its own identity, so a
         # stale resolution is superseded rather than silently left out of the packet.
@@ -339,28 +350,68 @@ class LifecycleService:
                 continue
             if item.equipment_ids != (asset_id,):
                 continue
+            parameters = dict(item.parameters)
+            usable = all(evidence[key].quality == "GOOD" for key in item.resolved_by_evidence_ids if key in evidence)
+            if (item.capability == "get_telemetry_window" and (item.capability, item.question) in baseline
+                    and item.requested_by == "supervisor" and not usable):
+                # A pinned baseline window that found too few samples stays a truthful
+                # historical record, but a later window may have them: pin a new
+                # boundary instead of re-asking the identical sparse window. Context
+                # snapshots are never re-pinned (operating context is PARTIAL by design).
+                parameters.pop(PINNED_BOUNDARY[item.capability], None)
+                parameters = baseline_parameters(item.capability, parameters, collected_at=collected_at)
             refreshed.append(evidence_service.request_and_collect(
                 incident_id, requested_by=item.requested_by, equipment_ids=item.equipment_ids, question=item.question,
-                capability=item.capability, required_for=item.required_for, parameters=dict(item.parameters)).evidence.id)
+                capability=item.capability, required_for=item.required_for, parameters=parameters).evidence.id)
         seen = {item.capability for item in requests if item.id not in superseded and item.equipment_ids == (asset_id,)}
         for capability, question, parameters in BASELINE_CAPABILITIES:
             if capability not in seen:
                 refreshed.append(evidence_service.request_and_collect(
                     incident_id, requested_by="supervisor", equipment_ids=(asset_id,), question=question,
-                    capability=capability, required_for="diagnosis", parameters=parameters).evidence.id)
+                    capability=capability, required_for="diagnosis",
+                    parameters=baseline_parameters(capability, parameters, collected_at=collected_at)).evidence.id)
         return tuple(dict.fromkeys(refreshed))
 
     def current_evidence_ids(self, incident_id: str, asset_id: str) -> tuple[str, ...]:
-        """GOOD, current, source-fresh evidence eligible for a durable run packet."""
+        """GOOD, current evidence whose dependency closure still validates, for a run packet.
+
+        Freshness is decided per artifact by replaying its own source dependencies and
+        those of its provenance parents. Legacy records carrying only the whole-store
+        hash are excluded (except dated model signals) and get collected again by
+        ``refresh_baseline_evidence``; trusted confirmations drop out only when their
+        supporting evidence is superseded or its dependencies changed.
+        """
         with db.get_conn(self.repository.path) as conn:
             conn.execute("BEGIN")
-            raw = source_state_hash(conn, incident_id)
-            evidence = self._all(conn, incident_id, m.Evidence)
-        superseded = {item.supersedes_id for item in evidence if item.supersedes_id}
-        return tuple(item.id for item in evidence if item.id not in superseded and asset_id in item.equipment_ids
-                     and item.quality == "GOOD" and item.source_system != "legacy.unspecified"
-                     and item.source_capability != "legacy.unspecified"
-                     and (item.kind == "model_signal" or item.source_state_hash == raw))
+            evidence = {item.id: item for item in self._all(conn, incident_id, m.Evidence)}
+            superseded = {item.supersedes_id for item in evidence.values() if item.supersedes_id}
+            cache, verdicts = {}, {}
+
+            def fresh(key, trail=()):
+                if key in verdicts:
+                    return verdicts[key]
+                item = evidence.get(key)
+                ok = (item is not None and key not in trail and key not in superseded
+                      and item.content_hash == content_hash(item.payload))
+                if ok:
+                    manifest = item.source_dependencies
+                    if manifest_authority(item) is not None:
+                        ok = False
+                    elif manifest is None:
+                        ok = item.kind == "model_signal"
+                    elif manifest.basis == "DERIVED":
+                        ok = bool(item.derived_from_ids)
+                    else:
+                        ok = not revalidate(conn, manifest, cache=cache)
+                if ok:
+                    ok = all(fresh(parent, (*trail, key)) for parent in item.derived_from_ids)
+                verdicts[key] = ok
+                return ok
+
+            return tuple(key for key, item in evidence.items()
+                         if key not in superseded and asset_id in item.equipment_ids
+                         and item.quality == "GOOD" and item.source_system != "legacy.unspecified"
+                         and item.source_capability != "legacy.unspecified" and fresh(key))
 
     # ------------------------------------------------------- trusted evidence
     def submit_technical_confirmation(self, confirmation: m.TrustedTechnicalConfirmation, *, expected_revision: int):
@@ -392,14 +443,19 @@ class LifecycleService:
         return "PROMOTE", "advisory conclusion ready for application gates"
 
     def _refusal_is_stale(self, incident_id, report):
-        """A BLOCKED refusal caused by concurrent change is retryable, not an escalation."""
+        """A BLOCKED refusal caused by concurrent change is retryable, not an escalation.
+
+        Only a change to a dependency the run actually froze counts; a legacy snapshot
+        without a dependency manifest is retried with a fresh run.
+        """
         with db.get_conn(self.repository.path) as conn:
             conn.execute("BEGIN")
             incident = self.repository._fetch(conn, incident_id)
             snapshot = self.repository._artifact(conn, incident_id, report.snapshot_id)
-            raw = source_state_hash(conn, incident_id)
+            changed = (snapshot.source_dependency_manifest is None
+                       or bool(revalidate(conn, snapshot.source_dependency_manifest)))
         return (incident.active_run_id != report.run_id or incident.revision != report.checkpoint_revision
-                or raw != snapshot.source_state_hash)
+                or changed)
 
     def _transition(self, incident_id, target, reason):
         incident = self.repository.fetch_incident(incident_id)

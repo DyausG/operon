@@ -3,6 +3,7 @@ from hashlib import sha256
 from pathlib import Path
 
 from core.seed_data import SENSOR_FEATURES
+from .freshness import observation_manifest
 from .models import Evidence, ModelSignal
 from .repository import content_hash, new_id, utcnow
 
@@ -41,4 +42,6 @@ def signal_evidence(signal: ModelSignal, incident_id: str) -> Evidence:
         source_system=f"{signal.input_source}+{signal.model_source}",
         summary=f"Model risk signal {signal.risk_score:.1%}; candidate mode {signal.candidate_failure_mode}",
         payload=payload,
+        # A dated classifier observation: later telemetry cannot make it false.
+        source_dependencies=observation_manifest(),
     )

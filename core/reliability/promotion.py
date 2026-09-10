@@ -15,8 +15,11 @@ from core.agents.contracts import (
     OperationsAssessment, SpecialistContext, SupervisorBounds, SupervisorResult,
 )
 from . import models as m
+from .freshness import closure, observation_manifest, revalidate
 from .governance import WorkPackageParameters
-from .repository import IncidentRepository, InvalidReference, StaleRevision, content_hash, new_id, source_state_hash, utcnow
+from .repository import (
+    IncidentRepository, InvalidReference, StaleRevision, content_hash, manifest_authority, new_id, utcnow,
+)
 from .resources import ResourceUnavailable, require_part_stock, require_qualified_technician
 from .state import validate_transition
 
@@ -75,10 +78,31 @@ class PromotionService:
                          for item in self._all(conn, incident_id, type(artifact))),
                  "superseded source artifact")
 
+    @staticmethod
+    def _dependency_fresh(conn, evidence, cache):
+        """Dependency-scoped freshness of one artifact (its own manifest only).
+
+        The provenance DAG is walked by ``_evidence``; a DERIVED record is fresh
+        exactly when every parent is. Legacy records carrying only the pre-13C
+        whole-store hash cannot prove scoped freshness and must be collected again;
+        a legacy model signal is a dated observation and remains valid.
+        """
+        reason = manifest_authority(evidence)
+        _require(reason is None, reason or "", evidence=True)
+        manifest = evidence.source_dependencies
+        if manifest is None:
+            _require(evidence.kind == "model_signal",
+                     "evidence predates dependency-scoped freshness and must be collected again", evidence=True)
+            return
+        if manifest.basis == "DERIVED":
+            _require(evidence.derived_from_ids, "derived evidence lacks provenance parents", evidence=True)
+        changes = revalidate(conn, manifest, cache=cache)
+        _require(not changes, "evidence source dependency changed: "
+                 + ", ".join(item.dependency.describe() for item in changes), evidence=True)
+
     def _evidence(self, conn, incident, asset_id, ids, *, fresh=True):
         """Complete durable dependency closure, with exact scope and source provenance."""
-        found, visiting = {}, set()
-        raw_hash = source_state_hash(conn, incident.id)
+        found, visiting, cache = {}, set(), {}
 
         def visit(key):
             _require(key not in visiting, "cyclic evidence provenance")
@@ -92,8 +116,8 @@ class PromotionService:
             _require(evidence.quality == "GOOD", "evidence quality is insufficient", evidence=True)
             _require(evidence.source_system != "legacy.unspecified" and evidence.source_capability != "legacy.unspecified",
                      "evidence lacks trusted source provenance", evidence=True)
-            if fresh and evidence.kind != "model_signal":
-                _require(evidence.source_state_hash == raw_hash, "raw evidence source checkpoint is stale or absent", evidence=True)
+            if fresh:
+                self._dependency_fresh(conn, evidence, cache)
             for parent in evidence.derived_from_ids:
                 visit(parent)
             visiting.remove(key)
@@ -101,6 +125,14 @@ class PromotionService:
         for key in ids:
             visit(key)
         return found
+
+    @staticmethod
+    def _closure(evidence):
+        """Exact source dependency closure of an evidence packet (all artifacts, all parents)."""
+        try:
+            return closure(item.source_dependencies for item in evidence.values())
+        except ValueError as exc:
+            raise PromotionRefused(f"inconsistent evidence dependency closure: {exc}") from exc
 
     def _manifest(self, values):
         return {key: _hash(value) for key, value in sorted(values.items())}
@@ -153,7 +185,10 @@ class PromotionService:
             retrieved_at=utcnow(), quality="GOOD", provenance=payload.provenance,
             summary=f"Trusted application submission: {capability}", payload=body,
             source_capability=capability, source_system=VALIDATOR, derived_from_ids=support,
-            source_state_hash=source_state_hash(conn, incident.id))
+            # An immutable dated observation by a trusted actor. Later source changes
+            # never make it false; its supporting evidence is validated by its own
+            # manifests through the provenance DAG whenever the closure is checked.
+            source_dependencies=observation_manifest())
         self._checkpoint(conn, incident, [evidence])
         return evidence
 
@@ -240,6 +275,9 @@ class PromotionService:
             else:
                 raise PromotionRefused("unsupported run stage")
             evidence = self._evidence(conn, incident, asset_id, evidence_ids)
+            # Application-generated before any model reasoning; the model can neither
+            # define nor modify what the frozen packet depends on.
+            dependencies = self._closure(evidence)
             run_id = new_id()
             context = SpecialistContext(
                 incident_id=incident_id, asset_id=asset_id, run_id=run_id, input_revision=incident.revision + 1,
@@ -254,7 +292,7 @@ class PromotionService:
                 **_identity(incident_id), asset_id=asset_id, run_id=run_id, stage=stage,
                 input_revision=context.input_revision, evidence_manifest=self._manifest(evidence),
                 input_artifact_manifest={item.id: _hash(item) for item in artifacts},
-                source_state_hash=source_state_hash(conn, incident_id), context_payload=context.model_dump(mode="json"),
+                source_dependency_manifest=dependencies, context_payload=context.model_dump(mode="json"),
                 bounds=bounds.model_dump(mode="json"),
                 runtime_identity=runtimes,
                 version_identity={"policy": POLICY_VERSION, "strands": version("strands-agents"),
@@ -313,8 +351,14 @@ class PromotionService:
                 stale.append("ACTIVE_RUN_CHANGED")
             if incident.revision != snapshot.input_revision:
                 stale.append("REVISION_CHANGED_DURING_RUN")
-            if source_state_hash(conn, incident.id) != snapshot.source_state_hash:
-                stale.append("RAW_SOURCE_CHANGED")
+            if snapshot.source_dependency_manifest is None:
+                # A pre-13C snapshot froze only the whole-store hash, which can no
+                # longer prove that the exact inputs are unchanged.
+                stale.append("LEGACY_SOURCE_CHECKPOINT_UNVERIFIABLE")
+            else:
+                # Only reads the frozen packet actually relied upon can stale the run;
+                # unrelated telemetry, incidents, technicians or bookings cannot.
+                stale.extend(change.reason for change in revalidate(conn, snapshot.source_dependency_manifest))
             ids = set(snapshot.evidence_manifest) | set(result.evidence_used)
             ids.update(record.evidence_id for record in result.evidence_requests if record.evidence_id)
             for item in result.assessments:
@@ -401,10 +445,16 @@ class PromotionService:
         _require(not report.stale_reasons and report.input_revision == snapshot.input_revision == report.completion_revision
                  and report.checkpoint_revision == report.completion_revision + 1
                  and incident.revision == report.checkpoint_revision, "stale report revision checkpoint")
-        _require(source_state_hash(conn, incident.id) == snapshot.source_state_hash, "raw operational sources changed")
+        _require(snapshot.source_dependency_manifest is not None,
+                 "run snapshot predates dependency-scoped freshness; a new run is required")
+        changes = revalidate(conn, snapshot.source_dependency_manifest)
+        _require(not changes, "frozen source dependency changed: "
+                 + ", ".join(item.dependency.describe() for item in changes), evidence=True)
         evidence = self._evidence(conn, incident, snapshot.asset_id, tuple(snapshot.evidence_manifest))
         _require(self._manifest(evidence) == snapshot.evidence_manifest == report.evidence_manifest,
                  "evidence manifest differs from actual run inputs")
+        _require(self._closure(evidence) == snapshot.source_dependency_manifest,
+                 "frozen dependency closure differs from the evidence packet")
         context = SpecialistContext.model_validate(snapshot.context_payload)
         _require((context.incident_id, context.asset_id, context.run_id, context.input_revision, context.run_purpose) == (
             incident.id, snapshot.asset_id, snapshot.run_id, snapshot.input_revision, snapshot.stage), "snapshot context mismatch")

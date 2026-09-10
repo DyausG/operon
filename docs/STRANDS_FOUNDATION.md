@@ -1,4 +1,4 @@
-# Strands foundation and application promotion boundary (Steps 12A–13B)
+# Strands foundation and application promotion boundary (Steps 12A–13C)
 
 Strands supplies model interaction, tool selection, and Pydantic structured output.
 Operon supplies evidence capabilities and owns persistence, lifecycle, validation,
@@ -8,6 +8,8 @@ Step 13A adds durable application run/report storage and authoritative promotion
 Step 13B binds that promotion boundary into the durable incident lifecycle, the
 atomic approval flow and governed execution (`core/reliability/lifecycle.py`); the
 engine drives it by default and the old proposal shortcut is opt-in legacy code.
+Step 13C replaces the whole-store source checkpoint with dependency-scoped source
+freshness so telemetry can keep streaming while the supervisor reasons.
 
 ## SDK and runtime
 
@@ -428,17 +430,14 @@ a new run over the committed evidence is required. Later evidence, superseded
 sources, unresolved durable evidence requests, or a newer active run also block
 promotion. An old run's late report is retained with a stale classification.
 
-Raw operational changes are checked independently. Migration 004 adds a local
-source generation counter with insert/update/delete triggers over the operational
-source tables. Run snapshots and application-collected evidence retain a hash of
-the raw source rows, generation and other incidents' revisions. Promotion compares
-these under the same SQLite write lock; even a source change followed by restoration
-invalidates the checkpoint. Version 1 deliberately uses a broad local manifest, so
-unrelated asset changes can require fresh collection and reasoning. Older evidence
-without a source checkpoint is not eligible for new promotion. No external adapter
-or model call happens inside a promotion transaction.
-EvidenceService refreshes stale cached source reads into new superseding evidence
-and request records; unchanged-source retries retain their existing identities.
+Raw operational changes are checked independently of revisions. Step 13A did this
+with a whole-store hash (migration 004's source clock and triggers); Step 13C
+replaces it with dependency-scoped manifests, described in
+[Step 13C](#step-13c-dependency-scoped-source-freshness). Promotion still checks
+sources under the same SQLite write lock, and no external adapter or model call
+happens inside a promotion transaction. EvidenceService refreshes stale cached
+source reads into new superseding evidence and request records; retries whose exact
+source reads are unchanged retain their existing identities.
 
 ### Diagnosis
 
@@ -688,16 +687,173 @@ Two narrow corrections were required, both documented in code:
    baseline context). Such evidence can never enter a packet under the GOOD-quality
    rule, so the old check made promotion impossible for any investigated incident.
 
-### Known conflict: whole-store source checkpoint versus live operation
+### Resolved in 13C: whole-store source checkpoint versus live operation
 
-13A's `source_state_hash` covers every operational table (including streaming
-`sensor_reading`/`health_score`) and other incidents' revisions. Consequently a run
-is stale whenever the simulator persists a tick or another incident advances. The
-lifecycle refreshes stale baseline reads before each diagnosis run and the engine
-serializes reasoning, but promotion still requires quiescent raw sources between
-evidence collection, reasoning and promotion (for example, the plant stream paused
-via `/api/stop`, as the offline engine tests do). Source-specific versioning remains
-the deferred fix; 13B deliberately did not weaken the checkpoint.
+13A's `source_state_hash` covered every operational table (including streaming
+`sensor_reading`/`health_score`) and other incidents' revisions, so a run was stale
+whenever the simulator persisted a tick or another incident advanced, and promotion
+required quiescent raw sources. Step 13C below replaces that checkpoint with
+dependency-scoped manifests; the engine no longer needs the stream paused.
+
+## Step 13C: dependency-scoped source freshness
+
+**Principle.** An evidence artifact is stale only when a mutable local source that
+could change the result of the exact query it represents has changed. Freshness is
+therefore attached to what each capability actually read, not to the database, the
+asset, or the incident revision. Implementation: `core/reliability/freshness.py`,
+new `SourceDependency`/`SourceDependencyManifest` contracts in `models.py`, and
+optional fields `Evidence.source_dependencies` and
+`SupervisorRunSnapshot.source_dependency_manifest`.
+
+### Source dependencies
+
+Every capability performs its reads through `freshness.SourceReads`. Each read
+records one `SourceDependency`:
+
+| Field | Meaning |
+| --- | --- |
+| `domain` | which exact read: `asset_registry`, `health_score_latest`, `sensor_inventory`, `telemetry_latest`, `telemetry_window`, `maintenance_history`, `related_incidents` |
+| `scope` | the identity read: `asset_id`, `sensor_id`, `exclude_incident_id` |
+| `parameters` | the exact bound query values: `start_at`, `end_at`, `sample_limit`, `as_of`, `before`, `limit`, `sensor_type` |
+| `fingerprint` | SHA-256 of the rows that read returned, in consumption order |
+
+Revalidation (`freshness.revalidate`) replays the same `SourceReads` method with the
+stored scope and parameters and compares fingerprints, so the declared dependency
+and the query it is checked against cannot drift apart. Fingerprints are of query
+results: a change that is fully reverted before the check leaves the record valid,
+because it still reproduces from current sources. Reads and revalidation are local
+SQLite only and run safely under the promotion write lock.
+
+Capability → dependencies (traced from the SQL each capability executes):
+
+| Capability | Dependencies |
+| --- | --- |
+| `get_asset_context(as_of?)` | `asset_registry[asset]`, `health_score_latest[asset, as_of]`, `sensor_inventory[asset]`, `telemetry_latest[sensor, as_of]` per registered sensor |
+| `get_operating_context(as_of?)` | `asset_registry[asset]`, `health_score_latest[asset, as_of]` only; its result has no sensor content, so readings are not dependencies |
+| `get_telemetry_window(sensor_type?, start_at?, end_at?, sample_limit)` | `sensor_inventory[asset, sensor_type]`, `telemetry_window[sensor, start_at, end_at, sample_limit]` per matching sensor |
+| `get_maintenance_history(limit, before?)` | `maintenance_history[asset, before, limit]` covering the joined work-order rows (with failure-mode and technician columns) plus each order's events and issued/reserved parts |
+| `get_related_incidents(limit)` | `related_incidents[asset, exclude=this incident, limit]` fingerprinted by the ordered `(incident_id, revision)` list; every state or artifact change of another incident advances its revision |
+
+The read-only resource tools (`check_part_availability`, `inspect_available_technicians`,
+`inspect_maintenance_windows`) are not durable evidence capabilities and carry no
+manifest; resource state is revalidated by binding, governance and dispatch as before.
+
+### Historical telemetry-window semantics
+
+Evidence for `Machine A, 17:00:00 → 17:10:00` depends on
+`telemetry_window[sensor=A-*, start=17:00:00, end=17:10:00, limit=N]`. A sample at
+`17:10:05` never enters that query and never stales the evidence. A row inserted,
+modified or deleted inside the window, or a change to the queried sensor rows
+(unit, type), does. `sample_limit` is part of the dependency: with more rows than
+the limit, only changes that alter the returned newest-N rows matter. Requests
+without `end_at` (or `as_of`) are open-ended "latest" reads and are modelled
+honestly: new same-asset samples change their result and therefore stale them.
+The deterministic baseline (`DeterministicInvestigator`, `refresh_baseline_evidence`)
+pins the application collection clock as `end_at`/`as_of`, so baseline evidence is a
+reproducible historical snapshot while the plant streams; the model never supplies
+that boundary. The pinned boundary is the last fully elapsed second
+(`investigation.snapshot_boundary`): the engine stamps readings at whole-second
+precision, so a tick persisted moments after collection would otherwise sort inside
+a window ending in the same second. A baseline telemetry window that found too few
+samples (MISSING/SUSPECT) is re-pinned to a later boundary by the next refresh rather
+than re-asked; usable windows and context snapshots are reused unchanged, so unrelated
+streaming causes no refresh. Timestamps compare as ISO strings exactly as the
+capability queries do; a late arrival stamped inside the window counts as inside.
+
+### Immutable observation versus mutable source
+
+`Evidence.source_dependencies.basis` distinguishes three cases:
+
+- `SOURCE_QUERY`: reproduced from the listed reads (application capabilities).
+- `IMMUTABLE_OBSERVATION`: a dated observation with no mutable local source: admitted
+  model signals, `TrustedTechnicalConfirmation` and `ResourceConfirmation` evidence.
+  Later telemetry cannot make the observation false. Their supporting evidence is
+  validated through `derived_from_ids` whenever a closure is checked, so a
+  confirmation whose independent technical support went stale is not usable for a
+  new promotion. Resource confirmations are additionally rechecked against actual
+  stock/technician rows at binding, governance and dispatch, unchanged from 13B.
+- `DERIVED`: no own reads; freshness flows entirely from its provenance parents.
+
+The basis is bound to the boundary that owns it (`repository.manifest_authority`,
+checked on every insert and again wherever freshness is decided): source-read kinds
+(`telemetry`, `maintenance_history`, `asset_relation`, `operational_context`) are
+accepted only from the application capabilities that replay their reads; only model
+signals and the trusted confirmation commands (whose capabilities the public
+`add_artifact` refuses) may be `IMMUTABLE_OBSERVATION`; `DERIVED` records must name
+durable evidence parents; `CLOSURE` never appears on evidence. A caller cannot
+choose a basis to avoid source revalidation.
+
+`PromotionService._evidence` walks the provenance DAG and validates every artifact's
+own manifest, so a stale parent invalidates every derived descendant.
+
+### Evidence reuse
+
+`EvidenceService.request_and_collect` reuses a prior generation only when the
+request is identical, the artifact is current (not superseded), its content hash
+and provenance are intact, and its dependency manifest still validates. Otherwise
+it appends a superseding request and evidence generation; historical records are
+never mutated. Collection runs the reads in one read transaction, so the stored
+manifest describes exactly the rows in the payload; the repository replays the
+capability inside the insert transaction and refuses the artifact if a dependency
+changed in between.
+
+### Frozen run closure, completion and promotion
+
+`start_run` validates the packet and freezes `SupervisorRunSnapshot.source_dependency_manifest`
+(basis `CLOSURE`): the union of every packet artifact's dependencies, including
+provenance parents, in canonical order. It is generated by the application before
+model invocation; the snapshot is promotion-owned and immutable, and the model
+output cannot alter it. `_complete_run` keeps every 13A check (active run, revision,
+result identity, scope) and replaces `RAW_SOURCE_CHANGED` with one
+`SOURCE_DEPENDENCY_CHANGED:<domain>[scope,parameters]` reason per changed frozen
+dependency. `_fresh` keeps every existing gate (run/stage/asset, active run,
+revision checkpoint, evidence manifest equality, context and input artifact
+manifests, current/superseded, request grounding, audit, lineage) and replaces the
+global hash equality with revalidation of the frozen closure plus equality between
+the closure recomputed from the packet and the frozen one. Promotion fails when a
+dependency the run relied upon changed and does not fail when unrelated data
+changed.
+
+### What still causes retry, refresh or refusal
+
+- A frozen dependency that changed during reasoning: stale report, lifecycle `RETRY`.
+- A dependency that changed after completion: promotion refused
+  (`NEEDS_EVIDENCE`); `_refusal_is_stale` classifies it as retryable.
+- Baseline evidence whose manifest no longer validates: superseded by
+  `refresh_baseline_evidence` before the next run.
+- Confirmation support that went stale: the confirmation drops out of
+  `current_evidence_ids`, the run reports the missing confirmation as `NEEDS_EVIDENCE`.
+- Any incident revision change during a run, new evidence during a run, a newer
+  active run, superseded artifacts and unresolved requests: unchanged from 13A/13B.
+- Approval, execution, receipt and reconciliation semantics: unchanged.
+
+Continuous unrelated telemetry, other assets' health scores, other incidents,
+technicians, parts and bookings no longer cause any of the above.
+
+### Legacy compatibility
+
+Historical `Evidence` and `SupervisorRunSnapshot` records keep `source_state_hash`
+as optional legacy metadata and load unchanged; their content hashes are unaffected
+because absent optional fields are omitted from serialization. A legacy hash is never
+compared against anything and is never treated as a scoped manifest. Legacy evidence
+(no manifest) is excluded from run packets and refused by `start_run` with
+`NEEDS_EVIDENCE` ("must be collected again"), except legacy model signals, which are
+dated observations. A legacy snapshot completes with
+`LEGACY_SOURCE_CHECKPOINT_UNVERIFIABLE` and can never be promoted; the lifecycle
+starts a new run. Migration `006_dependency_scoped_freshness.sql` adds only indexes
+for the replayed reads; the 004 source clock and triggers remain but are unused.
+
+### Authority invariants
+
+Agents never supply fingerprints or manifests: capability parameters are strict
+schemas, and manifests are generated by `SourceReads` inside the application.
+`IncidentRepository` accepts a `SOURCE_QUERY` manifest only for an application
+capability with its durable request, and only if replaying that capability now
+yields the identical dependency set and fingerprints; forged, narrowed, broadened,
+other-asset or stale manifests are refused, observation/derived manifests carry no
+dependencies, and a `CLOSURE` manifest is refused on evidence. Snapshots remain
+promotion-owned. Content hashes still detect payload mutation. Legacy records do
+not become new-format records. Approval and execution paths are untouched.
 
 ## Scope and verification
 
@@ -708,8 +864,9 @@ The legacy deterministic fallback remains available; no second agent framework o
 new deterministic diagnostic workflow is introduced.
 
 Live fallback integration, AgentCore, RAG/OEM ingestion, procurement, outcome
-verification, automatic closure, provider migration, source-specific freshness
-versioning, host authentication and frontend redesign remain deferred after 13B.
+verification, automatic closure, provider migration, host authentication and
+frontend redesign remain deferred after 13C. Source-specific freshness is
+implemented (13C); external source adapters still have no dependency domains.
 
 Run `uv run pytest tests/test_reliability_lifecycle.py tests/test_engine_lifecycle.py`
 for the 13B lifecycle: atomic approval/claim/receipt transactions with rollback
@@ -718,6 +875,12 @@ and callbacks), stale/superseded approvals, governance blocks, the evidence-duri
 execution race for CONFIRMED/FAILED/UNKNOWN, UNKNOWN non-replay, restart after claim
 or approval, legacy artifacts and phase-only incidents refused, and the engine/API
 contract. These tests require neither AWS credentials nor network access.
+
+Run `uv run pytest tests/test_freshness.py` for the 13C dependency-scoped freshness
+suite: unrelated-source isolation, telemetry-window mutation semantics, capability
+isolation, evidence reuse and supersession, frozen run closures, promotion with and
+without dependency changes, derived closures, trusted confirmations, legacy records,
+continuous streaming during reasoning and caller-supplied manifest forgeries.
 
 Run `uv run pytest tests/test_supervisor.py tests/test_strands_agents.py tests/test_specialists.py` for native SDK construction,
 scripted model/tool/structured-output cycles, import checks, budget/error behavior,

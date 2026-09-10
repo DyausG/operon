@@ -1,6 +1,7 @@
 """Deterministic baseline evidence collection, not a diagnostic agent."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -33,6 +34,29 @@ BASELINE_CAPABILITIES = (
     ("get_related_incidents", "Collect other persisted incidents for this asset.", {"limit": 20}),
     ("get_operating_context", "Collect the persisted operating context.", {}),
 )
+# Baseline reads whose natural form is "latest as of now". The application pins its
+# own collection clock so the evidence stays a reproducible historical snapshot while
+# telemetry keeps streaming; the model never supplies this boundary.
+PINNED_BOUNDARY = {"get_telemetry_window": "end_at", "get_asset_context": "as_of", "get_operating_context": "as_of"}
+
+
+def snapshot_boundary(collected_at: datetime) -> datetime:
+    """Last fully elapsed second before ``collected_at``.
+
+    Writers such as the engine stamp readings at whole-second precision, so a row
+    persisted moments after collection could otherwise sort inside a window that ends
+    in the same second. Ending the frozen window at the previous second guarantees
+    that every later write falls strictly after it.
+    """
+    return collected_at.replace(microsecond=0) - timedelta(seconds=1)
+
+
+def baseline_parameters(capability: str, parameters: dict, *, collected_at: datetime) -> dict:
+    """Baseline parameters with the application snapshot boundary pinned where applicable."""
+    field = PINNED_BOUNDARY.get(capability)
+    if field is None or parameters.get(field) is not None:
+        return dict(parameters)
+    return {**parameters, field: snapshot_boundary(collected_at)}
 
 
 class DeterministicInvestigator:
@@ -55,9 +79,11 @@ class DeterministicInvestigator:
             reason="deterministic baseline evidence collection started",
         )
         asset_id = incident.equipment_ids[0]
+        collected_at = utcnow()
         specifications = tuple(
-            (capability, question, {**parameters, "sample_limit": telemetry_sample_limit}
-             if capability == "get_telemetry_window" else parameters)
+            (capability, question, baseline_parameters(
+                capability, {**parameters, "sample_limit": telemetry_sample_limit}
+                if capability == "get_telemetry_window" else parameters, collected_at=collected_at))
             for capability, question, parameters in BASELINE_CAPABILITIES)
         collections: list[EvidenceCollection] = []
         for capability, question, parameters in specifications:

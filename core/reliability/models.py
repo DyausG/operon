@@ -9,11 +9,17 @@ from __future__ import annotations
 from enum import Enum
 from typing import Annotated, Literal
 
+import json
+
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, model_serializer, model_validator
 
 Identifier = Annotated[str, Field(min_length=1)]
 Score = Annotated[float, Field(ge=0, le=1)]
 Role = Literal["supervisor", "diagnostic", "engineering", "operations", "critic", "planner", "procurement"]
+FRESHNESS_POLICY = "operon-freshness-1"
+# Every domain names one exact local read implemented by ``freshness.SourceReads``.
+SourceDomain = Literal["asset_registry", "health_score_latest", "sensor_inventory", "telemetry_latest",
+                       "telemetry_window", "maintenance_history", "related_incidents"]
 
 
 class Contract(BaseModel):
@@ -68,9 +74,10 @@ class Artifact(Record):
     @model_serializer(mode="wrap")
     def preserve_pre_promotion_hashes(self, handler):
         value = handler(self)
-        # Additive optional metadata must not alter hashes of pre-004 artifacts.
+        # Additive optional metadata must not alter hashes of pre-004/pre-13C artifacts.
         for field in ("source_state_hash", "validator_identity", "validation_policy_version", "binding_id",
-                      "check_results", "risk_metadata", "promotion_id"):
+                      "check_results", "risk_metadata", "promotion_id", "source_dependencies",
+                      "source_dependency_manifest"):
             if field in value and value[field] in (None, {}):
                 value.pop(field)
         return value
@@ -99,6 +106,53 @@ class ModelSignal(Record):
     input_provenance: Literal["OBSERVED", "SIMULATED"]
 
 
+class SourceDependency(Contract):
+    """One recomputable local source read that an evidence result depends on.
+
+    ``domain`` selects the exact query (see ``freshness.SourceReads``); ``scope``
+    and ``parameters`` are the exact bound values (asset, sensor, window bounds,
+    limits); ``fingerprint`` is a deterministic hash of the rows that query returned.
+    Recomputing the same read later and comparing fingerprints decides staleness.
+    """
+    domain: SourceDomain
+    scope: dict[str, JsonValue]
+    parameters: dict[str, JsonValue] = Field(default_factory=dict)
+    fingerprint: Identifier
+
+    @property
+    def identity(self) -> str:
+        return json.dumps([self.domain, self.scope, self.parameters], sort_keys=True, separators=(",", ":"))
+
+    def describe(self) -> str:
+        bound = {**self.scope, **self.parameters}
+        return self.domain + "[" + ",".join(f"{key}={bound[key]}" for key in sorted(bound)) + "]"
+
+
+class SourceDependencyManifest(Contract):
+    """Application-generated, inspectable freshness contract of one record.
+
+    SOURCE_QUERY: the record reproduces from the listed local reads; it is stale
+    only when one of those exact reads changes. IMMUTABLE_OBSERVATION: a dated
+    observation (model signal, trusted confirmation) with no mutable local source;
+    it never becomes false because sources advance. DERIVED: freshness flows
+    entirely from ``derived_from_ids``. CLOSURE: the union frozen by a run snapshot.
+    """
+    policy_version: Literal["operon-freshness-1"] = FRESHNESS_POLICY
+    basis: Literal["SOURCE_QUERY", "IMMUTABLE_OBSERVATION", "DERIVED", "CLOSURE"]
+    dependencies: tuple[SourceDependency, ...] = ()
+
+    @model_validator(mode="after")
+    def consistent_basis(self):
+        identities = [item.identity for item in self.dependencies]
+        if len(set(identities)) != len(identities):
+            raise ValueError("duplicate source dependency identity")
+        if self.basis == "SOURCE_QUERY" and not self.dependencies:
+            raise ValueError("source-query manifest requires at least one dependency")
+        if self.basis in {"IMMUTABLE_OBSERVATION", "DERIVED"} and self.dependencies:
+            raise ValueError(f"{self.basis} manifest cannot carry source dependencies")
+        return self
+
+
 class Evidence(Artifact):
     equipment_ids: tuple[Identifier, ...] = Field(min_length=1)
     kind: Literal["telemetry", "model_signal", "maintenance_history", "document",
@@ -121,8 +175,12 @@ class Evidence(Artifact):
     collection_key: str | None = None
     derived_from_ids: tuple[Identifier, ...] = ()
     supersedes_id: str | None = None
-    # Application-captured raw local source checkpoint, separate from revisions.
+    # Legacy (pre-13C) whole-store checkpoint. Retained as metadata only; it grants
+    # no freshness and is never compared against current sources.
     source_state_hash: str | None = None
+    # Step 13C dependency-scoped freshness. Absent on legacy records, which cannot
+    # prove scoped freshness and must be collected again for a new promotion.
+    source_dependencies: SourceDependencyManifest | None = None
 
     @model_validator(mode="after")
     def validate_signal(self):
@@ -244,7 +302,11 @@ class SupervisorRunSnapshot(Artifact):
     evidence_manifest: dict[str, Identifier]
     input_artifact_manifest: dict[str, Identifier]
     advisory_input_manifest: dict[str, Identifier] = Field(default_factory=dict)
-    source_state_hash: Identifier
+    # Legacy (pre-13C) whole-store checkpoint; optional so historical snapshots load.
+    source_state_hash: str | None = None
+    # Exact dependency closure of the frozen evidence packet, application-generated
+    # in start_run before any model reasoning. Legacy snapshots carry none.
+    source_dependency_manifest: SourceDependencyManifest | None = None
     context_payload: dict[str, JsonValue]
     bounds: dict[str, JsonValue]
     runtime_identity: dict[str, JsonValue]

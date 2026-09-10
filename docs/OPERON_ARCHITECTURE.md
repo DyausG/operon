@@ -10,7 +10,8 @@ checkpoint here supersedes historical implementation-status statements in that
 roadmap. Runtime behavior and contracts are described in
 [STRANDS_FOUNDATION.md](STRANDS_FOUNDATION.md).
 
-**Implemented checkpoint: Step 13B — lifecycle and governed execution integration**
+**Implemented checkpoint: Step 13C — dependency-scoped source freshness**
+(on top of Step 13B — lifecycle and governed execution integration)
 
 **Agents reason. The application owns authority.** Five native Strands specialists
 and the native agents-as-tools Reliability Supervisor produce advisory reports.
@@ -105,14 +106,29 @@ acquisition, requires another run over committed evidence. The original input
 revision is never rewritten. Unresolved requests, superseded evidence/artifacts,
 foreign scope, mismatched manifests and stale assessment dependencies block.
 
-Raw operational freshness is independent of incident revisions. Evidence and runs
-carry a source hash over local operational rows, other incident revisions and a
-durable source generation. Migration 004 installs the source counter and triggers
-for raw source changes, including changes later reverted. Promotion checks the
-manifest under its transaction lock. Version 1 conservatively invalidates on
-unrelated local source changes too; external source adapters and narrower source
-versioning are deferred. Historical evidence without this checkpoint must be
-collected again before new promotion.
+Raw operational freshness is independent of incident revisions and, since Step
+13C, dependency-scoped (`core/reliability/freshness.py`). Every application-collected
+`Evidence` carries a `SourceDependencyManifest`: one `SourceDependency` per exact
+local read the capability performed (domain, scope such as asset or sensor, the
+bound query parameters such as window bounds and limits, and a fingerprint of the
+rows returned). A record is stale only when replaying one of those exact reads
+returns different rows. Unrelated telemetry, other assets, other incidents,
+technicians, parts or bookings cannot invalidate it. Historical telemetry windows
+with an `end_at` are never staled by samples that arrive after the window; a row
+inserted, modified or deleted inside the window, or a change to the queried sensor
+configuration, is. Open-ended "latest" reads are modelled honestly as open-ended;
+the deterministic baseline pins the application collection clock (`end_at`,
+`as_of`) so baseline evidence stays reproducible while the plant streams. Model
+signals and trusted confirmations are immutable dated observations with no mutable
+source dependencies; their supporting evidence is validated through the provenance
+DAG. Run snapshots freeze the exact dependency closure of the packet before any
+model reasoning; completion and promotion revalidate that closure and report the
+precise dependency that changed. Historical records keep the pre-13C whole-store
+`source_state_hash` as legacy metadata only; it proves nothing and such records
+must be collected again (or a new run started) before a new promotion. Migration
+006 adds only indexes for the replayed reads; the 004 source clock is retained but
+no longer consulted. See
+[STRANDS_FOUNDATION.md](STRANDS_FOUNDATION.md#step-13c-dependency-scoped-source-freshness).
 Source-aware EvidenceService cache refresh appends superseding request/evidence
 records while preserving the old audit. Durable resource confirmation also retains
 the actual checked inventory quantities, rather than only an availability claim.
@@ -184,7 +200,9 @@ include necessary phase transitions in their atomic commit. Failure injection,
 concurrent retries, native SDK review, stale sources, migration preservation and
 legacy exclusion are exercised offline in `tests/test_promotion.py`; lifecycle,
 approval, execution, race and recovery behavior in `tests/test_reliability_lifecycle.py`
-and `tests/test_engine_lifecycle.py`.
+and `tests/test_engine_lifecycle.py`; dependency-scoped freshness, telemetry-window
+semantics, capability isolation, derived-closure and legacy-compatibility behavior
+in `tests/test_freshness.py`.
 
 No AgentCore, live Bedrock verification, retrieval/OEM/RAG, procurement, systemic
 investigation, outcome verification, automatic closure, dashboard redesign, host

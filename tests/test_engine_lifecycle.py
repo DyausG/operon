@@ -169,7 +169,7 @@ async def test_engine_drives_the_full_authoritative_lifecycle_to_observing(seede
     # Trusted confirmation resumes investigation; a fresh run then promotes the diagnosis.
     bridge.confirm()
     assert engine.incidents[ASSET].phase == m.IncidentPhase.INVESTIGATING
-    await engine.stop()  # pause telemetry persistence so 13A raw-source freshness can hold
+    await engine.stop()  # stop the background loop; 13C no longer needs quiescent sources (see streaming test)
     engine._progress_lifecycle()
     await engine.drain()
     incident = engine.coordinator.repository.fetch_incident(bridge.incident_id)
@@ -318,3 +318,45 @@ async def test_legacy_demo_path_requires_explicit_opt_in(seeded_db, monkeypatch)
     assert engine.legacy_demo and engine.snapshot()["authority_path"] == "legacy-demo"
     monkeypatch.delenv("OPERON_LEGACY_DEMO")
     assert not make_engine(monkeypatch).legacy_demo
+
+
+async def test_engine_promotes_while_the_plant_keeps_streaming_during_reasoning(seeded_db, monkeypatch):
+    """13C: full engine ticks for every asset (second-precision timestamps, health scores,
+    other incidents admitted) land while the supervisor reasons; the run stays promotable."""
+    from core.agents import supervisor as supervisor_module
+    holder = {}
+    scripted_supervisor(monkeypatch, holder)
+    scripted = supervisor_module.supervise_reliability
+    ticks = []
+
+    async def streaming(runtime, service, context, **kwargs):
+        for _ in range(3):
+            await engine._advance()
+            ticks.append(engine.tick_i)
+        return await scripted(runtime, service, context, **kwargs)
+    monkeypatch.setattr("core.agents.supervisor.supervise_reliability", streaming)
+    engine = make_engine(monkeypatch, runtime=StrandsRuntime(settings(), model=ScriptedModel()))
+    # A plant that has been running: a few minutes of second-precision history exist before admission.
+    with db.get_conn() as conn:
+        for offset in range(3):
+            stamp = (utcnow() - timedelta(minutes=2, seconds=offset)).isoformat(timespec="seconds")
+            for sensor_type in ("AIRTEMP", "PROCTEMP", "SPEED", "TORQUE", "TOOLWEAR"):
+                conn.execute("INSERT INTO sensor_reading VALUES (?,?,?,?)", (f"{ASSET}-{sensor_type}", stamp, 10.0 + offset, "GOOD"))
+    engine.sim.assets[ASSET].prog = 0.9
+    await engine._advance()
+    await engine._advance()
+    bridge = holder["bridge"] = Bridge(engine, ASSET)
+    await engine.drain()
+    assert engine.incidents[ASSET].phase == m.IncidentPhase.AWAITING_EVIDENCE
+    bridge.confirm()
+    engine._progress_lifecycle()
+    await engine.drain()
+    incident = engine.coordinator.repository.fetch_incident(bridge.incident_id)
+    assert ticks and incident.phase == m.IncidentPhase.DIAGNOSIS_VALIDATED, engine.alerts[ASSET]["lifecycle"]
+    reports = [a for a in engine.coordinator.repository.list_artifacts(bridge.incident_id) if isinstance(a, m.SupervisorReport)]
+    assert reports[-1].stale_reasons == ()
+    snapshot = engine.coordinator.repository.get_artifact(bridge.incident_id, reports[-1].snapshot_id)
+    assert {"telemetry_window", "telemetry_latest", "health_score_latest", "maintenance_history"} <= {
+        d.domain for d in snapshot.source_dependency_manifest.dependencies}
+    with db.get_conn(engine.coordinator.repository.path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sensor_reading WHERE sensor_id LIKE 'AC-COMP-01-%'").fetchone()[0] >= 25

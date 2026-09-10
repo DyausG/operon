@@ -4,6 +4,11 @@ These functions read the semantic store and return typed results.  They do not
 diagnose, call a model, expose SQL, or mutate plant/CMMS state.  ``EvidenceService``
 is the trusted application boundary that turns an ``EvidenceRequest`` into an
 immutable, provenance-bearing ``Evidence`` artifact.
+
+Step 13C: every capability performs its reads through ``freshness.SourceReads`` in
+one read transaction, so the returned result and its ``SourceDependencyManifest``
+describe the same rows. Freshness of stored evidence is decided by replaying those
+exact reads, never by a whole-store checkpoint.
 """
 from __future__ import annotations
 
@@ -18,7 +23,8 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, mod
 from core import config, db
 from core.seed_data import EQUIPMENT
 from . import models as m
-from .repository import IncidentRepository, content_hash, new_id, source_state_hash, utcnow
+from .freshness import SourceReads, revalidate
+from .repository import SOURCE_QUERY_KINDS, IncidentRepository, content_hash, new_id, utcnow
 
 
 class UnsupportedEvidenceCapability(ValueError):
@@ -88,6 +94,8 @@ class SensorContext(ReadContract):
 class AssetContext(ReadContract):
     asset_id: str
     availability: Availability
+    # Application-pinned snapshot boundary; None means "latest at collection time".
+    as_of: AwareDatetime | None = None
     asset_name: str | None = None
     asset_type: str | None = None
     criticality: str | None = None
@@ -205,6 +213,7 @@ class RelatedIncidents(ReadContract):
 class OperatingContext(ReadContract):
     asset_id: str
     availability: Availability
+    as_of: AwareDatetime | None = None
     plant_id: str | None = None
     plant_name: str | None = None
     plant_timezone: str | None = None
@@ -232,8 +241,15 @@ class EvidenceCollection(ReadContract):
     reused: bool = False
 
 
-class _EmptyQuery(ReadContract):
-    pass
+class _AsOfQuery(ReadContract):
+    """Optional snapshot boundary for "latest" reads.
+
+    Without it the capability reads the newest rows, which is an open-ended query
+    that later same-asset writes legitimately change. The deterministic baseline
+    pins the application collection time so its evidence stays reproducible while
+    telemetry keeps streaming.
+    """
+    as_of: AwareDatetime | None = None
 
 
 class _TelemetryQuery(ReadContract):
@@ -262,6 +278,13 @@ SUPPORTED_CAPABILITIES = frozenset({
     "get_asset_context", "get_telemetry_window", "get_maintenance_history",
     "get_related_incidents", "get_operating_context",
 })
+_QUERY_MODELS = {
+    "get_asset_context": _AsOfQuery,
+    "get_operating_context": _AsOfQuery,
+    "get_telemetry_window": _TelemetryQuery,
+    "get_maintenance_history": _MaintenanceQuery,
+    "get_related_incidents": _RelatedQuery,
+}
 _DEMO_ASSET_IDS = frozenset(row[0] for row in EQUIPMENT)
 
 
@@ -274,8 +297,8 @@ def _aware(value: str | datetime | None) -> datetime | None:
     return parsed
 
 
-def _iso(value: datetime) -> str:
-    return value.astimezone(timezone.utc).isoformat()
+def _iso(value: datetime | None) -> str | None:
+    return None if value is None else value.astimezone(timezone.utc).isoformat()
 
 
 def _risk_state(risk: float | None) -> str | None:
@@ -311,7 +334,12 @@ def _stats(readings: tuple[SensorReading, ...]) -> TelemetryStatistics:
 
 
 class EvidenceCapabilities:
-    """Read-only capabilities. A path can be injected for isolated stores/tests."""
+    """Read-only capabilities. A path can be injected for isolated stores/tests.
+
+    Public ``get_*`` methods return results only. ``collect_with_dependencies``
+    returns the result together with the application-generated dependency manifest
+    of the reads that produced it; both come from the same read transaction.
+    """
 
     def __init__(self, path: Path | None = None):
         self.path = Path(path if path is not None else db.DB_PATH)
@@ -325,40 +353,30 @@ class EvidenceCapabilities:
             observation_end=observed[1], parameters=parameters, locator=locator,
         )
 
-    def get_asset_context(self, asset_id: str) -> AssetContext:
-        with db.get_conn(self.path) as conn:
-            asset = conn.execute(
-                "SELECT e.*,l.line_name,l.line_type,p.plant_id,p.plant_name,p.timezone "
-                "FROM equipment e JOIN assembly_line l ON l.line_id=e.line_id "
-                "JOIN plant p ON p.plant_id=l.plant_id WHERE e.equipment_id=?", (asset_id,),
-            ).fetchone()
-            params = {"asset_id": asset_id}
-            if asset is None:
-                return AssetContext(
-                    asset_id=asset_id, availability=Availability.UNAVAILABLE,
-                    missing_reason="asset is not present in the equipment registry",
-                    missing_fields=("asset_metadata", "sensor_inventory", "health_score"),
-                    provenance=self._provenance("get_asset_context", ("equipment", "sensor", "health_score"),
-                                                (DataOrigin.RECORDED,), params, f"equipment:{asset_id}"),
-                )
-            score = conn.execute(
-                "SELECT * FROM health_score WHERE equipment_id=? "
-                "ORDER BY scored_at DESC,score_id DESC LIMIT 1", (asset_id,),
-            ).fetchone()
-            sensors = []
-            for sensor in conn.execute(
-                    "SELECT * FROM sensor WHERE equipment_id=? ORDER BY sensor_type,sensor_id", (asset_id,)):
-                latest = conn.execute(
-                    "SELECT ts,value_eu,quality_flag FROM sensor_reading WHERE sensor_id=? "
-                    "ORDER BY ts DESC,rowid DESC LIMIT 1", (sensor["sensor_id"],),
-                ).fetchone()
-                reading = None if latest is None else SensorReading(
-                    asset_id=asset_id, sensor_id=sensor["sensor_id"], sensor_type=sensor["sensor_type"],
-                    timestamp=_aware(latest["ts"]), value=latest["value_eu"], unit=sensor["unit_eu"],
-                    quality=latest["quality_flag"],
-                )
-                sensors.append(SensorContext(sensor_id=sensor["sensor_id"], sensor_type=sensor["sensor_type"],
-                                             unit=sensor["unit_eu"], latest_reading=reading))
+    # ------------------------------------------------------------ internals
+    def _asset_context(self, reads: SourceReads, asset_id: str, as_of: datetime | None) -> AssetContext:
+        bound = _iso(as_of)
+        asset = reads.asset_registry(asset_id=asset_id)
+        params: dict[str, JsonValue] = {"asset_id": asset_id, "as_of": bound}
+        if asset is None:
+            return AssetContext(
+                asset_id=asset_id, as_of=as_of, availability=Availability.UNAVAILABLE,
+                missing_reason="asset is not present in the equipment registry",
+                missing_fields=("asset_metadata", "sensor_inventory", "health_score"),
+                provenance=self._provenance("get_asset_context", ("equipment", "sensor", "health_score"),
+                                            (DataOrigin.RECORDED,), params, f"equipment:{asset_id}"),
+            )
+        score = reads.health_score_latest(asset_id=asset_id, as_of=bound)
+        sensors = []
+        for sensor in reads.sensor_inventory(asset_id=asset_id):
+            latest = reads.telemetry_latest(sensor_id=sensor["sensor_id"], as_of=bound)
+            reading = None if latest is None else SensorReading(
+                asset_id=asset_id, sensor_id=sensor["sensor_id"], sensor_type=sensor["sensor_type"],
+                timestamp=_aware(latest["ts"]), value=latest["value_eu"], unit=sensor["unit_eu"],
+                quality=latest["quality_flag"],
+            )
+            sensors.append(SensorContext(sensor_id=sensor["sensor_id"], sensor_type=sensor["sensor_type"],
+                                         unit=sensor["unit_eu"], latest_reading=reading))
         score_at = _aware(score["scored_at"]) if score else None
         origins = [DataOrigin.SEEDED_DEMO if asset_id in _DEMO_ASSET_IDS else DataOrigin.RECORDED]
         if score:
@@ -373,7 +391,7 @@ class EvidenceCapabilities:
             missing.append("health_score")
         risk = float(score["failure_prob"]) if score else None
         return AssetContext(
-            asset_id=asset_id, availability=Availability.AVAILABLE,
+            asset_id=asset_id, as_of=as_of, availability=Availability.AVAILABLE,
             asset_name=asset["equipment_name"], asset_type=asset["equipment_class"],
             criticality=asset["criticality"], product_tier=asset["product_tier"],
             plant_id=asset["plant_id"], plant_name=asset["plant_name"],
@@ -384,62 +402,40 @@ class EvidenceCapabilities:
             missing_fields=tuple(missing),
             provenance=self._provenance(
                 "get_asset_context", ("plant", "assembly_line", "equipment", "sensor", "sensor_reading", "health_score"),
-                tuple(origins), params, f"equipment:{asset_id}",
+                tuple(origins), params, f"equipment:{asset_id};as_of={bound}",
                 (min(observations) if observations else None, max(observations) if observations else None),
             ),
         )
 
-    def get_telemetry_window(self, asset_id: str, *, sensor_type: str | None = None,
-                             start_at: datetime | None = None, end_at: datetime | None = None,
-                             sample_limit: int = 60) -> TelemetryWindow:
-        query = _TelemetryQuery(sensor_type=sensor_type, start_at=start_at,
-                                end_at=end_at, sample_limit=sample_limit)
+    def _telemetry_window(self, reads: SourceReads, asset_id: str, query: _TelemetryQuery) -> TelemetryWindow:
         normalized_type = query.sensor_type.upper() if query.sensor_type else None
-        with db.get_conn(self.path) as conn:
-            sql = "SELECT * FROM sensor WHERE equipment_id=?"
-            args: list[object] = [asset_id]
-            if normalized_type:
-                sql += " AND upper(sensor_type)=?"
-                args.append(normalized_type)
-            sql += " ORDER BY sensor_type,sensor_id"
-            sensor_rows = conn.execute(sql, tuple(args)).fetchall()
-            series: list[TelemetrySeries] = []
-            for sensor in sensor_rows:
-                point_sql = (
-                    "SELECT ts,value_eu,quality_flag,rowid FROM sensor_reading "
-                    "WHERE sensor_id=?"
-                )
-                point_args: list[object] = [sensor["sensor_id"]]
-                if query.start_at:
-                    point_sql += " AND ts>=?"
-                    point_args.append(_iso(query.start_at))
-                if query.end_at:
-                    point_sql += " AND ts<=?"
-                    point_args.append(_iso(query.end_at))
-                point_sql += " ORDER BY ts DESC,rowid DESC LIMIT ?"
-                point_args.append(query.sample_limit)
-                rows = list(reversed(conn.execute(point_sql, tuple(point_args)).fetchall()))
-                readings = tuple(SensorReading(
-                    asset_id=asset_id, sensor_id=sensor["sensor_id"], sensor_type=sensor["sensor_type"],
-                    timestamp=_aware(row["ts"]), value=row["value_eu"], unit=sensor["unit_eu"],
-                    quality=row["quality_flag"],
-                ) for row in rows)
-                statistics = _stats(readings)
-                availability = (Availability.AVAILABLE if statistics.sample_count >= 2 else
-                                Availability.PARTIAL if statistics.sample_count == 1 else Availability.UNAVAILABLE)
-                reason = None
-                if statistics.sample_count == 0:
-                    reason = "no persisted readings match the requested window"
-                elif statistics.sample_count == 1:
-                    reason = "one sample is available; delta and trend require at least two"
-                series.append(TelemetrySeries(
-                    sensor_id=sensor["sensor_id"], sensor_type=sensor["sensor_type"], unit=sensor["unit_eu"],
-                    availability=availability, readings=readings, statistics=statistics, missing_reason=reason,
-                ))
+        start, end = _iso(query.start_at), _iso(query.end_at)
+        sensor_rows = reads.sensor_inventory(asset_id=asset_id, sensor_type=normalized_type)
+        series: list[TelemetrySeries] = []
+        for sensor in sensor_rows:
+            rows = reads.telemetry_window(sensor_id=sensor["sensor_id"], start_at=start, end_at=end,
+                                          sample_limit=query.sample_limit)
+            readings = tuple(SensorReading(
+                asset_id=asset_id, sensor_id=sensor["sensor_id"], sensor_type=sensor["sensor_type"],
+                timestamp=_aware(row["ts"]), value=row["value_eu"], unit=sensor["unit_eu"],
+                quality=row["quality_flag"],
+            ) for row in rows)
+            statistics = _stats(readings)
+            availability = (Availability.AVAILABLE if statistics.sample_count >= 2 else
+                            Availability.PARTIAL if statistics.sample_count == 1 else Availability.UNAVAILABLE)
+            reason = None
+            if statistics.sample_count == 0:
+                reason = "no persisted readings match the requested window"
+            elif statistics.sample_count == 1:
+                reason = "one sample is available; delta and trend require at least two"
+            series.append(TelemetrySeries(
+                sensor_id=sensor["sensor_id"], sensor_type=sensor["sensor_type"], unit=sensor["unit_eu"],
+                availability=availability, readings=readings, statistics=statistics, missing_reason=reason,
+            ))
         all_readings = [reading for item in series for reading in item.readings]
         if not sensor_rows:
             availability, reason = Availability.UNAVAILABLE, (
-                f"sensor {sensor_type!r} is not registered for asset" if sensor_type
+                f"sensor {query.sensor_type!r} is not registered for asset" if query.sensor_type
                 else "asset has no registered sensors"
             )
         elif all(item.availability == Availability.AVAILABLE for item in series):
@@ -462,47 +458,24 @@ class EvidenceCapabilities:
             ),
         )
 
-    def get_maintenance_history(self, asset_id: str, *, limit: int = 20,
-                                before: datetime | None = None) -> MaintenanceHistory:
-        query = _MaintenanceQuery(limit=limit, before=before)
-        with db.get_conn(self.path) as conn:
-            sql = (
-                "SELECT wo.*,fm.mode_code,fm.failure_mode_name,t.full_name technician_name "
-                "FROM work_order wo LEFT JOIN failure_mode fm ON fm.failure_mode_id=wo.failure_mode_id "
-                "LEFT JOIN technician t ON t.technician_id=wo.technician_id WHERE wo.equipment_id=?"
-            )
-            args: list[object] = [asset_id]
-            if query.before:
-                sql += " AND wo.created_at<=?"
-                args.append(_iso(query.before))
-            sql += " ORDER BY wo.created_at DESC,wo.wo_id DESC LIMIT ?"
-            args.append(query.limit)
-            rows = conn.execute(sql, tuple(args)).fetchall()
-            records = []
-            for row in rows:
-                events = conn.execute(
-                    "SELECT event_type,note FROM maintenance_event WHERE wo_id=? ORDER BY created_at,event_id",
-                    (row["wo_id"],),
-                ).fetchall()
-                parts = conn.execute(
-                    "SELECT p.part_number FROM part_reservation pr JOIN part p ON p.part_id=pr.part_id "
-                    "WHERE pr.wo_id=? AND pr.status IN ('ISSUED','RESERVED') ORDER BY p.part_number",
-                    (row["wo_id"],),
-                ).fetchall()
-                origin = (DataOrigin.SEEDED_DEMO if (row["wo_number"] or "").startswith("DEMO-HIST-")
-                          else DataOrigin.RECORDED)
-                records.append(MaintenanceRecord(
-                    work_order_id=row["wo_id"], work_order_number=row["wo_number"], asset_id=asset_id,
-                    maintenance_action=row["detail"], created_at=_aware(row["created_at"]),
-                    status=row["status"], priority=row["priority"], failure_mode_id=row["failure_mode_id"],
-                    failure_mode_code=row["mode_code"], failure_mode_name=row["failure_mode_name"],
-                    technician_id=row["technician_id"], technician_name=row["technician_name"],
-                    event_types=tuple(event["event_type"] for event in events if event["event_type"]),
-                    event_notes=tuple(event["note"] for event in events if event["note"]),
-                    parts=tuple(part["part_number"] for part in parts),
-                    # The current schema has no validated outcome/result field.
-                    outcome=None, data_origin=origin,
-                ))
+    def _maintenance_history(self, reads: SourceReads, asset_id: str, query: _MaintenanceQuery) -> MaintenanceHistory:
+        orders, events, parts = reads.maintenance_history(asset_id=asset_id, before=_iso(query.before), limit=query.limit)
+        records = []
+        for row in orders:
+            origin = (DataOrigin.SEEDED_DEMO if (row["wo_number"] or "").startswith("DEMO-HIST-")
+                      else DataOrigin.RECORDED)
+            records.append(MaintenanceRecord(
+                work_order_id=row["wo_id"], work_order_number=row["wo_number"], asset_id=asset_id,
+                maintenance_action=row["detail"], created_at=_aware(row["created_at"]),
+                status=row["status"], priority=row["priority"], failure_mode_id=row["failure_mode_id"],
+                failure_mode_code=row["mode_code"], failure_mode_name=row["failure_mode_name"],
+                technician_id=row["technician_id"], technician_name=row["technician_name"],
+                event_types=tuple(event["event_type"] for event in events[row["wo_id"]] if event["event_type"]),
+                event_notes=tuple(event["note"] for event in events[row["wo_id"]] if event["note"]),
+                parts=tuple(part["part_number"] for part in parts[row["wo_id"]]),
+                # The current schema has no validated outcome/result field.
+                outcome=None, data_origin=origin,
+            ))
         timestamps = [record.created_at for record in records if record.created_at]
         params = query.model_dump(mode="json", exclude={"schema_version"}) | {"asset_id": asset_id}
         origins = tuple(dict.fromkeys(record.data_origin for record in records)) or (DataOrigin.RECORDED,)
@@ -518,14 +491,11 @@ class EvidenceCapabilities:
             ),
         )
 
-    def get_related_incidents(self, asset_id: str, *, exclude_incident_id: str | None = None,
-                              limit: int = 20) -> RelatedIncidents:
-        query = _RelatedQuery(limit=limit)
-        repository = IncidentRepository(self.path)
+    def _related_incidents(self, reads: SourceReads, asset_id: str, exclude_incident_id: str | None,
+                           query: _RelatedQuery) -> RelatedIncidents:
         incidents = []
-        for incident in repository.list_incidents_for_equipment(
-                asset_id, exclude_incident_id=exclude_incident_id, limit=query.limit):
-            artifacts = repository.list_artifacts(incident.id)
+        for incident, artifacts in reads.related_incidents(
+                asset_id=asset_id, exclude_incident_id=exclude_incident_id, limit=query.limit):
             signals = [a for a in artifacts if isinstance(a, m.Evidence) and a.kind == "model_signal"]
             accepted = [a for a in artifacts if isinstance(a, m.Diagnosis) and a.status == "ACCEPTED"]
             interventions = [a for a in artifacts if isinstance(a, m.Intervention)]
@@ -560,33 +530,85 @@ class EvidenceCapabilities:
             ),
         )
 
-    def get_operating_context(self, asset_id: str) -> OperatingContext:
-        asset = self.get_asset_context(asset_id)
-        params = {"asset_id": asset_id}
-        if asset.availability == Availability.UNAVAILABLE:
+    def _operating_context(self, reads: SourceReads, asset_id: str, as_of: datetime | None) -> OperatingContext:
+        # Reads only the registry row and latest score: sensors and readings are
+        # not part of this result, so they are deliberately not dependencies.
+        bound = _iso(as_of)
+        asset = reads.asset_registry(asset_id=asset_id)
+        params: dict[str, JsonValue] = {"asset_id": asset_id, "as_of": bound}
+        if asset is None:
             return OperatingContext(
-                asset_id=asset_id, availability=Availability.UNAVAILABLE,
+                asset_id=asset_id, as_of=as_of, availability=Availability.UNAVAILABLE,
                 missing_reason="asset context is unavailable",
                 provenance=self._provenance(
                     "get_operating_context", ("plant", "assembly_line", "equipment", "health_score"),
                     (DataOrigin.RECORDED,), params, f"equipment:{asset_id}"),
             )
+        score = reads.health_score_latest(asset_id=asset_id, as_of=bound)
+        score_at = _aware(score["scored_at"]) if score else None
+        risk = float(score["failure_prob"]) if score else None
         origins = ((DataOrigin.SEEDED_DEMO if asset_id in _DEMO_ASSET_IDS else DataOrigin.RECORDED),)
-        if asset.current_risk is not None:
+        if risk is not None:
             origins += (DataOrigin.MODEL_PRODUCED,)
         return OperatingContext(
-            asset_id=asset_id, availability=Availability.PARTIAL,
-            plant_id=asset.plant_id, plant_name=asset.plant_name, plant_timezone=asset.plant_timezone,
-            line_id=asset.line_id, line_name=asset.line_name, line_type=asset.line_type,
-            criticality=asset.criticality, risk_state=asset.risk_state,
-            latest_score_at=asset.latest_score_at,
+            asset_id=asset_id, as_of=as_of, availability=Availability.PARTIAL,
+            plant_id=asset["plant_id"], plant_name=asset["plant_name"], plant_timezone=asset["timezone"],
+            line_id=asset["line_id"], line_name=asset["line_name"], line_type=asset["line_type"],
+            criticality=asset["criticality"], risk_state=_risk_state(risk),
+            latest_score_at=score_at,
             missing_reason="operating state, production calendar, and line dependencies are not persisted",
             provenance=self._provenance(
                 "get_operating_context", ("plant", "assembly_line", "equipment", "health_score"),
-                origins, params, f"equipment:{asset_id};line={asset.line_id}",
-                (asset.latest_score_at, asset.latest_score_at),
+                origins, params, f"equipment:{asset_id};line={asset['line_id']};as_of={bound}",
+                (score_at, score_at),
             ),
         )
+
+    def _dispatch(self, reads: SourceReads, capability: str, asset_id: str, normalized: dict,
+                  incident_id: str | None) -> CapabilityResult:
+        query = _QUERY_MODELS[capability].model_validate(normalized)
+        if capability == "get_asset_context":
+            return self._asset_context(reads, asset_id, query.as_of)
+        if capability == "get_operating_context":
+            return self._operating_context(reads, asset_id, query.as_of)
+        if capability == "get_telemetry_window":
+            return self._telemetry_window(reads, asset_id, query)
+        if capability == "get_maintenance_history":
+            return self._maintenance_history(reads, asset_id, query)
+        if capability == "get_related_incidents":
+            return self._related_incidents(reads, asset_id, incident_id, query)
+        raise AssertionError("capability validation and dispatch are out of sync")
+
+    def _read(self, capability: str, asset_id: str, parameters: dict, incident_id: str | None):
+        normalized = self.validate_parameters(capability, parameters)
+        with db.get_conn(self.path) as conn:
+            # One read transaction: the result and its dependency fingerprints see
+            # the same committed state, so the manifest describes exactly these rows.
+            conn.execute("BEGIN")
+            reads = SourceReads(conn)
+            result = self._dispatch(reads, capability, asset_id, normalized, incident_id)
+            return result, reads.manifest()
+
+    # -------------------------------------------------------------- public
+    def get_asset_context(self, asset_id: str, *, as_of: datetime | None = None) -> AssetContext:
+        return self._read("get_asset_context", asset_id, {"as_of": as_of}, None)[0]
+
+    def get_telemetry_window(self, asset_id: str, *, sensor_type: str | None = None,
+                             start_at: datetime | None = None, end_at: datetime | None = None,
+                             sample_limit: int = 60) -> TelemetryWindow:
+        return self._read("get_telemetry_window", asset_id, dict(
+            sensor_type=sensor_type, start_at=start_at, end_at=end_at, sample_limit=sample_limit), None)[0]
+
+    def get_maintenance_history(self, asset_id: str, *, limit: int = 20,
+                                before: datetime | None = None) -> MaintenanceHistory:
+        return self._read("get_maintenance_history", asset_id, dict(limit=limit, before=before), None)[0]
+
+    def get_related_incidents(self, asset_id: str, *, exclude_incident_id: str | None = None,
+                              limit: int = 20) -> RelatedIncidents:
+        return self._read("get_related_incidents", asset_id, dict(limit=limit), exclude_incident_id)[0]
+
+    def get_operating_context(self, asset_id: str, *, as_of: datetime | None = None) -> OperatingContext:
+        return self._read("get_operating_context", asset_id, {"as_of": as_of}, None)[0]
 
     def validate_parameters(self, capability: str, parameters: dict) -> dict[str, JsonValue]:
         if capability not in SUPPORTED_CAPABILITIES:
@@ -594,29 +616,29 @@ class EvidenceCapabilities:
             raise UnsupportedEvidenceCapability(
                 f"unsupported evidence capability {capability!r}; supported: {supported}"
             )
-        model = {
-            "get_asset_context": _EmptyQuery,
-            "get_operating_context": _EmptyQuery,
-            "get_telemetry_window": _TelemetryQuery,
-            "get_maintenance_history": _MaintenanceQuery,
-            "get_related_incidents": _RelatedQuery,
-        }[capability].model_validate(parameters)
+        model = _QUERY_MODELS[capability].model_validate(parameters)
         return model.model_dump(mode="json", exclude={"schema_version"})
 
     def collect(self, capability: str, asset_id: str, parameters: dict,
                 *, incident_id: str | None = None) -> CapabilityResult:
-        normalized = self.validate_parameters(capability, parameters)
-        if capability == "get_asset_context":
-            return self.get_asset_context(asset_id)
-        if capability == "get_operating_context":
-            return self.get_operating_context(asset_id)
-        if capability == "get_telemetry_window":
-            return self.get_telemetry_window(asset_id, **normalized)
-        if capability == "get_maintenance_history":
-            return self.get_maintenance_history(asset_id, **normalized)
-        if capability == "get_related_incidents":
-            return self.get_related_incidents(asset_id, exclude_incident_id=incident_id, **normalized)
-        raise AssertionError("capability validation and dispatch are out of sync")
+        return self._read(capability, asset_id, parameters, incident_id)[0]
+
+    def collect_with_dependencies(self, capability: str, asset_id: str, parameters: dict,
+                                  *, incident_id: str | None = None
+                                  ) -> tuple[CapabilityResult, m.SourceDependencyManifest]:
+        """Result plus the application-generated manifest of the reads that produced it."""
+        return self._read(capability, asset_id, parameters, incident_id)
+
+    def expected_dependencies(self, conn, capability: str, asset_id: str, parameters: dict,
+                              *, incident_id: str | None) -> m.SourceDependencyManifest:
+        """Replay a capability's reads on an open connection; returns only the manifest.
+
+        Used by the repository to refuse caller-supplied manifests whose dependency
+        set or fingerprints differ from what the capability actually reads now.
+        """
+        reads = SourceReads(conn)
+        self._dispatch(reads, capability, asset_id, self.validate_parameters(capability, parameters), incident_id)
+        return reads.manifest()
 
     @staticmethod
     def parse_result(capability: str, payload: dict) -> CapabilityResult:
@@ -651,6 +673,22 @@ class EvidenceService:
         }
         return "sha256:" + content_hash(value)
 
+    def _reusable(self, evidence: m.Evidence, artifacts: list[m.Artifact], capability: str) -> bool:
+        """Exact request, current artifact, intact hash/provenance, dependency manifest still valid."""
+        if any(getattr(item, "supersedes_id", None) == evidence.id for item in artifacts):
+            return False
+        if evidence.content_hash != content_hash(evidence.payload):
+            return False
+        if evidence.source_capability != capability or evidence.source_system == "legacy.unspecified":
+            return False
+        manifest = evidence.source_dependencies
+        if manifest is None or manifest.basis != "SOURCE_QUERY":
+            # Legacy whole-store checkpoints prove nothing about scoped freshness.
+            return False
+        with db.get_conn(self.repository.path) as conn:
+            conn.execute("BEGIN")
+            return not revalidate(conn, manifest)
+
     def request_and_collect(self, incident_id: str, *, requested_by: m.Role,
                             equipment_ids: tuple[str, ...], question: str,
                             capability: str, required_for: Literal["diagnosis", "intervention", "outcome"],
@@ -671,15 +709,13 @@ class EvidenceService:
             request = matching[-1]
             evidence = self.repository.get_artifact(incident_id, request.resolved_by_evidence_ids[0])
             assert isinstance(evidence, m.Evidence)
-            with db.get_conn(self.repository.path) as conn:
-                current_source = source_state_hash(conn, incident_id)
-            if evidence.source_state_hash == current_source:
+            if self._reusable(evidence, artifacts, capability):
                 return EvidenceCollection(
                     request=request, evidence=evidence,
                     result=self.capabilities.parse_result(capability, evidence.payload), reused=True,
                 )
-            # A stale cached read cannot satisfy a fresh promotion run. Preserve
-            # both old records and append a new request/evidence generation.
+            # A stale or unverifiable cached read cannot satisfy a fresh promotion run.
+            # Preserve both old records and append a new request/evidence generation.
             previous_request, previous_evidence = request, evidence
             matching = []
 
@@ -701,9 +737,7 @@ class EvidenceService:
             evidence = existing[-1]
             result = self.capabilities.parse_result(capability, evidence.payload)
         else:
-            with db.get_conn(self.repository.path) as conn:
-                source_checkpoint = source_state_hash(conn, incident_id)
-            result = self.capabilities.collect(
+            result, manifest = self.capabilities.collect_with_dependencies(
                 capability, equipment_ids[0], normalized, incident_id=incident_id,
             )
             payload = result.model_dump(mode="json")
@@ -719,13 +753,7 @@ class EvidenceService:
             evidence = m.Evidence(
                 id=new_id(), incident_id=incident_id, created_at=utcnow(),
                 equipment_ids=equipment_ids,
-                kind={
-                    "get_asset_context": "operational_context",
-                    "get_telemetry_window": "telemetry",
-                    "get_maintenance_history": "maintenance_history",
-                    "get_related_incidents": "asset_relation",
-                    "get_operating_context": "operational_context",
-                }[capability],
+                kind=SOURCE_QUERY_KINDS[capability],
                 source_uri=f"operon://evidence/{capability}",
                 source_locator=result.provenance.locator,
                 source_version="operon-evidence-v1", content_hash=content_hash(payload),
@@ -735,7 +763,7 @@ class EvidenceService:
                 source_system=result.provenance.source_system,
                 request_id=request.id, collection_key=request_key,
                 summary=self._summary(result), payload=payload,
-                source_state_hash=source_checkpoint,
+                source_dependencies=manifest,
                 supersedes_id=previous_evidence.id if previous_evidence else None,
             )
             incident = self.repository.fetch_incident(incident_id)
@@ -768,8 +796,8 @@ class EvidenceService:
 
 
 # Narrow module-level capabilities for application/tool consumers.
-def get_asset_context(asset_id: str, *, path: Path | None = None) -> AssetContext:
-    return EvidenceCapabilities(path).get_asset_context(asset_id)
+def get_asset_context(asset_id: str, *, path: Path | None = None, as_of: datetime | None = None) -> AssetContext:
+    return EvidenceCapabilities(path).get_asset_context(asset_id, as_of=as_of)
 
 
 def get_telemetry_window(asset_id: str, *, path: Path | None = None,
@@ -797,5 +825,6 @@ def get_related_incidents(asset_id: str, *, path: Path | None = None,
     )
 
 
-def get_operating_context(asset_id: str, *, path: Path | None = None) -> OperatingContext:
-    return EvidenceCapabilities(path).get_operating_context(asset_id)
+def get_operating_context(asset_id: str, *, path: Path | None = None,
+                          as_of: datetime | None = None) -> OperatingContext:
+    return EvidenceCapabilities(path).get_operating_context(asset_id, as_of=as_of)

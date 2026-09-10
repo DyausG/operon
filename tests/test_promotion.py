@@ -17,6 +17,7 @@ from core.agents.contracts import AdvisoryInput, SpecialistContext, SupervisorRe
 from core.agents.runtime import StrandsRuntime
 from core.reliability import models as m
 from core.reliability.evidence import EvidenceService
+from core.reliability.freshness import derived_manifest
 from core.reliability.governance import WorkPackageParameters
 from core.reliability.legacy import prepare_legacy_intervention
 from core.reliability.promotion import (
@@ -261,8 +262,9 @@ def test_freshness_is_conservative(env, when):
     elif when.startswith("new_run"):
         env.start()
     elif when.startswith("raw"):
+        # A source the frozen history evidence actually reads (13C: scoped, not whole-store).
         with db.get_conn(env.repo.path) as conn:
-            conn.execute("UPDATE part SET on_hand_qty=on_hand_qty+1")
+            conn.execute("UPDATE maintenance_event SET note=note || ' amended' WHERE equipment_id=?", (ASSET,))
     else:
         env.repo.append_event(env.incident_id, "INCIDENT_UPDATED", {"changed": True}, expected_revision=revision(env))
     report = report or env.complete(snapshot)
@@ -276,7 +278,7 @@ def test_freshness_is_conservative(env, when):
 def test_start_run_rejects_stale_raw_evidence_before_reasoning(env):
     with db.get_conn(env.repo.path) as conn:
         conn.execute("UPDATE maintenance_event SET note='changed source'")
-    with pytest.raises(PromotionRefused, match="raw evidence"):
+    with pytest.raises(PromotionRefused, match="source dependency changed: maintenance_history"):
         env.start()
 
 
@@ -289,7 +291,7 @@ def test_diagnosis_needs_independent_grounding(env, failure):
         payload = {"model_reasoning": MECHANISM}
         model_evidence = history.model_copy(update={"id": new_id(), "kind": "document", "source_capability": "model_reasoning",
             "payload": payload, "content_hash": content_hash(payload), "derived_from_ids": (env.signal_id,),
-            "request_id": None, "provenance": "DERIVED"})
+            "request_id": None, "provenance": "DERIVED", "source_dependencies": derived_manifest()})
         env.repo.add_artifact(model_evidence, expected_revision=revision(env))
     snapshot = env.start(evidence_ids=(*env.evidence_ids(), model_evidence.id) if failure == "model_only" else None)
     payload = result_payload(env, snapshot)
@@ -721,32 +723,53 @@ def test_read_only_unknown_workforce_snapshot_is_insufficient(env):
     promotion, report = env.diagnosis()
     snapshot = ResourceCapabilities(env.evidence_service.capabilities).inspect_available_technicians(ASSET)
     assert snapshot.availability == "UNKNOWN"
+    # A read-only snapshot is not a trusted observation and cannot carry that manifest;
+    # derive it from the signal so it reaches the resource gate rather than the freshness gate.
     unknown = env.resource.model_copy(update={"id": new_id(), "payload": snapshot.model_dump(mode="json"),
         "source_capability": "inspect_available_technicians", "source_system": "operon.resources",
-        "content_hash": content_hash(snapshot.model_dump(mode="json"))})
+        "content_hash": content_hash(snapshot.model_dump(mode="json")),
+        "derived_from_ids": (env.signal_id,), "source_dependencies": derived_manifest()})
     env.repo.add_artifact(unknown, expected_revision=revision(env))
     with pytest.raises(PromotionRefused, match="dated resource"):
         env.service.create_draft(env.incident_id, expected_revision=revision(env),
             **(env.binding_fields(promotion, report) | {"resource_confirmation_id": unknown.id}))
 
 
-@pytest.mark.parametrize("table,sql", [
-    ("inventory", "UPDATE part SET on_hand_qty=0"),
-    ("technician", "UPDATE technician SET available=0"),
-    ("qualification", "UPDATE technician SET skills='UNQUALIFIED'"),
-    ("equipment", "UPDATE equipment SET equipment_class='CHANGED' WHERE equipment_id='AC-COMP-01'"),
-    ("booking", "INSERT INTO labor_booking (technician_id,status) SELECT technician_id,'BOOKED' FROM technician LIMIT 1"),
-    ("telemetry", "INSERT INTO sensor_reading (sensor_id,ts,value_eu) SELECT sensor_id,'2026-09-10T00:00:00Z',123 FROM sensor LIMIT 1"),
+@pytest.mark.parametrize("table,sql,reason", [
+    ("inventory", "UPDATE part SET on_hand_qty=0", "insufficient parts"),
+    ("technician", "UPDATE technician SET available=0", "technician"),
+    ("qualification", "UPDATE technician SET skills='UNQUALIFIED'", "qualification"),
+    ("equipment", "UPDATE equipment SET equipment_class='CHANGED' WHERE equipment_id='AC-COMP-01'", "qualification"),
+    ("history", "UPDATE maintenance_event SET note=note || ' amended' WHERE equipment_id='AC-COMP-01'", "maintenance_history"),
 ])
-def test_raw_operational_changes_after_exact_review_cannot_promote(env, table, sql):
+def test_resource_and_dependency_changes_after_exact_review_cannot_promote(env, table, sql, reason):
+    """Sources the review actually relied upon (binding resources, frozen history) still block."""
     draft = env.draft()
     report = env.complete(env.start(draft), draft=draft)
     checkpoint = revision(env)
     with db.get_conn(env.repo.path) as conn:
         conn.execute(sql)
     assert revision(env) == checkpoint
-    with pytest.raises(PromotionRefused, match="raw operational"):
+    with pytest.raises(PromotionRefused, match=reason):
         env.promote_intervention(report, draft)
+
+
+@pytest.mark.parametrize("table,sql", [
+    ("booking", "INSERT INTO labor_booking (technician_id,status) SELECT technician_id,'BOOKED' FROM technician LIMIT 1"),
+    ("telemetry", "INSERT INTO sensor_reading (sensor_id,ts,value_eu) SELECT sensor_id,'2026-09-10T00:00:00Z',123 FROM sensor LIMIT 1"),
+    ("other_asset_history", "UPDATE maintenance_event SET note='other asset' WHERE equipment_id<>'AC-COMP-01'"),
+    ("unrelated_part", "UPDATE part SET on_hand_qty=on_hand_qty+1 WHERE part_id NOT IN (SELECT part_id FROM equipment_part WHERE equipment_id='AC-COMP-01')"),
+])
+def test_unrelated_operational_changes_after_exact_review_still_promote(env, table, sql):
+    """13C: reads the review never depended on cannot invalidate it (was refused under the whole-store hash)."""
+    draft = env.draft()
+    report = env.complete(env.start(draft), draft=draft)
+    checkpoint = revision(env)
+    with db.get_conn(env.repo.path) as conn:
+        conn.execute(sql)
+    assert revision(env) == checkpoint
+    promotion = env.promote_intervention(report, draft)
+    assert env.repo.fetch_incident(env.incident_id).current_intervention_id == promotion.target_id
 
 
 def test_new_technical_evidence_invalidates_current_diagnosis_for_binding(env):
@@ -801,14 +824,23 @@ def test_pre_004_artifact_hashes_survive_additive_metadata(env):
     assert digest(env.repo.get_artifact(env.incident_id, artifact.id)) == content_hash(old_intervention)
 
 
-def test_source_change_then_restoration_still_invalidates_run(env):
+def test_dependency_change_stales_run_but_fully_reverted_change_keeps_result_reproducible(env):
+    """13C fingerprints query results: a persisted dependency change stales the run with a
+    precise reason; a change reverted before completion leaves the frozen reads reproducible."""
     env.confirm()
     snapshot = env.start()
     with db.get_conn(env.repo.path) as conn:
-        conn.execute("UPDATE part SET on_hand_qty=on_hand_qty+1")
-        conn.execute("UPDATE part SET on_hand_qty=on_hand_qty-1")
+        conn.execute("UPDATE maintenance_event SET note=note || ' amended' WHERE equipment_id=?", (ASSET,))
+        conn.execute("UPDATE maintenance_event SET note=replace(note, ' amended', '') WHERE equipment_id=?", (ASSET,))
     report = env.complete(snapshot)
-    assert "RAW_SOURCE_CHANGED" in report.stale_reasons
+    assert not report.stale_reasons
+    env.promote_diagnosis(report)
+    env.repo.transition(env.incident_id, m.IncidentPhase.INVESTIGATING, expected_revision=revision(env), reason="again")
+    snapshot = env.start()
+    with db.get_conn(env.repo.path) as conn:
+        conn.execute("UPDATE maintenance_event SET note=note || ' amended' WHERE equipment_id=?", (ASSET,))
+    report = env.complete(snapshot)
+    assert any(item.startswith("SOURCE_DEPENDENCY_CHANGED:maintenance_history[asset_id=AC-COMP-01") for item in report.stale_reasons)
     with pytest.raises(PromotionRefused):
         env.promote_diagnosis(report)
 

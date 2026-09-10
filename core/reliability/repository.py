@@ -46,7 +46,11 @@ ARTIFACT_TYPES = {cls.__name__: cls for cls in (
     m.SupervisorRunSnapshot, m.SupervisorReport, m.PromotionRecord, m.WorkPackageBinding,
 )}
 PROMOTION_OWNED_TYPES = (m.SupervisorRunSnapshot, m.SupervisorReport, m.PromotionRecord, m.WorkPackageBinding)
-TRUSTED_EVIDENCE_CAPABILITIES = frozenset({"operon.confirm_mechanism", "operon.confirm_resources"})
+# Trusted confirmation capabilities and the one evidence kind each produces. The
+# public ``add_artifact`` refuses them, so such records reach ``_store_artifact`` only
+# through the private promotion boundary (PromotionService._submit_evidence).
+TRUSTED_EVIDENCE_KINDS = {"operon.confirm_mechanism": "inspection", "operon.confirm_resources": "resource_availability"}
+TRUSTED_EVIDENCE_CAPABILITIES = frozenset(TRUSTED_EVIDENCE_KINDS)
 REFERENCE_TYPES = {
     "derived_from_ids": m.Evidence, "resolved_by_evidence_ids": m.Evidence,
     "supporting_evidence_ids": m.Evidence, "contradicting_evidence_ids": m.Evidence,
@@ -73,22 +77,59 @@ def content_hash(value: dict) -> str:
                              allow_nan=False).encode()).hexdigest()
 
 
-def source_state_hash(conn, incident_id: str) -> str:
-    """Conservative local source checkpoint. No adapter/network calls under lock.
+# Step 13C removed the whole-store ``source_state_hash`` checkpoint. Legacy records
+# still carry the field as metadata; nothing compares it against current sources.
 
-    All local operational tables are covered, including raw telemetry and booking
-    changes that do not advance incident revisions. Unrelated assets can invalidate
-    a run in v1; narrowing this requires source-specific versioning in a later step.
+# Capabilities whose evidence must carry a recomputable dependency manifest, and
+# the one evidence kind each produces. A record of one of these kinds is a source
+# read by construction and can obtain freshness only by replaying that read.
+SOURCE_QUERY_KINDS = {
+    "get_asset_context": "operational_context", "get_telemetry_window": "telemetry",
+    "get_maintenance_history": "maintenance_history", "get_related_incidents": "asset_relation",
+    "get_operating_context": "operational_context",
+}
+SOURCE_QUERY_CAPABILITIES = frozenset(SOURCE_QUERY_KINDS)
+SOURCE_READ_KINDS = frozenset(SOURCE_QUERY_KINDS.values())
+
+
+def manifest_authority(evidence: m.Evidence) -> str | None:
+    """Structural authority of an evidence freshness manifest; the refusal reason, if any.
+
+    Checked on every insert and again wherever freshness is decided, so a record can
+    only ever hold the freshness semantics its producing boundary owns:
+
+    * source-read kinds come only from the application capabilities that replay
+      their reads (a SOURCE_QUERY manifest, or a legacy record that proves nothing);
+    * trusted confirmations come only from the promotion boundary, whose
+      capabilities the public ``add_artifact`` refuses; together with model signals
+      (payload validated as a ``ModelSignal``) they are the only records allowed to
+      be IMMUTABLE_OBSERVATION. Any other caller-supplied observation basis is a
+      freshness bypass and is refused;
+    * DERIVED records must name durable parents; freshness flows only from them;
+    * CLOSURE manifests exist only on run snapshots.
     """
-    tables = ("plant", "assembly_line", "equipment", "sensor", "sensor_reading", "health_score",
-              "failure_mode", "technician", "part", "equipment_part", "work_order",
-              "maintenance_event", "part_reservation", "labor_booking", "work_package")
-    values = {table: [dict(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY rowid")]
-              for table in tables}
-    values["other_incidents"] = [dict(row) for row in conn.execute(
-        "SELECT incident_id,revision FROM incident WHERE incident_id<>? ORDER BY incident_id", (incident_id,))]
-    values["source_generation"] = conn.execute("SELECT generation FROM promotion_source_clock WHERE singleton=1").fetchone()[0]
-    return content_hash(values)
+    manifest, capability, kind = evidence.source_dependencies, evidence.source_capability, evidence.kind
+    if capability in SOURCE_QUERY_KINDS:
+        if kind != SOURCE_QUERY_KINDS[capability]:
+            return "application capability evidence kind does not match its capability"
+        if manifest is not None and manifest.basis != "SOURCE_QUERY":
+            return "application capability evidence requires a source-query manifest"
+        return None
+    if kind in SOURCE_READ_KINDS:
+        return f"{kind} evidence is produced only by application source capabilities"
+    if capability in TRUSTED_EVIDENCE_KINDS and kind != TRUSTED_EVIDENCE_KINDS[capability]:
+        return "trusted confirmation evidence kind does not match its capability"
+    if manifest is None:
+        return None
+    if manifest.basis == "SOURCE_QUERY":
+        return "only application capabilities may declare source-query dependencies"
+    if manifest.basis == "CLOSURE":
+        return "evidence cannot carry a run closure manifest"
+    if manifest.basis == "IMMUTABLE_OBSERVATION" and not (kind == "model_signal" or capability in TRUSTED_EVIDENCE_KINDS):
+        return "only model signals and trusted confirmations are immutable observations"
+    if manifest.basis == "DERIVED" and not evidence.derived_from_ids:
+        return "derived evidence must name the records it derives from"
+    return None
 
 
 class IncidentRepository:
@@ -235,8 +276,7 @@ class IncidentRepository:
         if isinstance(artifact, m.Evidence):
             if artifact.content_hash != content_hash(artifact.payload):
                 raise InvalidReference("evidence content hash does not match payload")
-            if artifact.source_state_hash is not None and artifact.source_state_hash != source_state_hash(conn, incident.id):
-                raise StaleRevision("raw sources changed during evidence collection")
+            self._validate_source_dependencies(conn, incident, artifact)
         if isinstance(artifact, (m.ValidationVerdict, m.ApprovalRequirement, m.ApprovalDecision)):
             target_id = artifact.target_id if isinstance(artifact, m.ValidationVerdict) else artifact.intervention_id
             expected_hash = artifact.target_hash if isinstance(artifact, m.ValidationVerdict) else artifact.intervention_hash
@@ -252,6 +292,40 @@ class IncidentRepository:
                 raise StaleRevision("approval decision context is stale")
         if not historical_input and hasattr(artifact, "input_revision") and artifact.input_revision != incident.revision:
             raise StaleRevision("artifact input revision is stale")
+
+    def _validate_source_dependencies(self, conn, incident, artifact: m.Evidence):
+        """Caller-supplied manifests never become trusted freshness claims.
+
+        ``manifest_authority`` binds every basis and kind to the boundary that owns
+        it. A SOURCE_QUERY manifest is then accepted only with its durable request and
+        only when the capability's reads replayed right now produce the identical
+        dependency set and fingerprints; a forged, narrowed, broadened or stale
+        manifest is refused. Legacy records without a manifest are stored but can
+        never prove scoped freshness.
+        """
+        reason = manifest_authority(artifact)
+        if reason is not None:
+            raise InvalidReference(reason)
+        manifest = artifact.source_dependencies
+        if manifest is not None and manifest.basis == "SOURCE_QUERY":
+            if artifact.request_id is None:
+                raise InvalidReference("source-query manifest requires its durable evidence request")
+            request = self._artifact(conn, incident.id, artifact.request_id)
+            if (not isinstance(request, m.EvidenceRequest) or request.capability != artifact.source_capability
+                    or request.equipment_ids != artifact.equipment_ids or request.incident_id != incident.id):
+                raise InvalidReference("evidence request does not match the evidence scope or capability")
+            from .evidence import EvidenceCapabilities  # runtime import: evidence imports this module
+            expected = EvidenceCapabilities(self.path).expected_dependencies(
+                conn, artifact.source_capability, artifact.equipment_ids[0], dict(request.parameters),
+                incident_id=incident.id)
+            declared = {item.identity: item.fingerprint for item in manifest.dependencies}
+            actual = {item.identity: item.fingerprint for item in expected.dependencies}
+            if declared.keys() != actual.keys():
+                raise InvalidReference("source dependency scope differs from what the capability reads")
+            changed = [item for item in expected.dependencies if declared[item.identity] != item.fingerprint]
+            if changed:
+                raise StaleRevision("source dependency changed during evidence collection: "
+                                    + ", ".join(item.describe() for item in changed))
 
     def _store_artifact(self, conn, incident, artifact, *, historical_input=False):
         """Private insert primitive. Promotion groups inserts and one state checkpoint."""
