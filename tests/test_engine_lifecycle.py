@@ -360,3 +360,118 @@ async def test_engine_promotes_while_the_plant_keeps_streaming_during_reasoning(
         d.domain for d in snapshot.source_dependency_manifest.dependencies}
     with db.get_conn(engine.coordinator.repository.path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM sensor_reading WHERE sensor_id LIKE 'AC-COMP-01-%'").fetchone()[0] >= 25
+
+
+# ------------------------------------------------------- Step 14: outcome verification
+
+async def drive_to_observing(monkeypatch, clock, *, response="RECOVERS"):
+    """Engine path to OBSERVING with a deterministic tick clock (no wall-clock sleeps)."""
+    holder = {}
+    scripted_supervisor(monkeypatch, holder)
+    engine = make_engine(monkeypatch, runtime=StrandsRuntime(settings(), model=ScriptedModel()))
+    engine._clock = lambda: clock["now"]
+    engine.sim.assets[ASSET].prog = 0.9
+    engine.sim.assets[ASSET].profile.intervention_response = response
+    await engine._advance()
+    bridge = holder["bridge"] = Bridge(engine, ASSET)
+    await engine.drain()
+    bridge.confirm()
+    await engine.stop()
+    engine._progress_lifecycle()
+    await engine.drain()
+    bridge.resources()
+    assert (await engine.plan(bridge.incident_id, expected_revision=bridge.revision(), **bridge.binding_fields()))["ok"]
+    intent = {key: engine.alerts[ASSET]["lifecycle"][key] for key in ("requirement_id", "intervention_id", "intervention_hash", "context_revision")}
+    result = await engine.approve(ASSET, intent)
+    assert result["ok"] and result["phase"] == "OBSERVING" and result["result"]["outcome"] == "DISPATCHED"
+    # Post-intervention ticks must be provably after the confirmation second.
+    clock["now"] = utcnow() + timedelta(seconds=2)
+    return engine, bridge
+
+
+def recorded_broadcasts(engine):
+    messages = []
+
+    async def record(message):
+        messages.append(message)
+    engine.broadcast = record
+    return messages
+
+
+async def tick(engine, clock, times):
+    for _ in range(times):
+        clock["now"] += timedelta(seconds=1)
+        await engine._advance()
+
+
+async def test_engine_verifies_recovery_and_closes_autonomously(seeded_db, monkeypatch):
+    clock = {"now": utcnow()}
+    engine, bridge = await drive_to_observing(monkeypatch, clock)
+    assert engine.sim.assets[ASSET].mode == "recovering" and engine.status_override[ASSET] == "SCHEDULED"
+    messages = recorded_broadcasts(engine)
+    # The simulated plant responds and the classifier now scores it healthy; verification is data-driven.
+    engine.model = StubModel(0.05)
+    await tick(engine, clock, 2)
+    incident = engine.coordinator.repository.fetch_incident(bridge.incident_id)
+    assert incident.phase == m.IncidentPhase.OBSERVING and engine.alerts[ASSET]["lifecycle"]["outcome_id"] is None
+    await tick(engine, clock, 1)
+    incident = engine.coordinator.repository.fetch_incident(bridge.incident_id)
+    assert incident.phase == m.IncidentPhase.CLOSED
+    alert = engine.alerts[ASSET]
+    assert alert["status"] == "CLOSED" and alert["result"]["outcome"] == "VERIFIED_RECOVERY"
+    assert alert["lifecycle"]["outcome_result"] == "VERIFIED_RECOVERY" and alert["lifecycle"]["outcome_id"]
+    assert ASSET not in engine.status_override and alert["proposal"] is not None
+    assert engine._business_summary()["events_prevented"] == 1
+    outcome_messages = [message for message in messages if message["type"] == "outcome"]
+    assert len(outcome_messages) == 1 and outcome_messages[0]["phase"] == "CLOSED"
+    with db.get_conn() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM incident_artifact WHERE kind='Outcome'").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM incident_event WHERE event_type='INCIDENT_CLOSED'").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM work_package").fetchone()[0] == 1
+    # Further ticks change nothing; restart treats the closed incident as final and never re-admits it.
+    await tick(engine, clock, 2)
+    with db.get_conn() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM incident_artifact WHERE kind='Outcome'").fetchone()[0] == 1
+    restarted = make_engine(monkeypatch, runtime=StrandsRuntime(settings(), model=ScriptedModel()))
+    assert ASSET not in restarted.incidents
+    assert restarted.coordinator.repository.fetch_incident(bridge.incident_id).phase == m.IncidentPhase.CLOSED
+    assert restarted.lifecycle.status(bridge.incident_id).outcome_result == "VERIFIED_RECOVERY"
+
+
+async def test_engine_reports_inconclusive_then_not_recovered_without_closure(seeded_db, monkeypatch):
+    clock = {"now": utcnow()}
+    engine, bridge = await drive_to_observing(monkeypatch, clock, response="PERSISTS")
+    assert engine.sim.assets[ASSET].mode == "unresponsive"
+    await tick(engine, clock, 2)
+    incident = engine.coordinator.repository.fetch_incident(bridge.incident_id)
+    assert incident.phase == m.IncidentPhase.OBSERVING and engine.alerts[ASSET]["status"] == "APPROVED"
+    restarted = make_engine(monkeypatch, runtime=StrandsRuntime(settings(), model=ScriptedModel()))
+    # Restart reconstructs OBSERVING; the simulator tweak is demo state, not durable, so the fresh profile responds.
+    assert restarted.incidents[ASSET].phase == m.IncidentPhase.OBSERVING and restarted.sim.assets[ASSET].mode == "recovering"
+    with db.get_conn() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM incident_artifact WHERE kind='Outcome'").fetchone()[0] == 0
+    # Risk stays critical (StubModel 0.91) for the whole observation budget.
+    await tick(engine, clock, 10)
+    await engine.drain()
+    incident = engine.coordinator.repository.fetch_incident(bridge.incident_id)
+    assert incident.phase in (m.IncidentPhase.INVESTIGATING, m.IncidentPhase.AWAITING_EVIDENCE)
+    assert incident.current_intervention_id is None
+    alert = engine.alerts[ASSET]
+    assert alert["status"] == "ANALYZING" and alert["result"]["outcome"] == "NOT_RECOVERED"
+    assert engine.sim.assets[ASSET].mode == "arrested" and engine.status_override[ASSET] == "CRITICAL"
+    assert engine._business_summary()["events_prevented"] == 0
+    with db.get_conn() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM incident_artifact WHERE kind='Outcome'").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM incident_event WHERE event_type='INCIDENT_CLOSED'").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM work_package").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM execution_claim").fetchone()[0] == 1
+
+
+def test_outcome_api_never_accepts_a_caller_outcome(seeded_db, monkeypatch):
+    from server import main as server_main
+    engine = make_engine(monkeypatch)
+    monkeypatch.setattr(server_main, "engine", engine)
+    client = TestClient(server_main.app)
+    assert client.post("/api/incidents/missing/outcome").status_code == 409
+    response = client.post("/api/incidents/missing/outcome", json={"result": "VERIFIED_RECOVERY"})
+    assert response.status_code == 409 and response.json()["ok"] is False

@@ -79,17 +79,24 @@ def test_lifecycle_revisions_ordered_events_and_terminal_admission(repo):
     incident = create(repo)
     phases = ["INVESTIGATING", "AWAITING_EVIDENCE", "INVESTIGATING", "DIAGNOSIS_VALIDATED",
               "PLANNING", "INTERVENTION_VALIDATED", "AWAITING_APPROVAL", "READY",
-              "EXECUTING", "OBSERVING", "CLOSED"]
+              "EXECUTING", "OBSERVING"]
     coordinator = IncidentCoordinator(repo)
     for phase in phases:
         previous = incident
         incident = coordinator.transition(incident.id, m.IncidentPhase(phase),
                                           expected_revision=incident.revision, reason="application test command")
         assert incident.revision == previous.revision + 1
+    # Step 14: CLOSED is verified-outcome authority, never a graph-only application command.
+    with pytest.raises(InvalidReference, match="verified outcome authority"):
+        coordinator.transition(incident.id, m.IncidentPhase.CLOSED, expected_revision=incident.revision, reason="graph only")
+    assert repo.fetch_incident(incident.id) == incident and repo.list_active_incidents() == [incident]
+    incident = coordinator.transition(incident.id, m.IncidentPhase.CANCELLED,
+                                      expected_revision=incident.revision, reason="application test command")
     assert repo.list_active_incidents() == []
     events = repo.list_events(incident.id)
     assert events[0].event_type == "INCIDENT_OPENED"
-    assert events[-1].event_type == "INCIDENT_CLOSED"
+    assert events[-1].event_type == "PHASE_CHANGED" and events[-1].payload["to"] == "CANCELLED"
+    assert not any(e.event_type == "INCIDENT_CLOSED" for e in events)
     assert [e.id for e in events] == sorted({e.id for e in events})
     assert repo.list_events(incident.id, after_id=events[-2].id) == events[-1:]
     assert create(repo).id != incident.id
@@ -151,7 +158,7 @@ def test_migrations_twice_preserve_existing_database_and_incidents(repo):
     seed()
     assert repo.fetch_incident(incident.id) == incident
     with db.get_conn(repo.path) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM schema_migration").fetchone()[0] == 6
+        assert conn.execute("SELECT COUNT(*) FROM schema_migration").fetchone()[0] == 7
         assert conn.execute("SELECT COUNT(*) FROM equipment").fetchone()[0] == 8
         assert conn.execute("SELECT COUNT(*) FROM health_score WHERE scored_at='preserved'").fetchone()[0] == 1
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
@@ -169,7 +176,7 @@ def test_migrate_pre_operon_schema_without_replacing_it(tmp_path):
         assert conn.execute("SELECT plant_name FROM plant").fetchone()[0] == "Existing plant"
         assert [row[0] for row in conn.execute("SELECT version FROM schema_migration ORDER BY version")] == [
             "001_operon", "002_governed_execution", "003_execution_claim_adapter", "004_authoritative_promotion",
-            "005_reliability_lifecycle", "006_dependency_scoped_freshness"]
+            "005_reliability_lifecycle", "006_dependency_scoped_freshness", "007_outcome_verification"]
 
 
 def test_concurrent_duplicate_admission_and_distinct_machines(repo):
@@ -238,7 +245,7 @@ def test_explicit_demo_reset_clears_incidents_but_preserves_migration(repo, rese
     reset()
     assert repo.list_active_incidents() == []
     with db.get_conn(repo.path) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM schema_migration").fetchone()[0] == 6
+        assert conn.execute("SELECT COUNT(*) FROM schema_migration").fetchone()[0] == 7
         assert conn.execute("SELECT COUNT(*) FROM equipment").fetchone()[0] == 8
 
 

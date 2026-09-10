@@ -11,6 +11,12 @@ happens only through PromotionService.run_supervisor, outside any transaction.
 External adapter calls happen between the execution-claim transaction and the
 receipt transaction; receipts are recorded against the execution claim identity,
 never against the pre-call incident revision.
+
+Step 14: a CONFIRMED receipt only reaches OBSERVING. ``verify_outcome`` is the one
+route to CLOSED: it binds the exact executed lineage, freezes an observation plan,
+collects durable post-intervention evidence and applies the deterministic outcome
+policy (core/reliability/outcome.py); the authoritative Outcome and the phase
+change commit together. No receipt, phase, model or caller can close an incident.
 """
 from __future__ import annotations
 
@@ -32,6 +38,7 @@ from .freshness import revalidate
 from .investigation import (
     BASELINE_CAPABILITIES, PINNED_BOUNDARY, DeterministicInvestigator, InvestigationResult, baseline_parameters,
 )
+from .outcome import OutcomeVerification, OutcomeVerifier
 from .promotion import CONFIRM_MECHANISM, POLICY_VERSION as PROMOTION_POLICY, PromotionRefused, PromotionService
 from .repository import (
     IncidentRepository, InvalidReference, StaleRevision, content_hash, manifest_authority, new_id, utcnow,
@@ -140,6 +147,15 @@ class LifecycleStatus(BaseModel):
     claim_started_at: str | None
     receipt_ids: tuple[str, ...]
     reconciliation_required: bool
+    # Step 14: the exact executed lineage (OBSERVING/CLOSED only) and durable outcome
+    # pointers. ``authority_valid`` keeps its 13B meaning (approval/execution authority,
+    # which new technical evidence legitimately invalidates); closure exists only
+    # where outcome_result is VERIFIED_RECOVERY.
+    execution_lineage_valid: bool = False
+    execution_lineage_reason: str | None = None
+    plan_id: str | None = None
+    outcome_id: str | None = None
+    outcome_result: str | None = None
 
 
 @dataclass(frozen=True)
@@ -292,7 +308,14 @@ class LifecycleService:
         return ApprovalState(state="PENDING", requirement_id=requirement.id, decision_ids=ids)
 
     def _checkpoint(self, conn, incident, artifacts=(), *, phase=None, events=(), reason=BOUNDARY, **changes):
-        """One revision for the whole command: artifacts, pointer changes, phase, events."""
+        """One revision for the whole command: artifacts, pointer changes, phase, events.
+
+        CLOSED is accepted only together with the authoritative VERIFIED_RECOVERY
+        Outcome that justifies it (Step 14); every other internal caller is refused.
+        """
+        if phase == m.IncidentPhase.CLOSED:
+            _require(any(isinstance(item, m.Outcome) and item.result == "VERIFIED_RECOVERY" for item in artifacts),
+                     "CLOSED requires the authoritative verified outcome in the same commit")
         for artifact in artifacts:
             self.repository._store_artifact(conn, incident, artifact, historical_input=True)
         if phase is not None and phase != incident.phase:
@@ -311,6 +334,9 @@ class LifecycleService:
                 "from": incident.phase.value, "to": phase.value, "reason": reason})
             if phase == m.IncidentPhase.ESCALATED:
                 self.repository._event(conn, updated, "INCIDENT_ESCALATED", {"reason": reason})
+            elif phase == m.IncidentPhase.CLOSED:
+                self.repository._event(conn, updated, "INCIDENT_CLOSED", {
+                    "reason": reason, "outcome_id": next(item.id for item in artifacts if isinstance(item, m.Outcome))})
         return updated
 
     # ------------------------------------------------- admission/investigation
@@ -879,11 +905,27 @@ class LifecycleService:
                         break
             return self._status(conn, incident)
 
+    # ----------------------------------------------------------------- outcome
+    def verify_outcome(self, incident_id: str, *, evidence_service=None) -> OutcomeVerification:
+        """OBSERVING -> deterministic outcome verification; the only route to CLOSED.
+
+        Requires OBSERVING, binds the exact executed lineage (promoted intervention,
+        diagnosis lineage, approval, CONFIRMED claim and receipt), freezes or loads
+        the observation plan, collects durable post-intervention evidence outside any
+        lock, evaluates the versioned policy, and commits the authoritative Outcome
+        together with the phase change: CLOSED (VERIFIED_RECOVERY), INVESTIGATING
+        (NOT_RECOVERED), ESCALATED (REGRESSED); INCONCLUSIVE stays OBSERVING and
+        writes no outcome. Repeated and concurrent calls are idempotent.
+        """
+        return OutcomeVerifier(self, evidence_service).verify(incident_id)
+
     # ---------------------------------------------------------------- recovery
     def _status(self, conn, incident) -> LifecycleStatus:
-        intervention_hash = promotion_id = reason = None
+        intervention_hash = promotion_id = reason = executed_reason = None
         approval = None
-        valid = False
+        valid = executed_valid = False
+        plan = outcome = None
+        observed = incident.phase in {m.IncidentPhase.OBSERVING, m.IncidentPhase.CLOSED}
         if incident.current_intervention_id:
             try:
                 intervention, record = self._authority(conn, incident)
@@ -892,9 +934,31 @@ class LifecycleService:
                 approval = self._approval_state(conn, incident, requirement) if requirement else None
             except AuthorityRefused as exc:
                 reason = str(exc)
+            if observed:
+                # After execution the exact executed lineage is what outcome
+                # verification binds; post-intervention evidence legitimately postdates
+                # the diagnosis promotion, so it is reported separately from
+                # approval/execution authority rather than replacing it.
+                verifier = OutcomeVerifier(self)
+                try:
+                    lineage = verifier._executed(conn, incident)
+                    executed_valid = True
+                    promotion_id, intervention_hash = lineage.record.id, lineage.intervention_hash
+                    approval = approval or self._approval_state(conn, incident, lineage.requirement)
+                    plan = verifier._plan_for(conn, incident, lineage.receipt.id)
+                except AuthorityRefused as exc:
+                    executed_reason = str(exc)
+        if plan is not None:
+            outcome = OutcomeVerifier(self)._outcome_for(conn, incident, plan.id)
+        elif observed or not incident.current_intervention_id:
+            outcomes = self._all(conn, incident.id, m.Outcome)
+            outcome = outcomes[-1] if outcomes else None
         claims = self._claims_for(conn, incident.id, incident.current_intervention_id) if incident.current_intervention_id else []
         latest = claims[-1] if claims else None
         receipts = self._receipts(conn, incident.id)
+        # An outcome that exists while still OBSERVING was not committed by the verifier
+        # with its phase change: never treated as closure, always flagged.
+        stray_outcome = incident.phase == m.IncidentPhase.OBSERVING and outcome is not None
         return LifecycleStatus(
             incident_id=incident.id, phase=incident.phase, revision=incident.revision,
             diagnosis_id=incident.current_diagnosis_id, intervention_id=incident.current_intervention_id,
@@ -902,7 +966,10 @@ class LifecycleService:
             approval=approval, claim_state=latest.state if latest else None,
             claim_started_at=latest.started_at.isoformat() if latest else None,
             receipt_ids=tuple(item.id for item in receipts),
-            reconciliation_required=bool(latest and latest.state in {"UNKNOWN", "IN_FLIGHT"}))
+            reconciliation_required=bool(latest and latest.state in {"UNKNOWN", "IN_FLIGHT"}) or stray_outcome,
+            execution_lineage_valid=executed_valid, execution_lineage_reason=executed_reason,
+            plan_id=plan.id if plan else None, outcome_id=outcome.id if outcome else None,
+            outcome_result=outcome.result if outcome else None)
 
     def status(self, incident_id: str) -> LifecycleStatus:
         with db.get_conn(self.repository.path) as conn:
@@ -910,7 +977,13 @@ class LifecycleService:
             return self._status(conn, self.repository._fetch(conn, incident_id))
 
     def recover(self) -> list[LifecycleStatus]:
-        """Reconstruct every active incident from durable pointers; never dispatch."""
+        """Reconstruct every active incident from durable pointers; never dispatch, never verify.
+
+        An OBSERVING incident stays OBSERVING: its execution lineage and any plan or
+        post-intervention evidence are durable, so verification can resume through an
+        explicit ``verify_outcome`` call. A receipt alone never becomes an outcome
+        here, and CLOSED incidents (already inactive) are final.
+        """
         return [self.reconcile(incident.id) for incident in self.repository.list_active_incidents()]
 
     def projection(self, incident_id: str) -> dict[str, JsonValue]:

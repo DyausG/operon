@@ -10,8 +10,9 @@ checkpoint here supersedes historical implementation-status statements in that
 roadmap. Runtime behavior and contracts are described in
 [STRANDS_FOUNDATION.md](STRANDS_FOUNDATION.md).
 
-**Implemented checkpoint: Step 13C — dependency-scoped source freshness**
-(on top of Step 13B — lifecycle and governed execution integration)
+**Implemented checkpoint: Step 14 — outcome verification and autonomous closure**
+(on top of Step 13C — dependency-scoped source freshness, and Step 13B — lifecycle
+and governed execution integration)
 
 **Agents reason. The application owns authority.** Five native Strands specialists
 and the native agents-as-tools Reliability Supervisor produce advisory reports.
@@ -22,7 +23,8 @@ approval flow and governed execution, and the engine drives it by default. The
 invariant `prediction != diagnosis != intervention != approval != execution != outcome`
 is enforced by distinct records: advisory reports, application promotion records and
 verdicts, deterministic governance assessments, human approval decisions, execution
-claims, execution receipts, and (deferred) outcome verification.
+claims, execution receipts, and (Step 14) application-frozen observation plans and
+authoritative outcomes produced by a deterministic, model-free verification policy.
 
 ```mermaid
 flowchart TD
@@ -41,6 +43,13 @@ flowchart TD
     AD --> RC[Receipt against claim identity]
     RC --> OB[OBSERVING on CONFIRMED]
     RC --> EF[EXECUTION_FAILED on FAILED or UNKNOWN]
+    OB --> OP[ObservationPlan: boundary and baseline frozen from the exact receipt]
+    OP --> OE[Durable post-intervention evidence, required_for=outcome]
+    OE --> OV[Deterministic outcome policy operon-outcome-1]
+    OV --> CL[CLOSED with Outcome VERIFIED_RECOVERY, one transaction]
+    OV --> RI[INVESTIGATING with Outcome NOT_RECOVERED]
+    OV --> ES[ESCALATED with Outcome REGRESSED]
+    OV --> OB2[OBSERVING, INCONCLUSIVE: no outcome written]
 ```
 
 Lifecycle commands never infer authority from phase. Each one revalidates the
@@ -58,12 +67,33 @@ execution claim protects `READY -> EXECUTING` against concurrent callers; receip
 are recorded with the claim identity as CAS, so evidence arriving during the external
 call cannot erase what physically happened. `UNKNOWN` requires human reconciliation
 and is never replayed. Execution `CONFIRMED` means the commanded work-package action
-was confirmed, not that the asset recovered; `OBSERVING` awaits deferred outcome
-verification and no automatic `CLOSED` exists. Migration
+was confirmed, not that the asset recovered. Migration
 `005_reliability_lifecycle.sql` adds only indexes (one decision per requirement per
 actor; requirement and promotion lookups). Details, the two narrow 13A corrections,
 and the known whole-store freshness conflict are in
 [STRANDS_FOUNDATION.md](STRANDS_FOUNDATION.md#step-13b-lifecycle-approval-and-governed-execution).
+
+Since Step 14, `OBSERVING` is a durable verification phase and `CLOSED` means one
+thing only: the application verified recovery. `LifecycleService.verify_outcome`
+binds the exact executed lineage (promoted intervention and diagnosis lineage, exact
+approval, `CONFIRMED` execution claim and receipt), freezes an `ObservationPlan`
+(observation boundary derived from the receipt, pre-intervention baseline from the
+promoted diagnosis packet, versioned policy parameters), collects bounded
+post-intervention evidence through the Step 13C capabilities with
+`required_for="outcome"`, and applies the deterministic policy `operon-outcome-1`
+(`core/reliability/outcome.py`): the persisted classifier risk after the
+intervention against the frozen baseline, judged with the same WARN/TRIGGER
+thresholds that admit incidents. `VERIFIED_RECOVERY` writes the authoritative
+`Outcome` and `OBSERVING -> CLOSED` in one transaction; `NOT_RECOVERED` returns to
+`INVESTIGATING` and `REGRESSED` escalates, each with its outcome and with the
+executed intervention consumed (never current authority again); `INCONCLUSIVE`
+stays `OBSERVING` and writes no outcome. No receipt, phase transition, model output,
+API caller or generic artifact insert can reach `CLOSED`: the repository refuses
+`CLOSED` and `Outcome`/`ObservationPlan` on its public commands. Recovery
+reconstructs `OBSERVING` from durable pointers and never verifies or closes.
+Migration `007_outcome_verification.sql` adds only unique indexes (one plan per
+receipt, one outcome per plan). See
+[STRANDS_FOUNDATION.md](STRANDS_FOUNDATION.md#step-14-outcome-verification-and-autonomous-closure).
 
 **Step 13A — authoritative promotion boundary (retained description)**
 
@@ -815,24 +845,37 @@ class ApprovalRequirement(Record):
     ]
 
 class Outcome(Record):
+    # Implemented contract (Step 14, core/reliability/models.py). Application-authored
+    # only; a terminal result bound to one exact execution and its observation plan.
     incident_id: str
-    intervention_id: str | None
-    execution_receipt_ids: tuple[str, ...]
-    result: Literal[
-        "RECOVERED", "NO_IMPROVEMENT", "FAILED",
-        "NO_INTERVENTION", "INCONCLUSIVE"
-    ]
+    equipment_ids: tuple[str, ...]
+    asset_id: str
+    plan_id: str                       # ObservationPlan: frozen boundary, baseline, policy
+    diagnosis_id: str
+    diagnosis_promotion_id: str
+    intervention_id: str
+    intervention_hash: str
+    promotion_id: str
+    execution_claim_key: str
+    execution_receipt_ids: tuple[str, ...]   # the exact CONFIRMED receipt; bound, never evidence
+    result: Literal["VERIFIED_RECOVERY", "NOT_RECOVERED", "REGRESSED", "INCONCLUSIVE"]
     basis: Literal["OBSERVED", "SIMULATED"]
+    policy_version: Literal["operon-outcome-1"]
+    verifier_identity: Literal["operon.application.outcome"]
     verification_evidence_ids: tuple[str, ...]
     observation_start: AwareDatetime
     observation_end: AwareDatetime
+    verified_at: AwareDatetime
     before_metrics: dict[str, float]
     after_metrics: dict[str, float]
+    checks: dict[str, bool]
+    reason: str
     estimated_avoided_loss: float | None
     measured_cost: float | None
     diagnosis_confirmed: bool | None
     lesson: str
     supersedes_id: str | None = None
+    # INCONCLUSIVE is a verification disposition; it is never persisted as an Outcome.
 
 class Incident(Record):
     equipment_ids: tuple[str, ...]
@@ -1165,7 +1208,8 @@ Show concise findings and evidence references in the timeline, not an unrestrict
 - Enforced approval/execution boundary, including MCP.
 - Duplicate-execution protection and resource revalidation.
 - Complete offline workflow for supported demo scenarios.
-- Outcome observation separated from dispatch.
+- Outcome observation separated from dispatch; closure only through deterministic
+  verification of durable post-intervention evidence (Step 14).
 - Incident, evidence, verdict, approval, and mode visibility in the existing frontend.
 - Tests for state integrity, governance, fallback, and the full demo lifecycle.
 

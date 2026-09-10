@@ -1,4 +1,4 @@
-# Strands foundation and application promotion boundary (Steps 12A–13C)
+# Strands foundation and application promotion boundary (Steps 12A–14)
 
 Strands supplies model interaction, tool selection, and Pydantic structured output.
 Operon supplies evidence capabilities and owns persistence, lifecycle, validation,
@@ -588,7 +588,8 @@ ModelSignal -> admit_signal (atomic)                          OPEN
 
 Nothing in 13B verifies outcomes or closes incidents. **Execution SUCCESS means
 the commanded work-package action was confirmed by the adapter; it does not mean
-the machine recovered.** No `Outcome` is created and `CLOSED` is never reached.
+the machine recovered.** No `Outcome` is created by execution and `CLOSED` is never
+reached by it; Step 14 (below) adds the only route from `OBSERVING` onwards.
 
 ### Governance
 
@@ -855,6 +856,140 @@ dependencies, and a `CLOSURE` manifest is refused on evidence. Snapshots remain
 promotion-owned. Content hashes still detect payload mutation. Legacy records do
 not become new-format records. Approval and execution paths are untouched.
 
+## Step 14: outcome verification and autonomous closure
+
+**Principle.** `prediction != diagnosis != intervention != approval != execution != outcome`.
+A `CONFIRMED` execution receipt means the consequential operation is known to have
+committed. It does not mean the equipment recovered and it never permits `CLOSED`.
+Only application-owned verification of durable post-intervention evidence, bound to
+the exact execution, may establish recovery. False non-closure is preferable to
+false closure. Implementation: `core/reliability/outcome.py`,
+`LifecycleService.verify_outcome`, the `ObservationPlan` and rewritten `Outcome`
+contracts in `models.py`, the `get_health_score_window` capability, and migration
+`007_outcome_verification.sql`.
+
+### OBSERVING is a durable phase
+
+`OBSERVING` is reached only by `record_receipt` on `CONFIRMED` (and by the legacy
+`GovernedExecutor`, whose incidents carry no promotion lineage and therefore can
+never be verified or closed). Nothing in OBSERVING is in-memory: the observation
+boundary derives from the immutable receipt, the plan and evidence are artifacts,
+and every verification attempt is an explicit application command
+(`verify_outcome`, called by the engine tick and by `POST /api/incidents/{id}/outcome`).
+Restart, duplicate calls, repeated ticks and concurrent workers all reconstruct the
+same state; recovery (`recover`/`reconcile`) never verifies and never closes.
+
+### Exact execution lineage
+
+`OutcomeVerifier._executed` binds, under the same transaction that later commits the
+outcome: the current promoted intervention with full promotion lineage
+(`_lineage(current=False)` plus explicit pointer and supersession checks), its
+diagnosis lineage and `source_diagnosis_promotion_id`, the current human approval
+requirement and `APPROVED` state, exactly one execution claim in state `CONFIRMED`
+whose identity (incident, hash, step, capability, request hash) matches the
+intervention, and exactly one `CONFIRMED` receipt for that claim and attempt bound to
+the same identity and the trusted executor. `FAILED`/`UNKNOWN` claims, tampered
+claim rows, swapped or superseded pointers and lineage-less (legacy) interventions
+are refused with `AuthorityRefused`; nothing is written. The 13B rule that new
+technical evidence invalidates approval/execution authority still applies to
+`authority_valid`; post-intervention evidence legitimately postdates the diagnosis
+promotion, so `LifecycleStatus.execution_lineage_valid` reports the executed lineage
+separately.
+
+### Observation plan: boundary and frozen baseline
+
+The first verification attempt freezes one `ObservationPlan` per `CONFIRMED` receipt
+(unique index; idempotent under concurrency). `confirmed_at` is the receipt's
+completion; `observation_start` is the first fully elapsed second after it, so a
+score or reading stamped in the confirmation second can never count as post-
+intervention evidence. The baseline is taken from the promoted diagnosis packet:
+the latest durable model signal observed before confirmation (`risk_score`,
+`health_score`) plus the packet's telemetry window statistics when present. No
+measurement is invented; without a durable signal the attempt is `INCONCLUSIVE`
+and no plan is written. The plan also freezes the policy version and its parameters.
+
+### Post-intervention evidence
+
+Each mature attempt evaluates the bounded window
+`[observation_start, newest persisted score]` through the Step 13C capabilities:
+`get_health_score_window` (new; `SourceDomain` `health_score_window`, evidence kind
+`health_score`) and `get_telemetry_window`, requested by the `application` role
+with `required_for="outcome"`, bound to the exact incident and asset. A later
+window supersedes the previous generation of the same capability
+(`request_and_collect(..., supersedes_evidence_id=...)`), so only the newest window
+is current while every generation remains immutable history. Immature windows
+(fewer than the policy minimum) write nothing. Evidence collection never runs under
+a lock; the commit reloads the evidence by ID from this incident, checks scope,
+capability, request purpose and the exact window parameters, replays the dependency
+manifests, and re-derives the decision from the persisted payloads. Any change
+between collection and commit yields `RETRY`, never a decision. Bounded windows are
+never staled by samples after their `end_at`; a mutation inside the window stales
+the generation and the next attempt re-evaluates from a new one. Unrelated assets
+and incidents cannot invalidate anything.
+
+### Deterministic policy `operon-outcome-1`
+
+Model-free and explicit (`outcome.evaluate`). Signals: only what the repository
+persists, the classifier's failure probability after the intervention versus the
+frozen baseline, judged with the same `WARN_THRESHOLD` (0.45) and `TRIGGER_THRESHOLD`
+(0.80) that admit incidents. Telemetry statistics are recorded in `after_metrics` as
+context and never decide; no universal physical thresholds are invented. Over the
+last `minimum_post_scores` (3) scores of the window:
+
+| Condition | Result | Lifecycle |
+| --- | --- | --- |
+| fewer than 3 post-boundary scores, or baseline risk not elevated, or window not the plan's | `INCONCLUSIVE` | stays `OBSERVING`, no outcome written |
+| all three below 0.45 | `VERIFIED_RECOVERY` | `CLOSED` |
+| all three at/above 0.80 and the latest above baseline by `regression_margin` (0.05); a single critical tick never regresses | `REGRESSED` | `ESCALATED` |
+| `maximum_post_scores` (12) reached without a healthy tail | `NOT_RECOVERED` | `INVESTIGATING` |
+| otherwise (still settling) | `INCONCLUSIVE` | stays `OBSERVING` |
+
+### Closure and the other outcomes
+
+`VERIFIED_RECOVERY` writes the authoritative `Outcome` (exact lineage, plan, claim
+key, receipt, evidence IDs, window, baseline/after metrics, checks, reason,
+`SIMULATED`/`OBSERVED` basis) and the `OBSERVING -> CLOSED` transition, the
+`OUTCOME_RECORDED` and `INCIDENT_CLOSED` events, in one `BEGIN IMMEDIATE`
+transaction. `NOT_RECOVERED` returns to `INVESTIGATING` and `REGRESSED` to
+`ESCALATED`, each with its outcome; both clear `current_intervention_id` so the
+executed intervention is consumed: it cannot be approved or executed again (its
+claim is `CONFIRMED`, and no current promoted intervention exists), and any new
+intervention needs a new diagnosis run, trusted confirmation, binding, review,
+promotion, approval and execution. History is untouched: diagnosis, intervention,
+approval, claim, receipt, plan and outcome evidence remain. Repeated verification of
+a decided plan is idempotent (`ix_outcome_plan`); a `NOT_RECOVERED` outcome cannot be
+overwritten by later healthy scores. Advisory agents play no part: no Strands agent
+is invoked, and none can author, cite into, or override an outcome.
+
+### Authority audit
+
+`CLOSED` is reachable only through `LifecycleService._checkpoint` when the same
+commit carries a `VERIFIED_RECOVERY` `Outcome`; `IncidentRepository.transition`
+refuses `CLOSED`, `append_event` refuses `INCIDENT_CLOSED`, `add_artifact` refuses
+`Outcome` and `ObservationPlan`, and a row smuggled around the repository is not
+closure: the verifier refuses to proceed (`reconciliation_required`) and recovery
+keeps the incident `OBSERVING`. `GovernedExecutor` and `record_receipt` still stop
+at `OBSERVING`. `CANCELLED` remains the generic human terminal.
+
+### Engine and simulator
+
+The engine verifies every `OBSERVING` incident on each tick and projects the
+lifecycle's decision (status, sim mode, dashboard result, `outcome` broadcast); it
+grants nothing. The simulator's response to a confirmed work package is
+profile-driven (`AssetProfile.intervention_response`: `RECOVERS` -> `recovering`,
+`PERSISTS` -> `unresponsive`) and explicitly simulated demo provenance; verification
+reads persisted scores only, so the demo can show verified recovery, persistent
+failure and inconclusive observation without assuming maintenance succeeds.
+
+### Conservative limitations
+
+Recovery is verified against the persisted classifier risk, not an independent
+physical measurement (`diagnosis_confirmed` stays `None`, `measured_cost` is not
+known). The observation boundary is confirmation of the CMMS commit, because the
+local CMMS records no work-order completion event; a deployment with completion
+records should gate the boundary on them. Post-closure source changes are detectable
+through the outcome evidence manifests but never reopen or rewrite a final outcome.
+
 ## Scope and verification
 
 No material architecture deviations. The package lives at `core/agents/` as allowed
@@ -863,10 +998,20 @@ Assessment names distinguish advice from the authoritative artifacts in the sket
 The legacy deterministic fallback remains available; no second agent framework or
 new deterministic diagnostic workflow is introduced.
 
-Live fallback integration, AgentCore, RAG/OEM ingestion, procurement, outcome
-verification, automatic closure, provider migration, host authentication and
-frontend redesign remain deferred after 13C. Source-specific freshness is
-implemented (13C); external source adapters still have no dependency domains.
+Live fallback integration, AgentCore, RAG/OEM ingestion, procurement, provider
+migration, host authentication and frontend redesign remain deferred after Step 14.
+Source-specific freshness (13C) and deterministic outcome verification with
+autonomous closure (14) are implemented; external source adapters still have no
+dependency domains and no CMMS completion event feeds the observation boundary.
+
+Run `uv run pytest tests/test_outcome.py tests/test_engine_lifecycle.py` for the
+Step 14 suite: execution never closes, receipts are not evidence, pre-boundary
+samples do not count, immature/settling/verified/not-recovered/regressed paths, exact
+lineage binding (FAILED/UNKNOWN, tampered claims, swapped or superseded pointers,
+legacy incidents), wrong-incident/asset/window evidence, unrelated-source isolation,
+in-window mutation and collection-to-commit races, idempotent and concurrent
+verification, forged outcome rows, restart before and after closure, migration
+idempotency, and the engine's autonomous closure and failure paths.
 
 Run `uv run pytest tests/test_reliability_lifecycle.py tests/test_engine_lifecycle.py`
 for the 13B lifecycle: atomic approval/claim/receipt transactions with rollback

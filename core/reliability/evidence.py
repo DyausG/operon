@@ -231,7 +231,35 @@ class OperatingContext(ReadContract):
     provenance: CapabilityProvenance
 
 
-CapabilityResult = AssetContext | TelemetryWindow | MaintenanceHistory | RelatedIncidents | OperatingContext
+class HealthScorePoint(ReadContract):
+    asset_id: str
+    score_id: int
+    scored_at: AwareDatetime
+    health_score: float
+    failure_prob: float
+    predicted_mode: str | None = None
+
+
+class HealthScoreWindow(ReadContract):
+    """Bounded persisted classifier scores of one asset (Step 14 outcome evidence).
+
+    These are the engine's persisted model outputs, not physical measurements; a
+    window of them can show whether the modelled risk stayed elevated, fell, or rose
+    after an intervention. It cannot prove a mechanical repair.
+    """
+    asset_id: str
+    requested_start: AwareDatetime | None = None
+    requested_end: AwareDatetime | None = None
+    requested_sample_limit: int
+    availability: Availability
+    scores: tuple[HealthScorePoint, ...]
+    risk_statistics: TelemetryStatistics
+    health_statistics: TelemetryStatistics
+    missing_reason: str | None = None
+    provenance: CapabilityProvenance
+
+
+CapabilityResult = AssetContext | TelemetryWindow | MaintenanceHistory | RelatedIncidents | OperatingContext | HealthScoreWindow
 
 
 class EvidenceCollection(ReadContract):
@@ -265,6 +293,18 @@ class _TelemetryQuery(ReadContract):
         return self
 
 
+class _HealthScoreQuery(ReadContract):
+    start_at: AwareDatetime | None = None
+    end_at: AwareDatetime | None = None
+    sample_limit: int = Field(default=60, ge=1, le=500)
+
+    @model_validator(mode="after")
+    def valid_window(self):
+        if self.start_at and self.end_at and self.end_at < self.start_at:
+            raise ValueError("end_at must not precede start_at")
+        return self
+
+
 class _MaintenanceQuery(ReadContract):
     limit: int = Field(default=20, ge=1, le=100)
     before: AwareDatetime | None = None
@@ -276,7 +316,7 @@ class _RelatedQuery(ReadContract):
 
 SUPPORTED_CAPABILITIES = frozenset({
     "get_asset_context", "get_telemetry_window", "get_maintenance_history",
-    "get_related_incidents", "get_operating_context",
+    "get_related_incidents", "get_operating_context", "get_health_score_window",
 })
 _QUERY_MODELS = {
     "get_asset_context": _AsOfQuery,
@@ -284,6 +324,7 @@ _QUERY_MODELS = {
     "get_telemetry_window": _TelemetryQuery,
     "get_maintenance_history": _MaintenanceQuery,
     "get_related_incidents": _RelatedQuery,
+    "get_health_score_window": _HealthScoreQuery,
 }
 _DEMO_ASSET_IDS = frozenset(row[0] for row in EQUIPMENT)
 
@@ -458,6 +499,36 @@ class EvidenceCapabilities:
             ),
         )
 
+    def _health_score_window(self, reads: SourceReads, asset_id: str, query: _HealthScoreQuery) -> HealthScoreWindow:
+        start, end = _iso(query.start_at), _iso(query.end_at)
+        rows = reads.health_score_window(asset_id=asset_id, start_at=start, end_at=end, sample_limit=query.sample_limit)
+        scores = tuple(HealthScorePoint(
+            asset_id=asset_id, score_id=int(row["score_id"]), scored_at=_aware(row["scored_at"]),
+            health_score=float(row["health_score"]), failure_prob=float(row["failure_prob"]),
+            predicted_mode=row["predicted_mode"],
+        ) for row in rows)
+        risk = _stats(tuple(SensorReading(asset_id=asset_id, sensor_id="risk", sensor_type="RISK", timestamp=p.scored_at,
+                                          value=p.failure_prob, unit="probability", quality="GOOD") for p in scores))
+        health = _stats(tuple(SensorReading(asset_id=asset_id, sensor_id="health", sensor_type="HEALTH", timestamp=p.scored_at,
+                                            value=p.health_score, unit="score", quality="GOOD") for p in scores))
+        count = len(scores)
+        availability = (Availability.AVAILABLE if count >= 2 else
+                        Availability.PARTIAL if count == 1 else Availability.UNAVAILABLE)
+        reason = (None if count >= 2 else "one persisted score is available; trend requires at least two" if count == 1
+                  else "no persisted health scores match the requested window")
+        params = query.model_dump(mode="json", exclude={"schema_version"}) | {"asset_id": asset_id}
+        timestamps = [point.scored_at for point in scores]
+        return HealthScoreWindow(
+            asset_id=asset_id, requested_start=query.start_at, requested_end=query.end_at,
+            requested_sample_limit=query.sample_limit, availability=availability, scores=scores,
+            risk_statistics=risk, health_statistics=health, missing_reason=reason,
+            provenance=self._provenance(
+                "get_health_score_window", ("health_score",), (DataOrigin.MODEL_PRODUCED, DataOrigin.SIMULATED),
+                params, f"health_score:asset={asset_id};start={start};end={end};limit={query.sample_limit}",
+                (min(timestamps) if timestamps else None, max(timestamps) if timestamps else None),
+            ),
+        )
+
     def _maintenance_history(self, reads: SourceReads, asset_id: str, query: _MaintenanceQuery) -> MaintenanceHistory:
         orders, events, parts = reads.maintenance_history(asset_id=asset_id, before=_iso(query.before), limit=query.limit)
         records = []
@@ -577,6 +648,8 @@ class EvidenceCapabilities:
             return self._maintenance_history(reads, asset_id, query)
         if capability == "get_related_incidents":
             return self._related_incidents(reads, asset_id, incident_id, query)
+        if capability == "get_health_score_window":
+            return self._health_score_window(reads, asset_id, query)
         raise AssertionError("capability validation and dispatch are out of sync")
 
     def _read(self, capability: str, asset_id: str, parameters: dict, incident_id: str | None):
@@ -609,6 +682,11 @@ class EvidenceCapabilities:
 
     def get_operating_context(self, asset_id: str, *, as_of: datetime | None = None) -> OperatingContext:
         return self._read("get_operating_context", asset_id, {"as_of": as_of}, None)[0]
+
+    def get_health_score_window(self, asset_id: str, *, start_at: datetime | None = None,
+                                end_at: datetime | None = None, sample_limit: int = 60) -> HealthScoreWindow:
+        return self._read("get_health_score_window", asset_id,
+                          dict(start_at=start_at, end_at=end_at, sample_limit=sample_limit), None)[0]
 
     def validate_parameters(self, capability: str, parameters: dict) -> dict[str, JsonValue]:
         if capability not in SUPPORTED_CAPABILITIES:
@@ -648,6 +726,7 @@ class EvidenceCapabilities:
             "get_maintenance_history": MaintenanceHistory,
             "get_related_incidents": RelatedIncidents,
             "get_operating_context": OperatingContext,
+            "get_health_score_window": HealthScoreWindow,
         }.get(capability)
         if cls is None:
             raise UnsupportedEvidenceCapability(capability)
@@ -692,7 +771,17 @@ class EvidenceService:
     def request_and_collect(self, incident_id: str, *, requested_by: m.Role,
                             equipment_ids: tuple[str, ...], question: str,
                             capability: str, required_for: Literal["diagnosis", "intervention", "outcome"],
-                            parameters: dict | None = None) -> EvidenceCollection:
+                            parameters: dict | None = None,
+                            supersedes_evidence_id: str | None = None) -> EvidenceCollection:
+        """Request, collect (or reuse) and resolve one bounded read as durable evidence.
+
+        ``supersedes_evidence_id`` (Step 14) lets an application boundary that
+        advances a bounded window (a later ``end_at`` of the same observation) declare
+        the previous generation superseded, so only the newest window stays current
+        while every generation remains immutable history. It is ignored when the
+        identical request is reusable and refused when the record is not a current
+        same-capability, same-scope evidence of this incident.
+        """
         if len(equipment_ids) != 1:
             raise InvalidEvidenceRequest("current evidence capabilities require exactly one asset")
         if not question.strip():
@@ -718,6 +807,9 @@ class EvidenceService:
             # Preserve both old records and append a new request/evidence generation.
             previous_request, previous_evidence = request, evidence
             matching = []
+        elif not matching and supersedes_evidence_id is not None:
+            previous_request, previous_evidence = self._generation_to_supersede(
+                artifacts, supersedes_evidence_id, capability, equipment_ids, required_for)
 
         incident = self.repository.fetch_incident(incident_id)
         if matching:
@@ -782,6 +874,20 @@ class EvidenceService:
         return EvidenceCollection(request=resolution, evidence=evidence, result=result)
 
     @staticmethod
+    def _generation_to_supersede(artifacts, evidence_id, capability, equipment_ids, required_for):
+        evidence = next((item for item in artifacts if isinstance(item, m.Evidence) and item.id == evidence_id), None)
+        if evidence is None or evidence.source_capability != capability or evidence.equipment_ids != equipment_ids:
+            raise InvalidEvidenceRequest("superseded evidence must be a same-capability, same-scope record of this incident")
+        if any(getattr(item, "supersedes_id", None) == evidence.id for item in artifacts):
+            raise InvalidEvidenceRequest("evidence generation is already superseded")
+        superseded = {item.supersedes_id for item in artifacts if isinstance(item, m.EvidenceRequest) and item.supersedes_id}
+        resolutions = [item for item in artifacts if isinstance(item, m.EvidenceRequest) and item.id not in superseded
+                       and evidence.id in item.resolved_by_evidence_ids and item.required_for == required_for]
+        if not resolutions:
+            raise InvalidEvidenceRequest("superseded evidence has no current resolved request for this purpose")
+        return resolutions[-1], evidence
+
+    @staticmethod
     def _summary(result: CapabilityResult) -> str:
         if isinstance(result, TelemetryWindow):
             count = sum(item.statistics.sample_count for item in result.series)
@@ -792,6 +898,8 @@ class EvidenceService:
             return f"Same-asset incident history: {len(result.incidents)} incidents"
         if isinstance(result, OperatingContext):
             return f"Persisted operating context for {result.asset_id}; unavailable fields remain explicit"
+        if isinstance(result, HealthScoreWindow):
+            return f"Persisted health-score window: {len(result.scores)} classifier scores (not physical measurements)"
         return f"Persisted asset and sensor context for {result.asset_id}"
 
 
@@ -828,3 +936,10 @@ def get_related_incidents(asset_id: str, *, path: Path | None = None,
 def get_operating_context(asset_id: str, *, path: Path | None = None,
                           as_of: datetime | None = None) -> OperatingContext:
     return EvidenceCapabilities(path).get_operating_context(asset_id, as_of=as_of)
+
+
+def get_health_score_window(asset_id: str, *, path: Path | None = None,
+                            start_at: datetime | None = None, end_at: datetime | None = None,
+                            sample_limit: int = 60) -> HealthScoreWindow:
+    return EvidenceCapabilities(path).get_health_score_window(
+        asset_id, start_at=start_at, end_at=end_at, sample_limit=sample_limit)

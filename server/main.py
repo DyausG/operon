@@ -162,6 +162,16 @@ async def execute(incident_id: str, command: ExecutionCommand):
                                         intervention_hash=command.intervention_hash))
 
 
+@app.post("/api/incidents/{incident_id}/outcome")
+async def verify_outcome(incident_id: str):
+    """Explicit deterministic outcome verification of an OBSERVING incident (Step 14).
+
+    The same application authority the engine tick applies; no body is accepted and
+    no caller can supply an outcome, evidence or closure.
+    """
+    return _status(await engine.verify_outcome(incident_id))
+
+
 @app.post("/api/incidents/{incident_id}/confirmations/technical")
 async def technical_confirmation(incident_id: str, submission: TechnicalSubmission):
     if not config.trusted_submissions_enabled():

@@ -9,14 +9,22 @@ toward real AI4I failure modes on staggered timelines — so several alerts over
 the agent must triage. The rest run healthy with realistic noise.
 
 Degradation modes are driven by the demo engine:
-    degrading  -> risk climbs each tick
-    arrested   -> hold (agent has proposed; awaiting human approval)
-    recovering -> planned intervention approved; signals relax to healthy
-    failing    -> human rejected/ignored; runs to unplanned failure
+    degrading    -> risk climbs each tick
+    arrested     -> hold (agent has proposed; awaiting human approval)
+    recovering   -> SIMULATED plant response to a confirmed work package; signals relax to healthy
+    unresponsive -> SIMULATED plant that does not respond to the confirmed work package; risk holds
+    failing      -> human rejected/ignored; runs to unplanned failure
+
+Step 14: a confirmed execution never sets "recovering" directly. The engine calls
+``respond_to_intervention`` and the asset profile's ``intervention_response`` decides
+whether the simulated plant recovers or stays degraded, so tests and demos can show
+verified recovery, persistent failure and inconclusive observation without hard-
+coding "maintenance always succeeds". Everything here is simulated provenance; the
+application's outcome verification reads only persisted evidence.
 """
 from __future__ import annotations
 import numpy as np
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from . import dataset as ds
 
@@ -46,6 +54,9 @@ class AssetProfile:
     start_tick: int        # tick at which degradation begins
     ramp_ticks: int        # ticks from onset to full degradation (staggers alerts)
     base: dict             # healthy baseline feature values
+    # SIMULATED response to a confirmed work package (demo provenance only):
+    #   RECOVERS -> "recovering" mode; PERSISTS -> "unresponsive" mode (risk holds).
+    intervention_response: str = "RECOVERS"
 
 
 # Healthy baselines per asset (AI4I feature space) + degradation scenario.
@@ -90,10 +101,25 @@ class PlantSimulator:
         self.assets: dict[str, AssetState] = {}
         for p in FLEET:
             mode = "degrading" if p.scenario != "healthy" else "healthy"
-            self.assets[p.equipment_id] = AssetState(profile=p, mode=mode)
+            # Per-instance profile copy: demo tweaks (e.g. intervention_response) never leak across simulators.
+            self.assets[p.equipment_id] = AssetState(profile=replace(p), mode=mode)
 
     def set_mode(self, equipment_id: str, mode: str):
         self.assets[equipment_id].mode = mode
+
+    def respond_to_intervention(self, equipment_id: str) -> str:
+        """SIMULATED plant response to a confirmed work package; returns the mode applied.
+
+        Demo provenance only: whether the simulated asset recovers is a property of
+        its scenario profile, never an assumption that maintenance succeeded. The
+        application verifies outcomes from persisted evidence, not from this state.
+        """
+        st = self.assets[equipment_id]
+        response = st.profile.intervention_response
+        if response not in ("RECOVERS", "PERSISTS"):
+            raise ValueError(f"unknown simulated intervention response {response!r}")
+        st.mode = "recovering" if response == "RECOVERS" else "unresponsive"
+        return st.mode
 
     def _noise(self, sd: float) -> float:
         return float(self.rng.normal(0, sd))
@@ -136,7 +162,7 @@ class PlantSimulator:
                 if st.prog <= 0.02:
                     st.prog = 0.0
                     st.mode = "healthy"
-            # 'arrested' and 'healthy' hold prog flat
+            # 'arrested', 'unresponsive' and 'healthy' hold prog flat
             out[eid] = self._features_for(st)
         return out
 

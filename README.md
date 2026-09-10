@@ -141,10 +141,13 @@ Use **Reset demo** (top-right) to run it again.
 > **Step 13B note.** The script above describes the original proposal-first demo.
 > It is now deprecated compatibility code: run it with `OPERON_LEGACY_DEMO=1`.
 > By default the engine follows the authoritative lifecycle
-> (`OPEN → INVESTIGATING → … → AWAITING_APPROVAL → READY → EXECUTING → OBSERVING`):
+> (`OPEN → INVESTIGATING → … → AWAITING_APPROVAL → READY → EXECUTING → OBSERVING → CLOSED`):
 > a signal opens a durable incident and deterministic baseline evidence is collected;
 > diagnosis, intervention and approval authority exist only after the Strands
-> supervisor runs (Bedrock) and trusted confirmations are submitted. Approval calls
+> supervisor runs (Bedrock) and trusted confirmations are submitted. A confirmed
+> work package only reaches `OBSERVING`; `CLOSED` requires the application's
+> deterministic outcome verification of persisted post-intervention evidence
+> (Step 14), and an asset that does not recover returns to investigation. Approval calls
 > must carry the exact `requirement_id`, `intervention_id`, `intervention_hash` and
 > `context_revision` shown on the alert; equipment-only approvals are rejected.
 > Trusted confirmation/binding endpoints are disabled unless

@@ -12,6 +12,12 @@ and only PromotionService/LifecycleService commands create diagnosis, interventi
 approval and execution authority. The pre-13B proposal shortcut
 (prepare_legacy_intervention) is deprecated compatibility/demo code and runs only
 when OPERON_LEGACY_DEMO is explicitly enabled.
+
+Step 14: execution success reaches OBSERVING only. Every tick the engine asks the
+lifecycle to verify the outcome of each OBSERVING incident deterministically from
+persisted evidence; the lifecycle, not the engine or the simulator, decides
+CLOSED / re-investigation / escalation. The simulator's post-dispatch response is
+explicitly simulated demo provenance and is never read by verification.
 """
 from __future__ import annotations
 import asyncio
@@ -66,7 +72,9 @@ def status_for(prob: float) -> str:
 
 
 class DemoEngine:
-    def __init__(self, *, runtime=None, specialist_runtime=None, legacy_demo: bool | None = None):
+    def __init__(self, *, runtime=None, specialist_runtime=None, legacy_demo: bool | None = None, clock=None):
+        # Tick clock seam: tests advance it deterministically instead of sleeping.
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
         self.model = load_or_train()
         self.sim = PlantSimulator()
         self.clients: set = set()
@@ -92,11 +100,13 @@ class DemoEngine:
         self._resume: set[str] = set()
         self._lifecycle_tasks: dict[str, asyncio.Task] = {}
         self._attempts: dict[str, tuple[int | None, int]] = {}
+        # Outcome messages produced by the synchronous tick progression, flushed by the tick.
+        self._pending_broadcasts: list[dict] = []
         # Supervisor runs are serialized: 13A's source checkpoint treats another
         # incident's revision change during a run as staleness.
         self._reasoning_lock = asyncio.Lock()
         self._model_version = model_version(config.MODEL_PATH)
-        self._observed_at = datetime.now(timezone.utc)
+        self._observed_at = self._clock()
         self._recover_incidents()
 
     @staticmethod
@@ -147,10 +157,13 @@ class DemoEngine:
             self._resume.add(eid)
         mode, override = "arrested", "CRITICAL"
         if incident.phase == IncidentPhase.OBSERVING:
-            mode, override = "recovering", "SCHEDULED"   # simulated plant response, not verified recovery
+            # Simulated plant response to the confirmed package, not verified recovery:
+            # verification resumes from durable evidence on the next tick.
+            mode, override = self.sim.respond_to_intervention(eid), "SCHEDULED"
         elif incident.phase == IncidentPhase.ESCALATED and self._rejected(incident.id):
             mode, override = "failing", "CRITICAL"
-        self.sim.set_mode(eid, mode)
+        if mode != self.sim.assets[eid].mode:
+            self.sim.set_mode(eid, mode)
         self.status_override[eid] = override
         self.alerts[eid] = self._lifecycle_alert(eid, status=status)
         if status.reconciliation_required:
@@ -215,6 +228,7 @@ class DemoEngine:
         self._resume = set()
         self._lifecycle_tasks = {}
         self._attempts = {}
+        self._pending_broadcasts = []
         await self.broadcast({"type": "reset"})
         await self.start()
 
@@ -230,7 +244,7 @@ class DemoEngine:
     async def _advance(self):
         self.tick_i += 1
         feats = self.sim.tick()
-        self._observed_at = datetime.now(timezone.utc)
+        self._observed_at = self._clock()
         now = self._observed_at.isoformat(timespec="seconds")
         fleet_msg, readings, healths = [], [], []
         for eid, f in feats.items():
@@ -276,6 +290,9 @@ class DemoEngine:
                                           "error": "incident admission or legacy planning failed; retrying"})
         if not self.legacy_demo:
             self._progress_lifecycle()
+            for message in self._pending_broadcasts:
+                await self.broadcast(message)
+            self._pending_broadcasts = []
 
         # unplanned failures for rejected assets
         for eid in list(self.alerts):
@@ -436,7 +453,74 @@ class DemoEngine:
             if current.revision != incident.revision:
                 self.incidents[eid] = current
                 self.alerts[eid] = self._lifecycle_alert(eid)
+            if current.phase == IncidentPhase.OBSERVING:
+                self._verify_outcome(eid)
             self._schedule_diagnosis(eid)
+
+    def _verify_outcome(self, eid: str):
+        """Deterministic, model-free outcome verification of one OBSERVING incident (tick-driven).
+
+        Only durable evidence and the lifecycle policy decide; a refusal leaves the
+        incident OBSERVING and is logged for reconciliation.
+        """
+        incident = self.incidents.get(eid)
+        if incident is None:
+            return None
+        try:
+            verification = self.lifecycle.verify_outcome(incident.id)
+        except LIFECYCLE_ERRORS as exc:
+            logger.warning("Outcome verification refused for %s (incident %s): %s", eid, incident.id, exc)
+            self.incidents[eid] = self.coordinator.repository.fetch_incident(incident.id)
+            self.alerts[eid] = self._lifecycle_alert(eid, reason=f"outcome verification refused: {exc}")
+            return None
+        if verification.disposition in ("OBSERVING", "RETRY"):
+            return verification
+        self._apply_outcome(eid, verification)
+        return verification
+
+    def _apply_outcome(self, eid: str, verification):
+        """Project an authoritative lifecycle outcome onto the demo state. Grants nothing."""
+        self.incidents[eid] = self.coordinator.repository.fetch_incident(verification.incident_id)
+        alert = self.alerts.get(eid) or {}
+        result = dict(alert.get("result") or {})
+        result.update({"outcome": verification.result, "outcome_id": verification.outcome_id,
+                       "verification_reason": verification.reason, "policy_version": verification.policy_version})
+        alert["result"] = result
+        if verification.disposition == "CLOSED":
+            # The plant status is no longer overridden: the fleet shows what the model scores now.
+            self.status_override.pop(eid, None)
+        elif verification.disposition == "REINVESTIGATE":
+            self.sim.set_mode(eid, "arrested")
+            self.status_override[eid] = "CRITICAL"
+        elif verification.disposition == "ESCALATED":
+            self.sim.set_mode(eid, "arrested")
+            self.status_override[eid] = "CRITICAL"
+        self.alerts[eid] = self._lifecycle_alert(eid, reason=verification.reason)
+        self.alerts[eid]["result"] = result
+        self._retriage()
+        self._pending_broadcasts.append({"type": "outcome", "equipment_id": eid, "result": result,
+                                         "phase": self.incidents[eid].phase.value, "alert": self.alerts[eid],
+                                         "business": self._business_summary(), "triage": self._triage_msg()})
+
+    async def verify_outcome(self, incident_id: str) -> dict:
+        """Explicit deterministic verification attempt (API); the same authority as the tick path."""
+        eid = self._eid_for(incident_id)
+        try:
+            verification = await asyncio.to_thread(self.lifecycle.verify_outcome, incident_id)
+        except LIFECYCLE_ERRORS as exc:
+            if eid:
+                await self._refresh_lifecycle(eid, "outcome_refused", reason=str(exc))
+                return {"ok": False, "error": str(exc), "incident": self.lifecycle.projection(incident_id)}
+            return {"ok": False, "error": str(exc)}
+        if eid and verification.disposition not in ("OBSERVING", "RETRY"):
+            self._apply_outcome(eid, verification)
+            for message in self._pending_broadcasts:
+                await self.broadcast(message)
+            self._pending_broadcasts = []
+        elif eid:
+            await self._refresh_lifecycle(eid, "observing", reason=verification.reason)
+        return {"ok": True, "verification": verification.model_dump(mode="json"),
+                "incident": self.lifecycle.projection(incident_id)}
 
     async def _refresh_lifecycle(self, eid: str, phase: str, *, reason: str | None = None, message_type="alert"):
         incident = self.incidents.get(eid)
@@ -458,7 +542,7 @@ class DemoEngine:
         mode = ctx["failure_mode"] if ctx else None
         requirement = view.get("requirement")
         proposal = None
-        if incident.current_intervention_id and view.get("authority_valid"):
+        if incident.current_intervention_id and (view.get("authority_valid") or view.get("execution_lineage_valid")):
             intervention = self.coordinator.repository.get_artifact(incident.id, incident.current_intervention_id)
             step = intervention.steps[0]
             proposal = {
@@ -502,6 +586,9 @@ class DemoEngine:
                 "requirement_id": requirement["requirement_id"] if requirement else None,
                 "authority_valid": view.get("authority_valid"), "authority_reason": view.get("authority_reason"),
                 "reconciliation_required": view.get("reconciliation_required"),
+                "execution_lineage_valid": view.get("execution_lineage_valid"),
+                "plan_id": view.get("plan_id"), "outcome_id": view.get("outcome_id"),
+                "outcome_result": view.get("outcome_result"),
                 "supervisor_available": self.runtime is not None,
                 "last_reason": reason or previous.get("lifecycle", {}).get("last_reason"),
             },
@@ -659,9 +746,10 @@ class DemoEngine:
                     "external_objects": execution.external_objects}
         al = self.alerts[eid]
         intervention = self.coordinator.repository.get_artifact(incident_id, intervention_id)
-        # Simulated plant response to a dispatched package. Execution SUCCESS means the
-        # commanded work-package action was confirmed, not that the machine recovered.
-        self.sim.set_mode(eid, "recovering")
+        # Simulated plant response to a dispatched package (profile-dependent). Execution
+        # SUCCESS means the commanded work-package action was confirmed, not that the
+        # machine recovered; only lifecycle outcome verification can establish that.
+        self.sim.respond_to_intervention(eid)
         self.status_override[eid] = "SCHEDULED"
         wo = execution.external_objects
         al["result"] = {"outcome": "DISPATCHED", "wo_number": wo.get("wo_number"),
@@ -815,7 +903,10 @@ class DemoEngine:
     # -- aggregates + snapshot --------------------------------------------
     def _business_summary(self) -> dict:
         # Lifecycle incidents can be APPROVED (READY/EXECUTING) before any dispatch result exists.
-        prevented = [a for a in self.alerts.values() if a["status"] == "APPROVED" and a.get("result")]
+        # A verified closure keeps its dispatched result; NOT_RECOVERED/REGRESSED incidents leave
+        # the APPROVED status (re-investigation/escalation) and therefore drop out here.
+        prevented = [a for a in self.alerts.values() if a["status"] in ("APPROVED", "CLOSED") and a.get("result")
+                     and a["result"].get("outcome") in ("DISPATCHED", "PREVENTED", "VERIFIED_RECOVERY")]
         lost = [a for a in self.alerts.values() if a["status"] == "FAILED" and a.get("result")]
         recovered = sum(a["result"]["recovered_value"] for a in prevented)
         loss = sum(a["result"]["loss"] for a in lost)

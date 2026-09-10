@@ -44,8 +44,13 @@ ARTIFACT_TYPES = {cls.__name__: cls for cls in (
     m.Evidence, m.EvidenceRequest, m.Hypothesis, m.Diagnosis, m.ValidationVerdict,
     m.Intervention, m.AgentAction, m.ApprovalRequirement, m.Outcome, m.LegacyAlert,
     m.SupervisorRunSnapshot, m.SupervisorReport, m.PromotionRecord, m.WorkPackageBinding,
+    m.ObservationPlan,
 )}
 PROMOTION_OWNED_TYPES = (m.SupervisorRunSnapshot, m.SupervisorReport, m.PromotionRecord, m.WorkPackageBinding)
+# Step 14: outcome authority records are authored only by the lifecycle outcome
+# verifier, in the same transaction as the phase change they justify. The public
+# ``add_artifact`` refuses them exactly as it refuses promotion-owned records.
+OUTCOME_OWNED_TYPES = (m.ObservationPlan, m.Outcome)
 # Trusted confirmation capabilities and the one evidence kind each produces. The
 # public ``add_artifact`` refuses them, so such records reach ``_store_artifact`` only
 # through the private promotion boundary (PromotionService._submit_evidence).
@@ -61,6 +66,7 @@ REFERENCE_TYPES = {
     "input_artifact_ids": m.Artifact, "output_artifact_ids": m.Artifact,
     "execution_receipt_ids": m.ExecutionReceipt,
     "request_id": m.EvidenceRequest,
+    "plan_id": m.ObservationPlan, "baseline_evidence_ids": m.Evidence, "baseline_signal_evidence_id": m.Evidence,
 }
 
 
@@ -86,7 +92,7 @@ def content_hash(value: dict) -> str:
 SOURCE_QUERY_KINDS = {
     "get_asset_context": "operational_context", "get_telemetry_window": "telemetry",
     "get_maintenance_history": "maintenance_history", "get_related_incidents": "asset_relation",
-    "get_operating_context": "operational_context",
+    "get_operating_context": "operational_context", "get_health_score_window": "health_score",
 }
 SOURCE_QUERY_CAPABILITIES = frozenset(SOURCE_QUERY_KINDS)
 SOURCE_READ_KINDS = frozenset(SOURCE_QUERY_KINDS.values())
@@ -381,6 +387,8 @@ class IncidentRepository:
         if isinstance(artifact, PROMOTION_OWNED_TYPES) or (
                 isinstance(artifact, m.Evidence) and artifact.source_capability in TRUSTED_EVIDENCE_CAPABILITIES):
             raise InvalidReference("promotion-owned records require the trusted PromotionService command")
+        if isinstance(artifact, OUTCOME_OWNED_TYPES):
+            raise InvalidReference("outcome records require the trusted LifecycleService outcome verification command")
         with self._write() as conn:
             incident = self._fetch(conn, artifact.incident_id)
             self._check(incident, expected_revision)
@@ -400,6 +408,15 @@ class IncidentRepository:
 
     def transition(self, incident_id: str, target: m.IncidentPhase, *, expected_revision: int,
                    reason: str) -> m.Incident:
+        """Graph-legal application transition. Never a route to CLOSED.
+
+        Step 14: CLOSED means a verified outcome exists. It is written only by the
+        lifecycle outcome verifier together with its authoritative Outcome; the
+        generic command refuses it so no caller can close on phase alone.
+        CANCELLED remains the generic terminal for explicit human abandonment.
+        """
+        if m.IncidentPhase(target) == m.IncidentPhase.CLOSED:
+            raise InvalidReference("CLOSED requires verified outcome authority (LifecycleService.verify_outcome)")
         with self._write() as conn:
             incident = self._fetch(conn, incident_id)
             self._check(incident, expected_revision)
@@ -409,8 +426,7 @@ class IncidentRepository:
             self._event(conn, updated, "PHASE_CHANGED", payload)
             if updated.phase == m.IncidentPhase.ESCALATED:
                 self._event(conn, updated, "INCIDENT_ESCALATED", payload)
-            elif updated.phase == m.IncidentPhase.CLOSED:
-                self._event(conn, updated, "INCIDENT_CLOSED", payload)
+            # INCIDENT_CLOSED is emitted only by the lifecycle outcome commit.
             return updated
 
     def append_event(self, incident_id: str, event_type: str, payload: dict, *, expected_revision: int) -> m.IncidentEvent:

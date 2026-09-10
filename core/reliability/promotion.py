@@ -139,6 +139,8 @@ class PromotionService:
 
     def _checkpoint(self, conn, incident, artifacts, *, phase=None, **changes):
         """One revision and event checkpoint for the entire atomic command."""
+        # Promotion creates diagnosis/intervention authority only; closure is outcome authority (Step 14).
+        _require(phase != m.IncidentPhase.CLOSED, "promotion never closes an incident")
         for artifact in artifacts:
             self.repository._store_artifact(conn, incident, artifact, historical_input=True)
         if phase is not None and phase != incident.phase:
@@ -635,7 +637,8 @@ class PromotionService:
                     "SELECT body_json FROM incident_artifact WHERE incident_id=? AND kind='Evidence' AND rowid > "
                     "(SELECT rowid FROM incident_artifact WHERE artifact_id=?)", (incident.id, record.id)).fetchall()
                 _require(not any(m.Evidence.model_validate_json(row[0]).kind in {
-                    "telemetry", "model_signal", "maintenance_history", "inspection", "document", "operational_context"}
+                    "telemetry", "model_signal", "maintenance_history", "inspection", "document", "operational_context",
+                    "health_score"}
                     for row in newer), "new technical evidence requires diagnosis revalidation", evidence=True)
             if stage == "intervention":
                 diagnosis, lineage = self._lineage(conn, incident, target.diagnosis_id, "diagnosis", current=True)

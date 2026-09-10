@@ -136,6 +136,30 @@ class SourceReads:
                      {"start_at": start_at, "end_at": end_at, "sample_limit": sample_limit}, rows)
         return rows
 
+    def health_score_window(self, *, asset_id: str, start_at: str | None = None, end_at: str | None = None,
+                            sample_limit: int = 60):
+        """Bounded (or open-ended) persisted health-score window of one asset, ascending.
+
+        Same semantics as ``telemetry_window``: with ``end_at`` set, scores stamped
+        strictly after it never enter the result and never stale it; a row inserted,
+        deleted or modified inside the returned window does. Step 14 outcome
+        verification reads only bounded windows through this method.
+        """
+        sql = "SELECT score_id,scored_at,health_score,failure_prob,predicted_mode FROM health_score WHERE equipment_id=?"
+        args: list[object] = [asset_id]
+        if start_at is not None:
+            sql += " AND scored_at>=?"
+            args.append(start_at)
+        if end_at is not None:
+            sql += " AND scored_at<=?"
+            args.append(end_at)
+        sql += " ORDER BY scored_at DESC,score_id DESC LIMIT ?"
+        args.append(sample_limit)
+        rows = list(reversed(self.conn.execute(sql, tuple(args)).fetchall()))
+        self._record("health_score_window", {"asset_id": asset_id},
+                     {"start_at": start_at, "end_at": end_at, "sample_limit": sample_limit}, rows)
+        return rows
+
     # ---------------------------------------------------------- maintenance
     def maintenance_history(self, *, asset_id: str, before: str | None = None, limit: int = 20):
         """Work orders with joined failure-mode/technician columns plus their events and parts.

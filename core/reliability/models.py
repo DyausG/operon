@@ -15,11 +15,20 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, mod
 
 Identifier = Annotated[str, Field(min_length=1)]
 Score = Annotated[float, Field(ge=0, le=1)]
-Role = Literal["supervisor", "diagnostic", "engineering", "operations", "critic", "planner", "procurement"]
+# "application" marks evidence requested by an application boundary (Step 14 outcome
+# verification), never by a model role.
+Role = Literal["supervisor", "diagnostic", "engineering", "operations", "critic", "planner", "procurement",
+               "application"]
 FRESHNESS_POLICY = "operon-freshness-1"
 # Every domain names one exact local read implemented by ``freshness.SourceReads``.
 SourceDomain = Literal["asset_registry", "health_score_latest", "sensor_inventory", "telemetry_latest",
-                       "telemetry_window", "maintenance_history", "related_incidents"]
+                       "telemetry_window", "maintenance_history", "related_incidents", "health_score_window"]
+# Step 14: bounded, versioned outcome vocabulary. Only the application verifier
+# authors these; INCONCLUSIVE is a verification disposition and is never persisted
+# as authoritative outcome.
+OutcomeResult = Literal["VERIFIED_RECOVERY", "NOT_RECOVERED", "REGRESSED", "INCONCLUSIVE"]
+OUTCOME_POLICY = "operon-outcome-1"
+OUTCOME_VERIFIER = "operon.application.outcome"
 
 
 class Contract(BaseModel):
@@ -156,7 +165,8 @@ class SourceDependencyManifest(Contract):
 class Evidence(Artifact):
     equipment_ids: tuple[Identifier, ...] = Field(min_length=1)
     kind: Literal["telemetry", "model_signal", "maintenance_history", "document",
-                  "asset_relation", "operational_context", "resource_availability", "inspection", "outcome"]
+                  "asset_relation", "operational_context", "resource_availability", "inspection", "outcome",
+                  "health_score"]
     source_uri: Identifier
     source_locator: Identifier
     source_version: Identifier
@@ -551,16 +561,78 @@ class ExecutionClaim(Contract):
     error_message: str | None = None
 
 
+class ObservationPlan(Artifact):
+    """Application-frozen post-intervention observation boundary and baseline (Step 14).
+
+    Created by the lifecycle outcome verifier only, exactly once per CONFIRMED
+    execution receipt. ``observation_start`` is derived from the durable receipt (the
+    first fully elapsed second after confirmation), so a restart reconstructs the
+    identical boundary; samples stamped before it can never count as recovery. The
+    baseline is the promoted diagnosis packet's model signal (and telemetry/context
+    where present), frozen here before any outcome authority exists.
+    """
+    equipment_ids: tuple[Identifier, ...] = Field(min_length=1)
+    asset_id: Identifier
+    diagnosis_id: Identifier
+    diagnosis_promotion_id: Identifier
+    intervention_id: Identifier
+    intervention_hash: Identifier
+    promotion_id: Identifier
+    approval_requirement_id: Identifier
+    approval_decision_ids: tuple[Identifier, ...] = Field(min_length=1)
+    execution_claim_key: Identifier
+    receipt_id: Identifier
+    receipt_operation_key: Identifier
+    receipt_attempt: int = Field(ge=1)
+    confirmed_at: AwareDatetime
+    observation_start: AwareDatetime
+    baseline_signal_evidence_id: Identifier
+    baseline_evidence_ids: tuple[Identifier, ...] = Field(min_length=1)
+    baseline_metrics: dict[str, float]
+    diagnosed_failure_mode_code: str | None = None
+    policy_version: Literal["operon-outcome-1"] = OUTCOME_POLICY
+    verifier_identity: Literal["operon.application.outcome"] = OUTCOME_VERIFIER
+    policy_parameters: dict[str, float]
+
+    @model_validator(mode="after")
+    def validate_boundary(self):
+        if self.observation_start <= self.confirmed_at:
+            raise ValueError("observation must begin strictly after confirmed execution")
+        if self.asset_id not in self.equipment_ids or self.baseline_signal_evidence_id not in self.baseline_evidence_ids:
+            raise ValueError("plan scope and baseline are inconsistent")
+        return self
+
+
 class Outcome(Artifact):
-    intervention_id: str | None = None
-    execution_receipt_ids: tuple[Identifier, ...] = ()
-    result: Literal["RECOVERED", "NO_IMPROVEMENT", "FAILED", "NO_INTERVENTION", "INCONCLUSIVE"]
+    """Authoritative, application-authored verification of one exact execution (Step 14).
+
+    Persisted only for terminal results; INCONCLUSIVE attempts persist evidence but
+    no outcome. A ``VERIFIED_RECOVERY`` outcome is written in the same transaction
+    as the ``CLOSED`` transition and is the only route to closure. Execution
+    receipts are bound but are never themselves outcome evidence.
+    """
+    equipment_ids: tuple[Identifier, ...] = Field(min_length=1)
+    asset_id: Identifier
+    plan_id: Identifier
+    diagnosis_id: Identifier
+    diagnosis_promotion_id: Identifier
+    intervention_id: Identifier
+    intervention_hash: Identifier
+    promotion_id: Identifier
+    execution_claim_key: Identifier
+    execution_receipt_ids: tuple[Identifier, ...] = Field(min_length=1)
+    result: OutcomeResult
     basis: Literal["OBSERVED", "SIMULATED"]
-    verification_evidence_ids: tuple[Identifier, ...]
+    policy_version: Literal["operon-outcome-1"] = OUTCOME_POLICY
+    verifier_identity: Literal["operon.application.outcome"] = OUTCOME_VERIFIER
+    verification_evidence_ids: tuple[Identifier, ...] = Field(min_length=1)
     observation_start: AwareDatetime
     observation_end: AwareDatetime
+    verified_at: AwareDatetime
     before_metrics: dict[str, float] = Field(default_factory=dict)
     after_metrics: dict[str, float] = Field(default_factory=dict)
+    checks: dict[str, bool]
+    reason: str
     estimated_avoided_loss: float | None = None
     measured_cost: float | None = None
     diagnosis_confirmed: bool | None = None
@@ -571,6 +643,10 @@ class Outcome(Artifact):
     def validate_window(self):
         if self.observation_end < self.observation_start:
             raise ValueError("observation end precedes start")
+        if self.result == "INCONCLUSIVE":
+            raise ValueError("inconclusive verification is never an authoritative outcome")
+        if self.asset_id not in self.equipment_ids:
+            raise ValueError("outcome asset outside scope")
         return self
 
 
@@ -610,5 +686,5 @@ class IncidentEvent(Contract):
                         "INCIDENT_UPDATED", "APPROVAL_REQUESTED", "APPROVAL_RECORDED",
                         "EXECUTION_CLAIMED", "EXECUTION_RECORDED",
                         "EVIDENCE_REQUESTED", "EVIDENCE_COLLECTED",
-                        "EVIDENCE_REQUEST_RESOLVED"]
+                        "EVIDENCE_REQUEST_RESOLVED", "OBSERVATION_PLANNED", "OUTCOME_RECORDED"]
     payload: dict[str, JsonValue]
