@@ -5,6 +5,10 @@ __pycache__/
 build/
 dist/
 !frontend/dist/
+agentcore_app/build/
+*.zip
+.agentcore/
+deploy-output*.json
 
 # ---- uv / virtualenv ----
 .venv/

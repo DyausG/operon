@@ -1,0 +1,42 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "InvokeConfiguredModels",
+      "Effect": "Allow",
+      "Action": ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+      "Resource": ["${SUPERVISOR_MODEL_ARN}", "${SPECIALIST_MODEL_ARN}", "${SUPERVISOR_FOUNDATION_MODEL_ARN}", "${SPECIALIST_FOUNDATION_MODEL_ARN}"]
+    },
+    {
+      "Sid": "WriteRuntimeLogs",
+      "Effect": "Allow",
+      "Action": ["logs:CreateLogStream", "logs:DescribeLogStreams", "logs:PutLogEvents"],
+      "Resource": "arn:${PARTITION}:logs:${REGION}:${ACCOUNT_ID}:log-group:/aws/bedrock-agentcore/runtimes/${RUNTIME_LOG_PREFIX}:log-stream:*"
+    },
+    {
+      "Sid": "DiscoverAndConfigureRuntimeTelemetryLogs",
+      "Effect": "Allow",
+      "Action": ["logs:DescribeLogGroups", "logs:PutResourcePolicy"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "CreateRuntimeLogGroup",
+      "Effect": "Allow",
+      "Action": "logs:CreateLogGroup",
+      "Resource": "arn:${PARTITION}:logs:${REGION}:${ACCOUNT_ID}:log-group:/aws/bedrock-agentcore/runtimes/${RUNTIME_LOG_PREFIX}"
+    },
+    {
+      "Sid": "PublishRuntimeMetrics",
+      "Effect": "Allow",
+      "Action": "cloudwatch:PutMetricData",
+      "Resource": "*",
+      "Condition": {"StringEquals": {"cloudwatch:namespace": "bedrock-agentcore"}}
+    },
+    {
+      "Sid": "PublishRuntimeTraces",
+      "Effect": "Allow",
+      "Action": ["xray:PutTraceSegments", "xray:PutTelemetryRecords", "xray:GetSamplingRules", "xray:GetSamplingTargets"],
+      "Resource": "*"
+    }
+  ]
+}
