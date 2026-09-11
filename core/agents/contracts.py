@@ -264,10 +264,22 @@ class EvidenceRequestRecord(AdvisoryContract):
     requested_by: Literal["supervisor", "diagnostic", "critic"]
     capability: Reference
     question: Text
-    status: Literal["COLLECTED", "UNAVAILABLE", "FAILED", "CANCELLED"]
+    # DEFERRED (Step 15): a packet-mode run may only name a need; the application
+    # alone decides whether to collect it, durably, in a later run.
+    status: Literal["COLLECTED", "UNAVAILABLE", "FAILED", "CANCELLED", "DEFERRED"]
     evidence_id: Reference | None = None
     request_id: Reference | None = None
     error_code: Reference | None = None
+    # Application-normalized capability parameters; additive, never model authority.
+    parameters: dict[str, JsonValue] = Field(default_factory=dict)
+    required_for: Literal["diagnosis", "intervention"] | None = None
+
+    @model_validator(mode="after")
+    def deferred_has_no_durable_identity(self):
+        if self.status == "DEFERRED" and (self.evidence_id is not None or self.request_id is not None
+                                          or self.error_code is not None):
+            raise ValueError("a deferred evidence need carries no durable evidence or request identity")
+        return self
 
 
 class SupervisorResult(AdvisoryContract):

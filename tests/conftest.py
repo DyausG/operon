@@ -23,7 +23,7 @@ os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
 os.environ["GEMINI_API_KEY"] = ""
 os.environ["GOOGLE_API_KEY"] = ""
 for _k in ("AWS_ACCESS_KEY_ID", "AWS_PROFILE", "SENTINEL_LLM_PROVIDER",
-           "POC_FORCE_DETERMINISTIC"):
+           "POC_FORCE_DETERMINISTIC", "OPERON_REASONING_BACKEND"):
     os.environ.pop(_k, None)
 for _k in [k for k in os.environ if k.startswith("SENTINEL_") and k.endswith("_ADAPTER")]:
     os.environ.pop(_k, None)

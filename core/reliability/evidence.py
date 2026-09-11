@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from enum import Enum
 import math
 from pathlib import Path
+import secrets
 from typing import Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, model_validator
@@ -33,6 +34,94 @@ class UnsupportedEvidenceCapability(ValueError):
 
 class InvalidEvidenceRequest(ValueError):
     pass
+
+
+# Exact application-generated code in the JSON content of a deferred acquisition's
+# tool result. It is never matched as text: recognition goes through the issuing
+# run's ``DeferredEvidenceLedger`` (Step 15A audit fix).
+EVIDENCE_DEFERRED_MARKER = "EVIDENCE_DEFERRED_TO_APPLICATION"
+
+
+class EvidenceDeferredToApplication(ValueError):
+    """Raised by a run's evidence guard after it recorded a DEFERRED need.
+
+    Carries the exact structured tool result the evidence-request tool returns to
+    the model, so no exception crosses into the SDK for a deferral. Only the two
+    evidence-request tool paths catch it; anywhere else it is an ordinary failure.
+    """
+
+    def __init__(self, tool_result: dict):
+        super().__init__("evidence collection is deferred to the application")
+        self.tool_result = tool_result
+
+
+class DeferredEvidenceLedger:
+    """Application-owned registry of the deferral results one supervisor run issued.
+
+    ``issue`` binds an unguessable deferral id to the run's DEFERRED
+    ``EvidenceRequestRecord``; ``recognizes`` accepts only a structurally exact
+    result carrying an id this ledger issued whose record is still DEFERRED. Marker
+    text anywhere else (an error message echoing model input, a validation error,
+    an unknown tool) is never a deferral and stays a genuine failure.
+    """
+
+    def __init__(self, requests: list):
+        self._requests = requests  # the run's live EvidenceRequestRecord list
+        self._issued: dict[str, tuple[int, str, str]] = {}
+
+    def issue(self, index: int, *, capability: str, question: str) -> str:
+        record = self._requests[index]
+        if record.status != "DEFERRED" or record.capability != capability:
+            raise ValueError("a deferral id requires the run's DEFERRED evidence request record")
+        deferral_id = secrets.token_hex(16)
+        self._issued[deferral_id] = (index, capability, question)
+        return deferral_id
+
+    def tool_result(self, deferral_id: str) -> dict:
+        """A fresh structured error result for the model; never a shared dict (the SDK mutates it)."""
+        index, capability, question = self._issued[deferral_id]
+        return {"status": "error", "content": [{"json": {
+            "error_code": EVIDENCE_DEFERRED_MARKER, "deferral_id": deferral_id,
+            "capability": capability, "question": question, "advisory_only": True,
+            "message": "Evidence collection is deferred to the application; "
+                       "report the need as unresolved and do not retry."}}]}
+
+    def recognizes(self, result) -> bool:
+        if not isinstance(result, dict) or result.get("status") != "error":
+            return False
+        content = result.get("content")
+        if not isinstance(content, list) or len(content) != 1 or not isinstance(content[0], dict):
+            return False
+        payload = content[0].get("json")
+        if not isinstance(payload, dict) or payload.get("error_code") != EVIDENCE_DEFERRED_MARKER:
+            return False
+        deferral_id = payload.get("deferral_id")
+        issued = self._issued.get(deferral_id) if isinstance(deferral_id, str) else None
+        if issued is None:
+            return False
+        index, capability, question = issued
+        record = self._requests[index] if index < len(self._requests) else None
+        return (record is not None and record.status == "DEFERRED" and record.capability == capability
+                and payload.get("capability") == capability and payload.get("question") == question)
+
+
+class EvidenceDeferred(ValueError):
+    """An evidence access that cannot collect durably (Step 15 packet mode).
+
+    Raised instead of writing: the reasoning run may only name the need. The
+    application decides whether to collect it, through the real ``EvidenceService``,
+    in a later durable run. Carries the application-normalized request so the
+    audit record is exact.
+    """
+
+    def __init__(self, *, requested_by: str, capability: str, question: str,
+                 parameters: dict[str, JsonValue], required_for: str):
+        super().__init__("evidence collection is deferred to the application")
+        self.requested_by = requested_by
+        self.capability = capability
+        self.question = question
+        self.parameters = parameters
+        self.required_for = required_for
 
 
 class Availability(str, Enum):
@@ -740,6 +829,18 @@ class EvidenceService:
                  capabilities: EvidenceCapabilities | None = None):
         self.repository = repository
         self.capabilities = capabilities or EvidenceCapabilities(repository.path)
+
+    # Step 15 evidence-access seam. The reasoning layer only relies on these two
+    # methods plus ``repository``, ``capabilities`` and ``request_and_collect``, so a
+    # packet-backed access with no store can stand in for this service remotely.
+    def same_store(self) -> bool:
+        """Capabilities and repository read the same durable application store."""
+        return self.capabilities.path.resolve() == self.repository.path.resolve()
+
+    def resource_reads(self):
+        """Bounded read-only inventory/workforce/schedule observations over this store."""
+        from .resources import ResourceCapabilities  # lazy: resources imports this module
+        return ResourceCapabilities(self.capabilities)
 
     @staticmethod
     def _request_key(incident_id: str, requested_by: str, equipment_ids: tuple[str, ...],

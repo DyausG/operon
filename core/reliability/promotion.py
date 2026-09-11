@@ -7,7 +7,6 @@ application invocation seam, never a public endpoint accepting model/caller JSON
 from __future__ import annotations
 
 import asyncio
-from importlib.metadata import version
 
 from core import db
 from core.agents.contracts import (
@@ -244,16 +243,17 @@ class PromotionService:
 
         A new claim supersedes an older active run, including an unfinished one.
         Its late completion remains auditable and is permanently ineligible.
+
+        ``runtime`` is a ``StrandsRuntime`` (wrapped as the local backend) or a
+        ``core.reasoning.backend.ReasoningBackend``; its identity and the code
+        identity are frozen here so a drifted runtime can be refused later.
         """
-        from core.agents import supervisor, diagnostic, engineering, operations, critic, planner, invocation
+        from core.reasoning.backend import as_backend
+        from core.reasoning.identity import code_identity
         bounds = SupervisorBounds.model_validate(bounds or SupervisorBounds())
-        def runtime_identity(value):
-            model = value._model
-            return {"settings": value.settings.model_dump(mode="json"),
-                    "implementation": f"{type(model).__module__}.{type(model).__qualname__}" if model else "strands.BedrockModel",
-                    "injected_configuration_hash": content_hash(model.get_config()) if model else None}
         # Even injected provider configuration is read before acquiring a DB lock.
-        runtimes = {"supervisor": runtime_identity(runtime), "specialists": runtime_identity(specialist_runtime or runtime)}
+        runtimes = as_backend(runtime, specialist_runtime).identity()
+        version_identity = code_identity()
         with self.repository._write() as conn:
             incident = self.repository._fetch(conn, incident_id)
             self.repository._check(incident, expected_revision)
@@ -287,27 +287,26 @@ class PromotionService:
                 run_purpose=stage, evidence_purpose="diagnosis" if stage == "DIAGNOSIS" else "intervention", question=question,
                 review_target_id=draft.id if stage == "INTERVENTION_REVIEW" else None,
                 review_target_hash=_hash(draft) if stage == "INTERVENTION_REVIEW" else None)
-            prompts = {"supervisor": supervisor.SUPERVISOR_PROMPT, "diagnostic": diagnostic.DIAGNOSTIC_PROMPT,
-                       "engineering": engineering.ENGINEERING_PROMPT, "operations": operations.OPERATIONS_PROMPT,
-                       "critic": critic.CRITIC_PROMPT, "planner": planner.PLANNER_PROMPT, "grounding": invocation.GROUNDING_PROMPT}
             snapshot = m.SupervisorRunSnapshot(
                 **_identity(incident_id), asset_id=asset_id, run_id=run_id, stage=stage,
                 input_revision=context.input_revision, evidence_manifest=self._manifest(evidence),
                 input_artifact_manifest={item.id: _hash(item) for item in artifacts},
                 source_dependency_manifest=dependencies, context_payload=context.model_dump(mode="json"),
                 bounds=bounds.model_dump(mode="json"),
-                runtime_identity=runtimes,
-                version_identity={"policy": POLICY_VERSION, "strands": version("strands-agents"),
-                                  "prompts": content_hash(prompts), "schema": content_hash(SupervisorResult.model_json_schema()),
-                                  "context_schema": content_hash(SpecialistContext.model_json_schema())})
+                runtime_identity=runtimes, version_identity=version_identity)
             self._checkpoint(conn, incident, [snapshot], active_run_id=run_id)
             return snapshot
 
     async def run_supervisor(self, incident_id: str, *, service, runtime, specialist_runtime=None, **kwargs):
-        """Durable wrapper for the existing native supervisor; engine hookup is 13B."""
-        from core.agents.supervisor import supervise_reliability
+        """Durable wrapper around the one reasoning seam (Step 15: ``ReasoningBackend``).
+
+        Whatever the backend, its result only becomes a report through
+        ``_complete_run`` and only becomes authority through the unchanged gates.
+        """
+        from core.reasoning.backend import as_backend
         _require(service.repository.path.resolve() == self.repository.path.resolve()
                  and service.capabilities.path.resolve() == self.repository.path.resolve(), "run stores must match")
+        backend = as_backend(runtime, specialist_runtime)
         snapshot = self.start_run(incident_id, runtime=runtime, specialist_runtime=specialist_runtime, **kwargs)
         context = SpecialistContext.model_validate(snapshot.context_payload)
         cancelled_result = None
@@ -315,20 +314,22 @@ class PromotionService:
             nonlocal cancelled_result
             cancelled_result = result
         try:
-            result = await supervise_reliability(runtime, service, context,
-                                                 bounds=SupervisorBounds.model_validate(snapshot.bounds),
-                                                 specialist_runtime=specialist_runtime,
-                                                 cancellation_result_handler=preserve_cancellation)
+            result = await backend.supervise(service, context, bounds=SupervisorBounds.model_validate(snapshot.bounds),
+                                             snapshot=snapshot, cancellation_result_handler=preserve_cancellation)
         except BaseException as exc:
             if not isinstance(exc, (Exception, asyncio.CancelledError)):
                 raise
             reason = "CANCELLED" if isinstance(exc, asyncio.CancelledError) else "MODEL_FAILED"
+            code = getattr(exc, "code", None)
+            blocker = "Application invocation did not complete."
+            if isinstance(code, str) and code:
+                blocker += f" Reasoning backend failure: {code}."
             result = SupervisorResult(
                 incident_id=incident_id, run_id=snapshot.run_id, input_revision=snapshot.input_revision,
                 disposition="ESCALATED", decision=None, assessments=(), delegations=(), evidence_requests=(),
                 evidence_used=(), candidate_diagnosis_key=None, engineering_key=None, operations_key=None,
                 critic_keys=(), maintenance_plan_key=None, unresolved_evidence_needs=(),
-                blockers=("Application invocation did not complete.",), termination_reason=reason,
+                blockers=(blocker,), termination_reason=reason,
                 exhausted_limits=(), tool_calls=0, bounds=SupervisorBounds.model_validate(snapshot.bounds))
             self._complete_run(snapshot, cancelled_result or result)
             raise

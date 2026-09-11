@@ -26,7 +26,9 @@ from core.agents.planner import plan_maintenance
 from core.agents.runtime import StrandsRuntime
 from core.agents.tools import EvidenceQuery, SPECIALIST_TOOL_NAMES, bounded_result
 from .assessments import prepare_specialist_context
-from .evidence import EvidenceCollection, EvidenceService
+from .evidence import (
+    DeferredEvidenceLedger, EvidenceCollection, EvidenceDeferred, EvidenceDeferredToApplication, EvidenceService,
+)
 from .repository import IncidentRepository, InvalidReference, new_id
 
 
@@ -163,6 +165,104 @@ def _error(code: str) -> dict:
     return {"status": "error", "content": [{"json": {"error_code": code, "advisory_only": True}}]}
 
 
+class _DeferredNeed:
+    """Evidence-cache entry: the need was deferred to the application, not collected."""
+    __slots__ = ("deferral_id",)
+
+    def __init__(self, deferral_id: str):
+        self.deferral_id = deferral_id
+
+
+class EvidenceGuard:
+    """The run's evidence requester handed to nested Diagnostic/Critic agents.
+
+    Callable exactly like the plain requester; it also recognizes the structured
+    deferral results this run issued, so the specialist hook can tell an
+    application-deferred need from a failed tool call without reading any text.
+    """
+
+    def __init__(self, run: "SupervisorRun"):
+        self._run = run
+
+    async def __call__(self, role, scope, query: EvidenceQuery) -> EvidenceCollection:
+        return await self._run.collect_evidence(role, scope, query)
+
+    def recognizes_deferral(self, result) -> bool:
+        return self._run.deferred.recognizes(result)
+
+
+def assemble_result(scope: SpecialistContext, advice: dict[str, AdvisoryInput], *,
+                    decision: SupervisorDecision | None, reason: str,
+                    delegations: tuple[DelegationRecord, ...], requests: tuple[EvidenceRequestRecord, ...],
+                    exhausted: set[str], errors: set[str], tool_calls: int, bounds: SupervisorBounds,
+                    invalid_output: bool) -> SupervisorResult:
+    """Application-owned assembly of the advisory audit from validated components.
+
+    Shared by the local run (``SupervisorRun.finish``) and the Step 15 trust layer,
+    so a remotely produced result is recomputed with exactly the local disposition
+    rules; the returned disposition is never taken from the model or the wire.
+    """
+    latest = latest_assessments(advice)
+    critics = tuple(key for key, item in advice.items() if isinstance(item.assessment, CriticAssessment))
+    # Keep objections on current subjects. Old reports remain in the audit;
+    # replacing one requires a new critic review before a supported conclusion.
+    active = [advice[key].assessment for role, key in latest.items() if role != "critic"]
+    for key in critics:
+        critic = advice[key].assessment
+        if critic.subject_kind != "assessment" or critic.subject_id in latest.values():
+            # A later agreeable review cannot erase objections on an unchanged report.
+            active.append(critic)
+    needs = list(decision.unresolved_evidence_needs if decision else ())
+    blockers = list(decision.blockers if decision else ())
+    for item in active:
+        needs.extend(_needs(item))
+        blockers.extend(item.uncertainties)
+        if isinstance(item, EngineeringAssessment):
+            blockers.extend((*item.missing_constraints, *item.blockers, *item.safety_concerns))
+        elif isinstance(item, OperationsAssessment):
+            blockers.extend(item.blockers)
+        elif isinstance(item, MaintenancePlanAssessment):
+            blockers.extend(item.unresolved_blockers)
+        elif isinstance(item, CriticAssessment):
+            blockers.extend((*item.evidence_gaps, *item.contradictions, *item.unsupported_claims))
+            if item.recommendation != "ACCEPT":
+                blockers.append("Current critic objections require evidence or revision and another review.")
+    for request in requests:
+        if request.status != "COLLECTED":
+            needs.append(EvidenceNeed(capability=request.capability, question=request.question))
+    gaps = conclusion_gaps(advice, scope.run_purpose)
+    blockers.extend((*sorted(errors), *gaps))
+    disposition = decision.disposition if decision else "ESCALATED"
+    if exhausted:
+        reason = "TIMEOUT" if reason == "TIMEOUT" else "LIMIT_EXHAUSTED"
+        disposition = "ESCALATED"
+    elif reason != "MODEL_COMPLETED":
+        disposition = "ESCALATED"
+    elif errors:
+        disposition = "BLOCKED"
+    elif needs and disposition not in {"BLOCKED", "ESCALATED"}:
+        disposition = "NEEDS_EVIDENCE"
+    elif (blockers or gaps) and disposition == "ADVISORY_CONCLUSION":
+        disposition = "UNRESOLVED"
+    used = set(decision.evidence_used if decision else ())
+    for item in advice.values():
+        used.update(item.assessment.evidence_reviewed)
+    # An immutable snapshot: cancelled threads cannot add later results to this run.
+    return SupervisorResult(
+        incident_id=scope.incident_id, run_id=scope.run_id,
+        input_revision=scope.input_revision, disposition=disposition, decision=decision,
+        assessments=tuple(advice.values()), delegations=tuple(delegations),
+        evidence_requests=tuple(requests), evidence_used=tuple(sorted(used)),
+        candidate_diagnosis_key=latest.get("diagnostic"), engineering_key=latest.get("engineering"),
+        operations_key=latest.get("operations"), critic_keys=critics,
+        maintenance_plan_key=latest.get("planner"),
+        unresolved_evidence_needs=tuple(dict.fromkeys(needs)), blockers=tuple(dict.fromkeys(blockers)),
+        termination_reason=reason, exhausted_limits=tuple(sorted(exhausted)),
+        tool_calls=tool_calls, bounds=bounds,
+        invalid_output=invalid_output,
+    )
+
+
 class SupervisorRun:
     """One event-loop-owned run. Never shared between incidents or reused."""
 
@@ -175,9 +275,11 @@ class SupervisorRun:
         self.evidence_ids = dict.fromkeys(item.id for item in scope.evidence)
         self.delegations: list[DelegationRecord] = []
         self.requests: list[EvidenceRequestRecord] = []
+        # Deferral results are issued and recognized only against this run's records.
+        self.deferred = DeferredEvidenceLedger(self.requests)
         self.role_calls: Counter = Counter()
         self.delegation_cache: dict[tuple, dict] = {}
-        self.evidence_cache: dict[str, EvidenceCollection | None] = {}
+        self.evidence_cache: dict[str, EvidenceCollection | None | _DeferredNeed] = {}
         self.exhausted: set[str] = set()
         self.errors: set[str] = set()
         self.tool_calls = 0
@@ -209,7 +311,9 @@ class SupervisorRun:
         if event.result["status"] == "error":
             if event.tool_use["name"] == "SupervisorDecision":
                 self.invalid_output = True
-            else:
+            elif not self.deferred.recognizes(event.result):
+                # Only a deferral this run issued is an unresolved need rather than a
+                # failed call; marker text in any other error never counts.
                 self.errors.add("A supervisor tool call was rejected or failed.")
 
     async def collect_evidence(self, role, scope, query: EvidenceQuery) -> EvidenceCollection:
@@ -236,6 +340,8 @@ class SupervisorRun:
             cached = self.evidence_cache[fingerprint]
             if cached is None:
                 raise ValueError("duplicate failed evidence request")
+            if isinstance(cached, _DeferredNeed):
+                raise EvidenceDeferredToApplication(self.deferred.tool_result(cached.deferral_id))
             return cached
         # Invalid/unsupported attempts consume budget too. Successful normalized
         # duplicates reuse provenance even if question text or requesting role differs.
@@ -244,7 +350,9 @@ class SupervisorRun:
         if len(self.evidence_ids) >= 20:
             self.limit("evidence_packet")
         index = len(self.requests)
-        record = dict(requested_by=role, capability=query.capability, question=query.question)
+        record = dict(requested_by=role, capability=query.capability, question=query.question, required_for=purpose)
+        if validation_error is None:
+            record["parameters"] = parameters
         self.requests.append(EvidenceRequestRecord(**record, status="CANCELLED", error_code="IncompleteCollection"))
         self.evidence_cache[fingerprint] = None
         try:
@@ -274,6 +382,16 @@ class SupervisorRun:
             return collection
         except asyncio.CancelledError:
             raise
+        except EvidenceDeferred:
+            # Packet mode (Step 15): this run cannot write. The need is recorded with
+            # its normalized parameters for the application to collect later; it is
+            # not a model error, so it counts as an unresolved need, never a blocker.
+            # The tool returns a structured result bound to this record; no exception
+            # and no marker text reaches the SDK.
+            self.requests[index] = EvidenceRequestRecord(**record, status="DEFERRED")
+            deferral_id = self.deferred.issue(index, capability=query.capability, question=query.question)
+            self.evidence_cache[fingerprint] = _DeferredNeed(deferral_id)
+            raise EvidenceDeferredToApplication(self.deferred.tool_result(deferral_id))
         except Exception as exc:
             self.requests[index] = EvidenceRequestRecord(**record, status="FAILED", error_code=type(exc).__name__)
             self.errors.add("Evidence acquisition failed; the evidence need remains unresolved.")
@@ -310,7 +428,7 @@ class SupervisorRun:
             invoke = {"diagnostic": assess_diagnosis, "engineering": assess_engineering,
                       "operations": assess_operations, "critic": review_assessment,
                       "planner": plan_maintenance}[role]
-            kwargs = {"evidence_requester": self.collect_evidence} if role in {"diagnostic", "critic"} else {}
+            kwargs = {"evidence_requester": EvidenceGuard(self)} if role in {"diagnostic", "critic"} else {}
             assessment = await invoke(self.specialist_runtime, self.service, packet, **kwargs)
             item = AdvisoryInput(key=key, assessment=assessment)
             result = bounded_result(item)
@@ -340,65 +458,15 @@ class SupervisorRun:
         need = needs[request.need_index]
         query = EvidenceQuery(capability=need.capability, question=need.question,
                               parameters=request.query_parameters)
-        return bounded_result(await self.collect_evidence("supervisor", self.scope, query))
+        try:
+            collection = await self.collect_evidence("supervisor", self.scope, query)
+        except EvidenceDeferredToApplication as deferred:
+            return deferred.tool_result
+        return bounded_result(collection)
 
     def finish(self, decision: SupervisorDecision | None, reason: str) -> SupervisorResult:
-        latest = latest_assessments(self.advice)
-        critics = tuple(key for key, item in self.advice.items() if isinstance(item.assessment, CriticAssessment))
-        # Keep objections on current subjects. Old reports remain in the audit;
-        # replacing one requires a new critic review before a supported conclusion.
-        active = [self.advice[key].assessment for role, key in latest.items() if role != "critic"]
-        for key in critics:
-            critic = self.advice[key].assessment
-            if critic.subject_kind != "assessment" or critic.subject_id in latest.values():
-                # A later agreeable review cannot erase objections on an unchanged report.
-                active.append(critic)
-        needs = list(decision.unresolved_evidence_needs if decision else ())
-        blockers = list(decision.blockers if decision else ())
-        for item in active:
-            needs.extend(_needs(item))
-            blockers.extend(item.uncertainties)
-            if isinstance(item, EngineeringAssessment):
-                blockers.extend((*item.missing_constraints, *item.blockers, *item.safety_concerns))
-            elif isinstance(item, OperationsAssessment):
-                blockers.extend(item.blockers)
-            elif isinstance(item, MaintenancePlanAssessment):
-                blockers.extend(item.unresolved_blockers)
-            elif isinstance(item, CriticAssessment):
-                blockers.extend((*item.evidence_gaps, *item.contradictions, *item.unsupported_claims))
-                if item.recommendation != "ACCEPT":
-                    blockers.append("Current critic objections require evidence or revision and another review.")
-        for request in self.requests:
-            if request.status != "COLLECTED":
-                needs.append(EvidenceNeed(capability=request.capability, question=request.question))
-        gaps = conclusion_gaps(self.advice, self.scope.run_purpose)
-        blockers.extend((*sorted(self.errors), *gaps))
-        disposition = decision.disposition if decision else "ESCALATED"
-        if self.exhausted:
-            reason = "TIMEOUT" if reason == "TIMEOUT" else "LIMIT_EXHAUSTED"
-            disposition = "ESCALATED"
-        elif reason != "MODEL_COMPLETED":
-            disposition = "ESCALATED"
-        elif self.errors:
-            disposition = "BLOCKED"
-        elif needs and disposition not in {"BLOCKED", "ESCALATED"}:
-            disposition = "NEEDS_EVIDENCE"
-        elif (blockers or gaps) and disposition == "ADVISORY_CONCLUSION":
-            disposition = "UNRESOLVED"
-        used = set(decision.evidence_used if decision else ())
-        for item in self.advice.values():
-            used.update(item.assessment.evidence_reviewed)
-        # An immutable snapshot: cancelled threads cannot add later results to this run.
-        return SupervisorResult(
-            incident_id=self.scope.incident_id, run_id=self.scope.run_id,
-            input_revision=self.scope.input_revision, disposition=disposition, decision=decision,
-            assessments=tuple(self.advice.values()), delegations=tuple(self.delegations),
-            evidence_requests=tuple(self.requests), evidence_used=tuple(sorted(used)),
-            candidate_diagnosis_key=latest.get("diagnostic"), engineering_key=latest.get("engineering"),
-            operations_key=latest.get("operations"), critic_keys=critics,
-            maintenance_plan_key=latest.get("planner"),
-            unresolved_evidence_needs=tuple(dict.fromkeys(needs)), blockers=tuple(dict.fromkeys(blockers)),
-            termination_reason=reason, exhausted_limits=tuple(sorted(self.exhausted)),
-            tool_calls=self.tool_calls, bounds=self.bounds,
-            invalid_output=self.invalid_output,
-        )
+        return assemble_result(
+            self.scope, self.advice, decision=decision, reason=reason,
+            delegations=tuple(self.delegations), requests=tuple(self.requests),
+            exhausted=self.exhausted, errors=self.errors, tool_calls=self.tool_calls,
+            bounds=self.bounds, invalid_output=self.invalid_output)

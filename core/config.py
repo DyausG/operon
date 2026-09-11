@@ -125,6 +125,22 @@ AWS_REGION = os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "us-east-1"
 BEDROCK_MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "us.anthropic.claude-3-5-sonnet-20241022-v2:0")
 BEDROCK_MAX_TOKENS = int(os.getenv("BEDROCK_MAX_TOKENS", "1024"))
 
+# --- Step 15 reasoning backend (supervisor + specialists) -------------------
+# OPERON_REASONING_BACKEND: none | local | packet | agentcore. Unset preserves the
+# legacy behaviour: "local" when the legacy selector resolves to Bedrock, else none.
+# Supervisor/specialist model ids default to BEDROCK_MODEL_ID; they are frozen into
+# every run's expected runtime identity so a drifted deployment is refused.
+BEDROCK_SUPERVISOR_MODEL_ID = os.getenv("OPERON_BEDROCK_SUPERVISOR_MODEL_ID", "").strip() or BEDROCK_MODEL_ID
+BEDROCK_SPECIALIST_MODEL_ID = os.getenv("OPERON_BEDROCK_SPECIALIST_MODEL_ID", "").strip() or BEDROCK_SUPERVISOR_MODEL_ID
+
+
+def reasoning_backend() -> str:
+    """Resolve the configured reasoning backend mode; read at call time, never cached."""
+    value = os.getenv("OPERON_REASONING_BACKEND", "").strip().lower()
+    if value:
+        return value
+    return "local" if agent_mode() == "bedrock" else "none"
+
 
 def gemini_available() -> bool:
     """True only if the google-genai SDK is importable AND an API key is set."""

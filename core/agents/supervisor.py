@@ -19,7 +19,7 @@ from .contracts import (
     DelegationQuery, EvidenceFollowup, SpecialistContext, SupervisorBounds,
     SupervisorDecision, SupervisorResult,
 )
-from .invocation import GROUNDING_PROMPT
+from .invocation import GROUNDING_PROMPT, trace_attributes
 from .runtime import StrandsRuntime
 
 SUPERVISOR_TOOL_NAMES = frozenset({
@@ -96,6 +96,7 @@ def create_supervisor_agent(run: SupervisorRun) -> Agent:
         output_model=SupervisorDecision,
         tools=[delegate_diagnostic, delegate_engineering, delegate_operations,
                delegate_critic, delegate_planner, acquire_requested_evidence],
+        trace_attributes=trace_attributes(run.scope, role="supervisor"),
     )
     agent.hooks.add_callback(BeforeToolCallEvent, run.before_tool)
     agent.hooks.add_callback(AfterToolCallEvent, run.after_tool)
@@ -111,7 +112,7 @@ async def supervise_reliability(runtime: StrandsRuntime, service: EvidenceServic
     Model/tool failures return bounded advisory escalation. Caller cancellation is
     propagated; an already-running evidence thread can finish its evidence-only write.
     """
-    if service.capabilities.path.resolve() != service.repository.path.resolve():
+    if not service.same_store():
         raise ValueError("evidence capabilities and repository must use the same application store")
     if not isinstance(context, SpecialistContext):
         raise TypeError("supervisor requires an application-assembled SpecialistContext")

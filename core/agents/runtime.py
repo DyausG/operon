@@ -1,6 +1,7 @@
 """Small native Strands factory. No provider selection or implicit live fallback."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Annotated
 
 import boto3
@@ -75,10 +76,13 @@ class StrandsRuntime:
             ) from exc
 
     def create_agent(self, *, name: str, system_prompt: str,
-                     output_model: type[BaseModel], tools: list[AgentTool]) -> Agent:
+                     output_model: type[BaseModel], tools: list[AgentTool],
+                     trace_attributes: Mapping[str, str] | None = None) -> Agent:
+        # trace_attributes only annotate the agent's telemetry span; they carry no authority.
         return Agent(
             name=name, model=self._model if self._model is not None else self._bedrock_model(),
             system_prompt=system_prompt, structured_output_model=output_model,
             tools=list(tools), callback_handler=None, load_tools_from_directory=False,
             tool_executor=SequentialToolExecutor(), retry_strategy=None,
+            trace_attributes=dict(trace_attributes) if trace_attributes else None,
         )

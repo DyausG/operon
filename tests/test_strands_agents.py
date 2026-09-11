@@ -133,6 +133,13 @@ import core.agents.invocation
 import core.agents.supervisor
 import core.reliability.assessments
 import core.reliability.orchestration
+import core.reasoning
+import core.reasoning.protocol
+import core.reasoning.identity
+import core.reasoning.packet
+import core.reasoning.handler
+import core.reasoning.trust
+import core.reasoning.backend
 import core.agent
 import server.main
 '''

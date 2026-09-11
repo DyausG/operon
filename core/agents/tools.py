@@ -12,7 +12,7 @@ from pydantic import AwareDatetime, BaseModel, Field, JsonValue, model_validator
 from strands import ToolContext, tool
 from strands.types.tools import AgentTool
 
-from core.reliability.evidence import EvidenceCollection, EvidenceService
+from core.reliability.evidence import EvidenceCollection, EvidenceDeferredToApplication, EvidenceService
 from core.reliability.resources import ResourceCapabilities
 from .contracts import AdvisoryContract, DiagnosticContext, Reference, Text
 
@@ -138,7 +138,11 @@ def specialist_tools(role: str, service: EvidenceService, scope: DiagnosticConte
         if query.capability not in allowed - {"request_evidence"}:
             raise ValueError("unsupported evidence capability for this specialist")
         if evidence_requester is not None:
-            collection = await evidence_requester(role, scope, query)
+            try:
+                collection = await evidence_requester(role, scope, query)
+            except EvidenceDeferredToApplication as deferred:
+                # Application-issued structured deferral: returned, never raised into the SDK.
+                return deferred.tool_result
         else:
             collection = await asyncio.to_thread(
                 service.request_and_collect, scope.incident_id, requested_by=role,

@@ -9,7 +9,6 @@ from strands.hooks import AfterToolCallEvent
 
 from core.reliability.assessments import validate_specialist_assessment, validate_specialist_context
 from core.reliability.evidence import EvidenceService
-from core.reliability.resources import ResourceCapabilities
 from .contracts import DiagnosticContext, SpecialistAssessment
 from .runtime import StrandsRuntime
 from .tools import EvidenceRequester, specialist_tools
@@ -30,6 +29,13 @@ Operations and Critic reference the draft. Critic explicitly cites current input
 """
 
 
+def trace_attributes(scope: DiagnosticContext, *, role: str) -> dict[str, str]:
+    """Correlation attributes for the agent's telemetry span; observability only."""
+    return {"operon.incident_id": scope.incident_id, "operon.run_id": scope.run_id,
+            "operon.asset_id": scope.asset_id, "operon.input_revision": str(scope.input_revision),
+            "operon.role": role, "operon.stage": getattr(scope, "run_purpose", "INVESTIGATION")}
+
+
 class SpecialistInvocationError(RuntimeError):
     def __init__(self, message: str, *, stop_reason: str | None = None):
         super().__init__(message)
@@ -40,20 +46,25 @@ async def invoke_specialist(runtime: StrandsRuntime, service: EvidenceService,
                             context: DiagnosticContext, *, role: str, prompt: str,
                             output_model: type[Report],
                             evidence_requester: EvidenceRequester | None = None) -> Report:
-    if service.capabilities.path.resolve() != service.repository.path.resolve():
+    if not service.same_store():
         raise ValueError("evidence capabilities and repository must use the same application store")
     scope = validate_specialist_context(service.repository, context)
     collected_ids: set[str] = set()
-    resources = ResourceCapabilities(service.capabilities) if role in {"operations", "planner"} else None
+    resources = service.resource_reads() if role in {"operations", "planner"} else None
     agent = runtime.create_agent(
         name=f"operon_{role}", system_prompt=prompt + "\n" + GROUNDING_PROMPT,
         output_model=output_model,
         tools=specialist_tools(role, service, scope, collected_ids, resources=resources,
                                evidence_requester=evidence_requester),
+        trace_attributes=trace_attributes(scope, role=role),
     )
     invocation_errors = []
+    # Only the run's evidence guard can vouch for a deferral it issued; without one,
+    # or for any other error (whatever text it carries), the tool call failed.
+    recognizes_deferral = getattr(evidence_requester, "recognizes_deferral", None)
     def track_error(event: AfterToolCallEvent):
-        if event.result["status"] == "error":
+        if event.result["status"] == "error" and not (
+                recognizes_deferral is not None and recognizes_deferral(event.result)):
             invocation_errors.append(event.tool_use["name"])
     if getattr(scope, "run_purpose", "INVESTIGATION") != "INVESTIGATION":
         agent.hooks.add_callback(AfterToolCallEvent, track_error)

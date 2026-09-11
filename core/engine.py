@@ -111,15 +111,18 @@ class DemoEngine:
 
     @staticmethod
     def _default_runtime():
-        """Supervisor runtime only when Bedrock is explicitly configured; never a silent fallback."""
-        if config.agent_mode() != "bedrock":
+        """Reasoning backend only when explicitly configured; never a silent fallback.
+
+        Returns a ``core.reasoning.backend.ReasoningBackend`` (Step 15) selected by
+        OPERON_REASONING_BACKEND; unset keeps the legacy Bedrock selector behaviour.
+        """
+        if config.reasoning_backend() == "none":
             return None
         try:
-            from .agents.runtime import RuntimeSettings, StrandsRuntime
-            return StrandsRuntime(RuntimeSettings(model_id=config.BEDROCK_MODEL_ID, aws_region=config.AWS_REGION,
-                                                  live_enabled=True))
+            from .reasoning.backend import backend_from_environment
+            return backend_from_environment()
         except Exception:
-            logger.exception("Supervisor runtime unavailable; incidents will wait in INVESTIGATING")
+            logger.exception("Supervisor reasoning backend unavailable; incidents will wait in INVESTIGATING")
             return None
 
     def _recover_incidents(self):
