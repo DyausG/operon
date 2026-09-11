@@ -28,6 +28,7 @@ package = false
 
 [dependency-groups]
 dev = [
+    "bedrock-agentcore==1.22.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
 ]

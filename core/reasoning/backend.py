@@ -131,8 +131,13 @@ def backend_from_environment(mode: str | None = None) -> ReasoningBackend | None
     if mode == "none":
         return None
     if mode == "agentcore":
-        raise RuntimeConfigurationError(
-            "OPERON_REASONING_BACKEND=agentcore requires the AgentCore client (Step 15B), which does not exist yet")
+        # Call-time import keeps boto3 client construction out of all import and
+        # non-AgentCore paths. Settings validation performs no credential lookup.
+        from .agentcore import AgentCoreBackend, AgentCoreSettings
+        try:
+            return AgentCoreBackend(AgentCoreSettings.from_environment())
+        except ValueError as exc:
+            raise RuntimeConfigurationError(str(exc)) from exc
     if mode not in {"local", "packet"}:
         raise RuntimeConfigurationError(
             f"unknown OPERON_REASONING_BACKEND {mode!r}; expected one of {', '.join(BACKEND_MODES)}")

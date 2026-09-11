@@ -190,8 +190,14 @@ def test_backend_from_environment_modes(monkeypatch):
     assert isinstance(packet, InProcessPacketBackend) and packet.specialist_runtime.settings.model_id == "specialist-model"
     assert packet.expected_identity().specialist_model_id == "specialist-model"
     monkeypatch.setenv("OPERON_REASONING_BACKEND", "agentcore")
-    with pytest.raises(RuntimeConfigurationError, match="15B"):
+    with pytest.raises(RuntimeConfigurationError, match="OPERON_AGENTCORE_RUNTIME_ARN"):
         backend_from_environment()
+    monkeypatch.setenv("OPERON_AGENTCORE_RUNTIME_ARN", "test-runtime-arn")
+    monkeypatch.setenv("OPERON_BEDROCK_SUPERVISOR_MODEL_ID", "supervisor-profile")
+    monkeypatch.setenv("OPERON_BEDROCK_SPECIALIST_MODEL_ID", "specialist-profile")
+    remote = backend_from_environment()
+    from core.reasoning.agentcore import AgentCoreBackend
+    assert isinstance(remote, AgentCoreBackend) and remote._clients == {}
     monkeypatch.setenv("OPERON_REASONING_BACKEND", "cloud")
     with pytest.raises(RuntimeConfigurationError, match="unknown"):
         backend_from_environment()
@@ -210,5 +216,9 @@ def test_engine_selects_backend_from_environment_without_clients(seeded_db, monk
     engine = make_engine(monkeypatch)
     assert isinstance(engine.runtime, InProcessPacketBackend) and engine.snapshot()["authority_path"] == "lifecycle"
     monkeypatch.setenv("OPERON_REASONING_BACKEND", "agentcore")
-    assert make_engine(monkeypatch).runtime is None
+    monkeypatch.setenv("OPERON_AGENTCORE_RUNTIME_ARN", "test-runtime-arn")
+    monkeypatch.setenv("OPERON_BEDROCK_SUPERVISOR_MODEL_ID", "supervisor-profile")
+    monkeypatch.setenv("OPERON_BEDROCK_SPECIALIST_MODEL_ID", "specialist-profile")
+    from core.reasoning.agentcore import AgentCoreBackend
+    assert isinstance(make_engine(monkeypatch).runtime, AgentCoreBackend)
     forbidden.assert_not_called()

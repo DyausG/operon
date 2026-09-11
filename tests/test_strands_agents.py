@@ -140,6 +140,8 @@ import core.reasoning.packet
 import core.reasoning.handler
 import core.reasoning.trust
 import core.reasoning.backend
+import core.reasoning.agentcore
+import agentcore_app.main
 import core.agent
 import server.main
 '''
