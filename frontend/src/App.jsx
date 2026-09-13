@@ -28,23 +28,97 @@ const SERIES = ["#ff5d73", "#f6b94a", "#748ffc", "#30c7d2", "#31d6a0", "#b478f2"
 
 export default function App() {
   const { state, approve, reject, reset, stop, resume, startDemo } = useEngine();
-  const alerts = useMemo(() => Object.values(state.alerts).sort((a, b) => (a.triage_rank || 99) - (b.triage_rank || 99)), [state.alerts]);
-  const [selected, setSelected] = useState(null);
-  const active = alerts.filter((a) => !["CLOSED", "FAILED", "CANCELLED"].includes(a.lifecycle?.phase || a.status));
-  const focusId = selected || active[0]?.equipment_id || alerts[0]?.equipment_id || state.fleet[0]?.equipment_id;
-  const incident = alerts.find((a) => a.equipment_id === focusId) || null;
-  return <div className="app-shell">
-    <Header state={state} onReset={() => { setSelected(null); reset(); }} onStop={stop} onResume={resume}
-      onDemo={() => { const target = focusId || "AC-COMP-01"; setSelected(target); startDemo(target); }} />
-    <ImpactBar state={state} alerts={alerts} />
-    {state.action.error && <div className="action-error">Action refused: {state.action.error}</div>}
-    <main className="workspace">
-      <aside className="overview-stack"><FleetPanel fleet={state.fleet} selected={focusId} onSelect={setSelected} /><RiskChart state={state} focusId={focusId} /></aside>
-      <section className="command-stack"><IncidentQueue alerts={alerts} selected={focusId} onSelect={setSelected} />
-        {incident ? <IncidentCommand incident={incident} state={state} approve={approve} reject={reject} /> : <EmptyCommand threshold={state.triggerThreshold} />}
-      </section>
-    </main>
-  </div>;
+  const alerts = useMemo(
+    () => Object.values(state.alerts).sort((a, b) => (a.triage_rank || 99) - (b.triage_rank || 99)),
+    [state.alerts]
+  );
+
+  const [selectedEquipmentId, setSelectedEquipmentId] = useState(null);
+  const [selectedIncidentId, setSelectedIncidentId] = useState(null);
+  const [showHistory, setShowHistory] = useState(false);
+
+  const activeAlerts = useMemo(
+    () => alerts.filter((a) => !["CLOSED", "FAILED", "CANCELLED"].includes(a.lifecycle?.phase || a.status)),
+    [alerts]
+  );
+
+  const resolvedAlerts = useMemo(
+    () => alerts.filter((a) => ["CLOSED", "FAILED", "CANCELLED"].includes(a.lifecycle?.phase || a.status)),
+    [alerts]
+  );
+
+  // Dynamic bidirectional resolution of current incident & machine
+  let currentIncident = null;
+  if (selectedIncidentId) {
+    currentIncident = alerts.find((a) => a.incident_id === selectedIncidentId) || null;
+  }
+  if (!currentIncident && selectedEquipmentId) {
+    currentIncident = alerts.find((a) => a.equipment_id === selectedEquipmentId) || null;
+  }
+  if (!currentIncident) {
+    currentIncident = activeAlerts[0] || (showHistory ? resolvedAlerts[0] : null) || alerts[0] || null;
+  }
+
+  const focusEquipmentId = selectedEquipmentId || currentIncident?.equipment_id || state.fleet[0]?.equipment_id;
+
+  const handleSelectAsset = (equipmentId) => {
+    setSelectedEquipmentId(equipmentId);
+    const alert = alerts.find((a) => a.equipment_id === equipmentId);
+    if (alert) {
+      setSelectedIncidentId(alert.incident_id);
+    } else {
+      setSelectedIncidentId(null);
+    }
+  };
+
+  const handleSelectIncident = (incidentItem) => {
+    setSelectedIncidentId(incidentItem.incident_id);
+    setSelectedEquipmentId(incidentItem.equipment_id);
+  };
+
+  return (
+    <div className="app-shell">
+      <Header
+        state={state}
+        onReset={() => {
+          setSelectedEquipmentId(null);
+          setSelectedIncidentId(null);
+          setShowHistory(false);
+          reset();
+        }}
+        onStop={stop}
+        onResume={resume}
+        onDemo={() => {
+          const target = focusEquipmentId || "AC-COMP-01";
+          setSelectedEquipmentId(target);
+          startDemo(target);
+        }}
+      />
+      <ImpactBar state={state} alerts={alerts} />
+      {state.action.error && <div className="action-error">Action refused: {state.action.error}</div>}
+      <main className="workspace">
+        <aside className="overview-stack">
+          <FleetPanel fleet={state.fleet} selected={focusEquipmentId} onSelect={handleSelectAsset} />
+          <RiskChart state={state} focusId={focusEquipmentId} />
+        </aside>
+        <section className="command-stack">
+          <SessionPipeline
+            activeAlerts={activeAlerts}
+            resolvedAlerts={resolvedAlerts}
+            currentIncidentId={currentIncident?.incident_id}
+            showHistory={showHistory}
+            onToggleHistory={() => setShowHistory((prev) => !prev)}
+            onSelect={handleSelectIncident}
+          />
+          {currentIncident ? (
+            <IncidentCommand incident={currentIncident} state={state} approve={approve} reject={reject} />
+          ) : (
+            <EmptyCommand threshold={state.triggerThreshold} />
+          )}
+        </section>
+      </main>
+    </div>
+  );
 }
 
 function Header({ state, onReset, onStop, onResume, onDemo }) {
@@ -484,9 +558,79 @@ function RiskChart({ state, focusId }) {
   return <Panel title="Predictive signal" meta={`action gate ${pct(state.triggerThreshold)}`}><div className="risk-chart"><ResponsiveContainer><LineChart data={data} margin={{ top: 8, right: 8, left: -22, bottom: 0 }}><CartesianGrid vertical={false} stroke="rgba(139,158,191,.09)" /><ReferenceArea y1={state.triggerThreshold} y2={1} fill="rgba(255,93,115,.06)" /><XAxis dataKey="t" tick={{ fill: "#67748b", fontSize: 10 }} axisLine={false} tickLine={false} minTickGap={28} /><YAxis domain={[0, 1]} tickFormatter={(v) => Math.round(v * 100)} tick={{ fill: "#67748b", fontSize: 10 }} axisLine={false} tickLine={false} /><ReferenceLine y={state.triggerThreshold} stroke="#ff5d73" strokeDasharray="4 4" /><Tooltip formatter={(value) => pct(value)} contentStyle={{ background: "#101722", border: "1px solid #2a3547", borderRadius: 8 }} />{ids.map((id, i) => <Line key={id} dataKey={id} type="monotone" stroke={SERIES[i]} strokeWidth={focusId === id ? 2.4 : 1.4} strokeOpacity={focusId && focusId !== id ? .3 : 1} dot={false} connectNulls isAnimationActive={false} />)}</LineChart></ResponsiveContainer></div><div className="chart-legend">{ids.map((id, i) => <span key={id}><i style={{ background: SERIES[i] }} />{id}</span>)}</div></Panel>;
 }
 
-function IncidentQueue({ alerts, selected, onSelect }) {
-  if (!alerts.length) return null;
-  return <div className="incident-queue">{alerts.map((item) => <button key={item.incident_id} className={selected === item.equipment_id ? "selected" : ""} onClick={() => onSelect(item.equipment_id)}><span className={`phase-dot ${tone(item.lifecycle?.phase)}`} /><span><b>{item.equipment_id}</b><small>{item.lifecycle?.phase || item.status}</small></span><em>{pct(item.failure_prob)}</em></button>)}</div>;
+function SessionPipeline({
+  activeAlerts,
+  resolvedAlerts,
+  currentIncidentId,
+  showHistory,
+  onToggleHistory,
+  onSelect,
+}) {
+  const hasSessions = activeAlerts.length > 0 || resolvedAlerts.length > 0;
+  const visibleSessions = showHistory ? [...activeAlerts, ...resolvedAlerts] : activeAlerts;
+
+  const formatShortId = (id) => {
+    if (!id) return "#---";
+    const parts = id.split("-");
+    return `#${parts[parts.length - 1] || id.slice(-4)}`;
+  };
+
+  const formatPhaseName = (phase = "") => {
+    const clean = phase.replaceAll("_", " ").toLowerCase();
+    return clean.charAt(0).toUpperCase() + clean.slice(1);
+  };
+
+  return (
+    <div className="session-pipeline-bar">
+      <div className="pipeline-lead">
+        <span className="pipeline-title">Incident Sessions</span>
+        <span className={`pipeline-count-badge ${activeAlerts.length === 0 ? "idle" : ""}`}>
+          {activeAlerts.length > 0 ? `${activeAlerts.length} Active` : "Quiescent"}
+        </span>
+      </div>
+
+      <div className="pipeline-tabs">
+        {visibleSessions.map((item) => {
+          const isSelected = currentIncidentId === item.incident_id;
+          const isResolved = ["CLOSED", "FAILED", "CANCELLED"].includes(item.lifecycle?.phase || item.status);
+          const phase = item.lifecycle?.phase || item.status || "OPEN";
+          const riskTone = item.failure_prob > 0.8 ? "bad" : item.failure_prob > 0.4 ? "warn" : "good";
+
+          return (
+            <button
+              key={item.incident_id}
+              className={`session-tab ${isSelected ? "active" : ""} ${isResolved ? "resolved" : ""}`}
+              onClick={() => onSelect(item)}
+              title={`Session ${item.incident_id} · ${item.equipment_name || item.equipment_id}`}
+            >
+              <span className={`status-indicator-dot ${tone(phase)}`} />
+              <span className="session-tab-id">{formatShortId(item.incident_id)}</span>
+              <span className="session-tab-asset">{item.equipment_id}</span>
+              <span className="session-tab-phase">{formatPhaseName(phase)}</span>
+              <span className={`session-tab-risk ${riskTone}`}>{pct(item.failure_prob)}</span>
+            </button>
+          );
+        })}
+
+        {!hasSessions && (
+          <span className="pipeline-empty-text">Continuous surveillance · No active incident runs</span>
+        )}
+      </div>
+
+      {resolvedAlerts.length > 0 && (
+        <div className="pipeline-history">
+          <button
+            className={`history-pill ${showHistory ? "active" : ""}`}
+            onClick={onToggleHistory}
+            title="Toggle recently resolved incident sessions"
+          >
+            <CheckCircleIcon size={11} color={showHistory ? "var(--green)" : "var(--muted)"} />
+            <span>{showHistory ? "Hide Past" : `${resolvedAlerts.length} Resolved`}</span>
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function IncidentCommand({ incident, state, approve, reject }) {
