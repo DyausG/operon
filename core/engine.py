@@ -39,6 +39,7 @@ from .reliability.lifecycle import (
     ApprovalRefused, GovernanceBlocked, LifecycleRefused, LifecycleService, ExecutionRefused,
     ReconciliationRequired, POLICY_VERSION as LIFECYCLE_POLICY,
 )
+from .reliability import models as m
 from .reliability.models import ApprovalRequirement, IncidentPhase, Intervention, ModelSignal
 from .reliability.promotion import PromotionRefused
 from .reliability.repository import IncidentRepository, InvalidReference, StaleRevision
@@ -95,7 +96,11 @@ class DemoEngine:
             logger.warning("OPERON_LEGACY_DEMO is enabled: the deprecated proposal shortcut is active; "
                            "its artifacts carry no application promotion lineage")
         self.runtime = runtime if runtime is not None else self._default_runtime()
+        self._base_runtime = self.runtime
         self.specialist_runtime = specialist_runtime
+        self._guided_demo: dict | None = None
+        self._guided_task: asyncio.Task | None = None
+        self.demo_step_delay = 5.0
         self.incidents = {}
         self._resume: set[str] = set()
         self._lifecycle_tasks: dict[str, asyncio.Task] = {}
@@ -209,6 +214,12 @@ class DemoEngine:
         await self.broadcast({"type": "control", "running": False})
 
     async def reset(self):
+        guided = self._guided_task
+        if guided and guided is not asyncio.current_task() and not guided.done():
+            guided.cancel()
+        self._guided_task = None
+        self._guided_demo = None
+        self.runtime = self._base_runtime
         if self._task:
             self._task.cancel()
             try:
@@ -234,6 +245,116 @@ class DemoEngine:
         self._pending_broadcasts = []
         await self.broadcast({"type": "reset"})
         await self.start()
+
+    def _demo_projection(self) -> dict:
+        if self._guided_demo is None:
+            return {"active": False}
+        value = dict(self._guided_demo)
+        eid = value.get("equipment_id")
+        incident = self.incidents.get(eid)
+        if incident is not None:
+            current = self.coordinator.repository.fetch_incident(incident.id)
+            value.update({"incident_id": current.id, "phase": current.phase.value})
+            if current.phase == IncidentPhase.AWAITING_APPROVAL:
+                value["status"] = "awaiting_human_approval"
+            elif current.phase == IncidentPhase.OBSERVING:
+                value["status"] = "observing"
+            elif current.phase == IncidentPhase.CLOSED:
+                value["status"] = "complete"
+        return {"active": True, **value}
+
+    async def _broadcast_demo(self):
+        await self.broadcast({"type": "demo", "demo_scenario": self._demo_projection()})
+
+    async def start_guided_demo(self, equipment_id: str) -> dict:
+        """Prepare one explicit simulator-backed recording flow.
+
+        This controls only simulator inputs and trusted typed submissions.  Every
+        authoritative transition remains inside LifecycleService.
+        """
+        if equipment_id not in self.sim.assets:
+            return {"ok": False, "error": "unknown demo equipment"}
+        await self.reset()
+        await self.stop()
+        from .demo_scenario import DemoReasoningBackend
+        self.runtime = DemoReasoningBackend()
+        for eid, state in self.sim.assets.items():
+            state.mode, state.prog = "healthy", 0.0
+        selected = self.sim.assets[equipment_id]
+        mode_id = CLASS_DEFAULT_MODE[selected.profile.equipment_class]
+        selected.profile.scenario = mode_id.removeprefix("FM-")
+        selected.profile.start_tick, selected.profile.ramp_ticks = 1, 6
+        selected.profile.intervention_response = "RECOVERS"
+        selected.mode, selected.prog = "degrading", 0.05
+        self._guided_demo = {"equipment_id": equipment_id, "status": "degrading",
+                             "reasoning_provenance": "SIMULATED_TYPED_ADVISORY",
+                             "physical_provenance": "SIMULATED"}
+        await self.start()
+        self._guided_task = asyncio.create_task(self._guide_to_approval(equipment_id))
+        await self._broadcast_demo()
+        return {"ok": True, "demo_scenario": self._demo_projection()}
+
+    async def _wait_demo_phase(self, equipment_id: str, phases: set[IncidentPhase], timeout=45):
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
+            incident = self.incidents.get(equipment_id)
+            if incident is not None:
+                current = self.coordinator.repository.fetch_incident(incident.id)
+                if current.phase in phases:
+                    return current
+                if current.phase in {IncidentPhase.ESCALATED, IncidentPhase.EXECUTION_FAILED, IncidentPhase.CANCELLED}:
+                    raise RuntimeError(f"guided demo reached {current.phase.value}")
+            await asyncio.sleep(0.1)
+        raise TimeoutError("guided demo timed out waiting for authoritative lifecycle")
+
+    async def _guide_to_approval(self, equipment_id: str):
+        from .demo_scenario import binding_fields, resource_confirmation, technical_confirmation
+        try:
+            await asyncio.sleep(self.demo_step_delay)
+            # Accelerate only the simulator degradation; incident admission still
+            # depends on the real persisted model prediction crossing its threshold.
+            self.sim.assets[equipment_id].prog = 1.0
+            await self._wait_demo_phase(equipment_id, {IncidentPhase.AWAITING_EVIDENCE})
+            self._guided_demo["status"] = "trusted_inspection"
+            await self._broadcast_demo()
+            await asyncio.sleep(self.demo_step_delay)
+            confirmation = technical_confirmation(self, equipment_id)
+            response = self.submit_technical_confirmation(
+                confirmation, expected_revision=self.coordinator.repository.fetch_incident(confirmation.incident_id).revision)
+            await self._refresh_lifecycle(equipment_id, "demo_technical_confirmation",
+                                          reason="explicit SIMULATED trusted inspection submitted")
+            if not response["ok"]:
+                raise RuntimeError("technical confirmation was refused")
+            await self._wait_demo_phase(equipment_id, {IncidentPhase.DIAGNOSIS_VALIDATED})
+            self._guided_demo["status"] = "planning"
+            await self._broadcast_demo()
+            await asyncio.sleep(self.demo_step_delay)
+            # Freeze the simulated source briefly while the trusted application
+            # binds and reviews the exact work package. This satisfies the same
+            # dependency-freshness checks as a live caller; it grants no authority.
+            await self.stop()
+            resource = resource_confirmation(self, equipment_id)
+            response = self.submit_resource_confirmation(
+                resource, expected_revision=self.coordinator.repository.fetch_incident(resource.incident_id).revision)
+            resource_evidence = self.coordinator.repository.get_artifact(resource.incident_id, response["evidence_id"])
+            await self._refresh_lifecycle(equipment_id, "demo_resource_confirmation",
+                                          reason="explicit SIMULATED resource attestation submitted")
+            incident = self.coordinator.repository.fetch_incident(resource.incident_id)
+            result = await self.plan(incident.id, expected_revision=incident.revision,
+                                     **binding_fields(self, equipment_id, resource_evidence))
+            if not result["ok"]:
+                raise RuntimeError(result.get("outcome", {}).get("reason", "demo plan was refused"))
+            self._guided_demo["status"] = "awaiting_human_approval"
+            await self.start()
+            await self._broadcast_demo()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("Guided demo preparation failed")
+            if self._guided_demo is not None:
+                self._guided_demo.update({"status": "failed", "error": str(exc)})
+                await self.start()
+                await self._broadcast_demo()
 
     async def _run(self):
         try:
@@ -504,6 +625,8 @@ class DemoEngine:
         self._pending_broadcasts.append({"type": "outcome", "equipment_id": eid, "result": result,
                                          "phase": self.incidents[eid].phase.value, "alert": self.alerts[eid],
                                          "business": self._business_summary(), "triage": self._triage_msg()})
+        if self._guided_demo and self._guided_demo.get("equipment_id") == eid:
+            self._guided_demo["status"] = "complete" if verification.disposition == "CLOSED" else verification.disposition.lower()
 
     async def verify_outcome(self, incident_id: str) -> dict:
         """Explicit deterministic verification attempt (API); the same authority as the tick path."""
@@ -534,6 +657,66 @@ class DemoEngine:
         self._retriage()
         await self.broadcast({"type": message_type, "alert": self.alerts[eid], "equipment_id": eid,
                               "phase": phase, "triage": self._triage_msg()})
+
+    def _incident_read_model(self, incident) -> dict:
+        """Presentation-only view over committed records; grants no lifecycle authority."""
+        repo = self.coordinator.repository
+        artifacts = repo.list_artifacts(incident.id)
+        of_type = lambda cls: [item for item in artifacts if isinstance(item, cls)]
+        evidence, diagnoses = of_type(m.Evidence), of_type(m.Diagnosis)
+        verdicts, interventions = of_type(m.ValidationVerdict), of_type(m.Intervention)
+        requirements, actions = of_type(m.ApprovalRequirement), of_type(m.AgentAction)
+        snapshots, reports = of_type(m.SupervisorRunSnapshot), of_type(m.SupervisorReport)
+        bindings, plans, outcomes = (of_type(m.WorkPackageBinding), of_type(m.ObservationPlan), of_type(m.Outcome))
+        current_diagnosis = next((item for item in diagnoses if item.id == incident.current_diagnosis_id), None)
+        current_intervention = next((item for item in interventions if item.id == incident.current_intervention_id), None)
+        current_binding = next((item for item in bindings
+                                if current_intervention and item.id == current_intervention.binding_id), None)
+        snapshots_by_run = {item.run_id: item for item in snapshots}
+        agent_runs = []
+        for report in reports:
+            result, snapshot = report.result_payload, snapshots_by_run.get(report.run_id)
+            agent_runs.append({
+                "run_id": report.run_id, "stage": snapshot.stage if snapshot else None,
+                "status": report.completion, "input_revision": report.input_revision,
+                "checkpoint_revision": report.checkpoint_revision,
+                "runtime_identity": snapshot.runtime_identity if snapshot else {},
+                "version_identity": snapshot.version_identity if snapshot else {},
+                "disposition": result.get("disposition"),
+                "summary": (result.get("decision") or {}).get("reasoning_summary"),
+                "delegations": result.get("delegations", []), "assessments": result.get("assessments", []),
+                "evidence_requests": result.get("evidence_requests", []), "blockers": result.get("blockers", []),
+                "human_review_required": result.get("human_review_required", True),
+                "tool_calls": result.get("tool_calls", 0), "stale_reasons": list(report.stale_reasons),
+            })
+        return {
+            "incident": incident.model_dump(mode="json"),
+            "events": [item.model_dump(mode="json") for item in repo.list_events(incident.id)[-80:]],
+            "evidence": [{
+                "id": item.id, "kind": item.kind, "summary": item.summary,
+                "quality": item.quality, "provenance": item.provenance,
+                "source_uri": item.source_uri, "source_locator": item.source_locator,
+                "source_version": item.source_version, "source_capability": item.source_capability,
+                "source_system": item.source_system,
+                "observed_at": item.observed_at.isoformat() if item.observed_at else None,
+                "retrieved_at": item.retrieved_at.isoformat(), "payload": item.payload,
+                "derived_from_ids": list(item.derived_from_ids),
+            } for item in evidence],
+            "hypotheses": [item.model_dump(mode="json") for item in of_type(m.Hypothesis)],
+            "diagnosis": current_diagnosis.model_dump(mode="json") if current_diagnosis else None,
+            "verdicts": [item.model_dump(mode="json") for item in verdicts],
+            "intervention": current_intervention.model_dump(mode="json") if current_intervention else None,
+            "binding": current_binding.model_dump(mode="json") if current_binding else None,
+            "requirements": [item.model_dump(mode="json") for item in requirements],
+            "approval_decisions": [item.model_dump(mode="json") for item in repo.list_approval_decisions(incident.id)],
+            "execution_receipts": [item.model_dump(mode="json") for item in repo.list_execution_receipts(incident.id)],
+            "observation_plans": [item.model_dump(mode="json") for item in plans],
+            "outcomes": [item.model_dump(mode="json") for item in outcomes],
+            "agent_actions": [item.model_dump(mode="json") for item in actions], "agent_runs": agent_runs,
+            "correlation": {"incident_id": incident.id, "active_run_id": incident.active_run_id,
+                            "demo_run_id": incident.demo_run_id,
+                            "latest_run_id": agent_runs[-1]["run_id"] if agent_runs else None},
+        }
 
     def _lifecycle_alert(self, eid: str, ctx: dict | None = None, *, status=None, reason: str | None = None) -> dict:
         """UI projection of durable state. Carries exact approval identifiers, never authority."""
@@ -594,6 +777,7 @@ class DemoEngine:
                 "outcome_result": view.get("outcome_result"),
                 "supervisor_available": self.runtime is not None,
                 "last_reason": reason or previous.get("lifecycle", {}).get("last_reason"),
+                "read_model": self._incident_read_model(incident),
             },
         }
 
@@ -822,7 +1006,9 @@ class DemoEngine:
             self.alerts[eid] = self._lifecycle_alert(eid)
 
     def incident_view(self, incident_id: str) -> dict:
-        return self.lifecycle.projection(incident_id)
+        projection = self.lifecycle.projection(incident_id)
+        incident = self.coordinator.repository.fetch_incident(incident_id)
+        return {**projection, "read_model": self._incident_read_model(incident)}
 
     async def _approve_legacy(self, eid: str) -> dict:
         al = self.alerts.get(eid)
@@ -922,17 +1108,28 @@ class DemoEngine:
                 "recovered_per_event": round(config.recovered_value(), 0)}
 
     def snapshot(self) -> dict:
+        backend = getattr(self.runtime, "name", None) or config.reasoning_backend()
         return {"type": "snapshot", "tick": self.tick_i, "running": self.running,
                 "agent_mode": config.agent_mode(), "app_name": config.APP_NAME,
                 "authority_path": "legacy-demo" if self.legacy_demo else "lifecycle",
                 "supervisor_available": self.runtime is not None,
+                "reasoning_provenance": {
+                    "backend": backend,
+                    "status": "available" if self.runtime is not None else "awaiting_runtime",
+                    "application": "Operon",
+                    "runtime": ("AgentCore Runtime" if backend == "agentcore" else
+                                "Offline typed advisory fixture" if backend == "demo" else "Local application runtime"),
+                    "framework": "Operon typed advisory contracts" if backend == "demo" else "Strands Agents",
+                    "model_provider": "Amazon Bedrock" if backend in {"agentcore", "local", "packet"} else None,
+                    "provenance": "SIMULATED" if backend == "demo" else "LIVE" if backend == "agentcore" else "LOCAL",
+                },
                 "tagline": config.APP_TAGLINE, "plant_name": config.PLANT_NAME,
                 "trigger_threshold": config.TRIGGER_THRESHOLD, "warn_threshold": config.WARN_THRESHOLD,
                 "fleet": [self._asset_summary(e) for e in self.meta if e in self.assets],
                 "histories": self.histories,
                 "alerts": list(self.alerts.values()),
                 "triage": self._triage_msg(),
-                "business": self._business_summary()}
+                "business": self._business_summary(), "demo_scenario": self._demo_projection()}
 
     async def broadcast(self, msg: dict):
         import json

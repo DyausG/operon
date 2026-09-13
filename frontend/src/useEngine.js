@@ -29,6 +29,9 @@ export function useEngine() {
     alerts: {},
     triage: { count: 0, rationale: "", order: [] },
     business: {},
+    reasoningProvenance: {},
+    action: { pending: null, error: null },
+    demoScenario: { active: false },
     lastEvent: null,
   });
   const wsRef = useRef(null);
@@ -48,6 +51,9 @@ export function useEngine() {
       alerts: Object.fromEntries((s.alerts || []).map((a) => [a.equipment_id, a])),
       triage: s.triage || prev.triage,
       business: s.business || {},
+      reasoningProvenance: s.reasoning_provenance || {},
+      action: { pending: null, error: null },
+      demoScenario: s.demo_scenario || { active: false },
     }));
   }, []);
 
@@ -75,10 +81,21 @@ export function useEngine() {
     };
   }, [applySnapshot]);
 
-  const post = useCallback((path, body) => fetch(path, {
-    method: "POST",
-    ...(body ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}),
-  }).catch(() => {}), []);
+  const post = useCallback(async (path, body) => {
+    setState((p) => ({ ...p, action: { pending: path, error: null } }));
+    try {
+      const response = await fetch(path, {
+        method: "POST",
+        ...(body ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}),
+      });
+      const result = await response.json();
+      setState((p) => ({ ...p, action: { pending: null, error: result.ok === false ? result.error : null } }));
+      return result;
+    } catch (error) {
+      setState((p) => ({ ...p, action: { pending: null, error: error.message } }));
+      return { ok: false, error: error.message };
+    }
+  }, []);
   // Approval intent must name the exact requirement/intervention/hash/revision the
   // operator saw; the server rejects stale or equipment-only intent.
   const intent = (a) => a?.lifecycle?.requirement_id ? {
@@ -92,8 +109,9 @@ export function useEngine() {
   const reset = useCallback(() => post("/api/reset"), [post]);
   const stop = useCallback(() => post("/api/stop"), [post]);
   const resume = useCallback(() => post("/api/start"), [post]);
+  const startDemo = useCallback((equipmentId) => post("/api/demo/scenario", { equipment_id: equipmentId }), [post]);
 
-  return { state, approve, reject, reset, stop, resume };
+  return { state, approve, reject, reset, stop, resume, startDemo };
 }
 
 function reduce(prev, msg) {
@@ -103,8 +121,11 @@ function reduce(prev, msg) {
     case "reset":
       return {
         ...prev, running: true, tick: 0, plantMin: 0, fleet: [], histories: {}, alerts: {},
-        triage: { count: 0, rationale: "", order: [] }, business: {}, lastEvent: null,
+        triage: { count: 0, rationale: "", order: [] }, business: {}, action: { pending: null, error: null },
+        demoScenario: { active: false }, lastEvent: null,
       };
+    case "demo":
+      return { ...prev, demoScenario: msg.demo_scenario || { active: false } };
     case "tick": {
       const histories = { ...prev.histories };
       for (const a of msg.fleet) {
@@ -121,6 +142,12 @@ function reduce(prev, msg) {
       const alerts = { ...prev.alerts, [msg.alert.equipment_id]: msg.alert };
       return { ...prev, alerts, triage: msg.triage || prev.triage,
                lastEvent: { kind: "alert", id: msg.alert.equipment_id, phase: msg.phase } };
+    }
+    case "outcome": {
+      const alerts = msg.alert
+        ? { ...prev.alerts, [msg.alert.equipment_id]: msg.alert }
+        : prev.alerts;
+      return { ...prev, alerts, lastEvent: { kind: "outcome", id: msg.equipment_id, phase: msg.phase } };
     }
     case "resolved": {
       const a = prev.alerts[msg.equipment_id];
@@ -140,6 +167,9 @@ function reduce(prev, msg) {
       return { ...prev, alerts, business: msg.business || prev.business,
                lastEvent: { kind: "failure", id: msg.equipment_id } };
     }
+    case "error":
+      return { ...prev, action: { pending: null, error: msg.error },
+               lastEvent: { kind: "error", id: msg.equipment_id } };
     default:
       return prev;
   }

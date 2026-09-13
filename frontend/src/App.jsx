@@ -1,532 +1,155 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import {
-  ResponsiveContainer, LineChart, Line, Area, AreaChart, XAxis, YAxis,
-  ReferenceLine, ReferenceArea, Tooltip, CartesianGrid,
-} from "recharts";
+import { useMemo, useRef, useState } from "react";
+import { motion } from "framer-motion";
+import { Area, AreaChart, CartesianGrid, Line, LineChart, ReferenceArea, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useEngine } from "./useEngine.js";
-import { pct, money0, STATUS_ORDER, ClassIcon, ShieldMark, actorGlyph } from "./lib.jsx";
+import { ClassIcon, ShieldMark, money0, pct, STATUS_ORDER } from "./lib.jsx";
 
-const SERIES_COLORS = ["#ff5470", "#ffb84d", "#7c8cff", "#23d5e0", "#34e2b0", "#c77dff"];
+const FLOW = ["OPEN", "INVESTIGATING", "AWAITING_EVIDENCE", "DIAGNOSIS_VALIDATED", "PLANNING", "INTERVENTION_VALIDATED", "AWAITING_APPROVAL", "READY", "EXECUTING", "OBSERVING", "CLOSED"];
+const FLOW_LABELS = { OPEN: "Signal", INVESTIGATING: "Investigate", AWAITING_EVIDENCE: "Evidence", DIAGNOSIS_VALIDATED: "Diagnosis", PLANNING: "Plan", INTERVENTION_VALIDATED: "Validated", AWAITING_APPROVAL: "Approval", READY: "Ready", EXECUTING: "Execute", OBSERVING: "Observe", CLOSED: "Recovered" };
+const SERIES = ["#ff5d73", "#f6b94a", "#748ffc", "#30c7d2", "#31d6a0", "#b478f2"];
 
 export default function App() {
-  const { state, approve, reject, reset, stop, resume } = useEngine();
+  const { state, approve, reject, reset, stop, resume, startDemo } = useEngine();
+  const alerts = useMemo(() => Object.values(state.alerts).sort((a, b) => (a.triage_rank || 99) - (b.triage_rank || 99)), [state.alerts]);
   const [selected, setSelected] = useState(null);
-
-  const alerts = useMemo(
-    () => Object.values(state.alerts).sort((a, b) => (a.triage_rank || 99) - (b.triage_rank || 99)),
-    [state.alerts]
-  );
-  const activeAlerts = alerts.filter((a) => ["ANALYZING", "PENDING_APPROVAL"].includes(a.status));
-
-  // focus = clicked asset, else the top-priority active alert
-  const focusId = selected || activeAlerts[0]?.equipment_id || null;
-
-  return (
-    <div className="app">
-      <Header state={state} onReset={() => { setSelected(null); reset(); }}
-        onStop={stop} onResume={resume} />
-      <div className="grid">
-        <div className="col">
-          <FleetPanel fleet={state.fleet} selected={focusId} onSelect={setSelected}
-            warn={state.warnThreshold} />
-          <ChartPanel state={state} focusId={focusId} />
-        </div>
-        <div className="col">
-          <AgentPanel alerts={alerts} triage={state.triage} focusId={focusId}
-            onSelect={setSelected} approve={approve} reject={reject}
-            threshold={state.triggerThreshold} />
-          <BusinessPanel biz={state.business} />
-        </div>
-      </div>
-      <Toasts lastEvent={state.lastEvent} fleet={state.fleet} />
-    </div>
-  );
+  const active = alerts.filter((a) => !["CLOSED", "FAILED", "CANCELLED"].includes(a.lifecycle?.phase || a.status));
+  const focusId = selected || active[0]?.equipment_id || alerts[0]?.equipment_id || state.fleet[0]?.equipment_id;
+  const incident = alerts.find((a) => a.equipment_id === focusId) || null;
+  return <div className="app-shell">
+    <Header state={state} onReset={() => { setSelected(null); reset(); }} onStop={stop} onResume={resume}
+      onDemo={() => { const target = focusId || "AC-COMP-01"; setSelected(target); startDemo(target); }} />
+    <ImpactBar state={state} alerts={alerts} />
+    {state.action.error && <div className="action-error">Action refused: {state.action.error}</div>}
+    <main className="workspace">
+      <aside className="overview-stack"><FleetPanel fleet={state.fleet} selected={focusId} onSelect={setSelected} /><RiskChart state={state} focusId={focusId} /></aside>
+      <section className="command-stack"><IncidentQueue alerts={alerts} selected={focusId} onSelect={setSelected} />
+        {incident ? <IncidentCommand incident={incident} state={state} approve={approve} reject={reject} /> : <EmptyCommand threshold={state.triggerThreshold} />}
+      </section>
+    </main>
+  </div>;
 }
 
-/* -------------------------------------------------------------- Header ---- */
-function Header({ state, onReset, onStop, onResume }) {
-  const { agentMode, connected, meta, plantMin, running } = state;
-  const hrs = Math.floor(plantMin / 60), mins = plantMin % 60;
-  const isLive = agentMode && agentMode !== "deterministic";
-  const modeChip = isLive
-    ? <span className="chip bedrock"><span className="dot" />{agentMode.toUpperCase()} · LIVE AGENT</span>
-    : <span className="chip det"><span className="dot" />DETERMINISTIC PLANNER</span>;
-  return (
-    <header className="header">
-      <div className="brand">
-        <div className="brand-mark"><ShieldMark /></div>
-        <div>
-          <h1>{meta.appName || "Operon"}</h1>
-          <div className="tag">{meta.tagline || "Autonomous Reliability Operations for Industrial Systems"}</div>
-        </div>
-      </div>
-      <div className="header-spacer" />
-      <span className="chip">{meta.plant || "Plant"} · shift A · +{String(hrs).padStart(2, "0")}:{String(mins).padStart(2, "0")}</span>
-      {modeChip}
-      <span className={"chip " + (connected ? (running ? "live" : "offline") : "offline")}>
-        <span className="dot" />{!connected ? "RECONNECTING" : running ? "STREAMING" : "PAUSED"}
-      </span>
-      {running
-        ? <button className="btn ghost" onClick={onStop}>⏸ Stop</button>
-        : <button className="btn ghost" onClick={onResume}>▶ Resume</button>}
-      <button className="btn ghost" onClick={onReset}>↻ Reset demo</button>
-    </header>
-  );
+function Header({ state, onReset, onStop, onResume, onDemo }) {
+  const mins = state.plantMin % 60, hours = Math.floor(state.plantMin / 60);
+  const provenance = state.reasoningProvenance || {}, agentcore = provenance.backend === "agentcore";
+  return <header className="topbar">
+    <div className="brand"><span className="brand-mark"><ShieldMark /></span><span><b>{state.meta.appName || "Operon"}</b><small>Industrial reliability command</small></span></div>
+    <div className="authority-banner"><span className="agent-side">AGENTS REASON</span><i /><span className="authority-side">APPLICATION OWNS AUTHORITY</span></div><div className="top-spacer" />
+    {state.demoScenario.active ? <div className="provenance"><span className="hot">Guided demo</span><i>·</i><span>typed advisory</span><i>·</i><span>simulated plant</span><em className="standby">{state.demoScenario.status?.replaceAll("_", " ")}</em></div>
+      : <div className="provenance"><span>Operon</span><i>→</i><span className={agentcore ? "hot" : "muted"}>AgentCore</span><i>→</i><span>Strands</span><i>→</i><span className={provenance.model_provider ? "hot" : "muted"}>Bedrock</span><em className={provenance.status === "available" ? "online" : "standby"}>{provenance.status === "available" ? "connected" : "local ready"}</em></div>}
+    <span className={`stream ${state.connected && state.running ? "online" : "standby"}`}><i />{!state.connected ? "reconnecting" : state.running ? "live" : "paused"}</span>
+    <span className="plant-clock">+{String(hours).padStart(2, "0")}:{String(mins).padStart(2, "0")}</span>
+    <button className="icon-btn" onClick={state.running ? onStop : onResume}>{state.running ? "Ⅱ" : "▶"}</button>
+    <button className="text-btn" disabled={!!state.action.pending} onClick={onDemo}>{state.demoScenario.active ? "Restart guided demo" : "Start guided demo"}</button>
+    <button className="text-btn" onClick={onReset}>Reset</button>
+  </header>;
 }
 
-/* --------------------------------------------------------- Fleet panel ---- */
-function FleetPanel({ fleet, selected, onSelect, warn }) {
-  const sorted = [...fleet].sort(
-    (a, b) => (STATUS_ORDER[a.status] - STATUS_ORDER[b.status]) || (b.failure_prob - a.failure_prob)
-  );
-  const critical = fleet.filter((a) => a.status === "CRITICAL").length;
-  return (
-    <section className="panel">
-      <div className="panel-head">
-        <h2>Fleet · Live Asset Health</h2>
-        <span className="count">{fleet.length} assets · {critical} critical</span>
-      </div>
-      <div className="panel-body">
-        <div className="fleet">
-          <AnimatePresence>
-            {sorted.map((a) => (
-              <motion.div key={a.equipment_id} layout
-                initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }}
-                transition={{ type: "spring", stiffness: 380, damping: 30 }}>
-                <AssetCard a={a} selected={selected === a.equipment_id}
-                  onClick={() => onSelect(a.equipment_id)} warn={warn} />
-              </motion.div>
-            ))}
-          </AnimatePresence>
-        </div>
-      </div>
-    </section>
-  );
+function ImpactBar({ state, alerts }) {
+  const biz = state.business || {}, critical = state.fleet.filter((a) => a.status === "CRITICAL").length;
+  const investigating = alerts.filter((a) => ["OPEN", "INVESTIGATING", "AWAITING_EVIDENCE"].includes(a.lifecycle?.phase)).length;
+  const observing = alerts.filter((a) => a.lifecycle?.phase === "OBSERVING").length;
+  return <div className="impact-bar">
+    <div><small>Factory</small><b>{state.fleet.length || "—"} assets</b><span>{critical} critical</span></div>
+    <div><small>Active response</small><b>{investigating} investigating</b><span>{observing} observing</span></div>
+    <div><small>Value verified</small><b>{money0(biz.recovered_value || 0)}</b><span>{biz.events_prevented || 0} recovered events</span></div>
+    <div><small>Net impact</small><b className={(biz.net_value || 0) < 0 ? "negative" : "positive"}>{money0(biz.net_value || 0)}</b><span>configured economics</span></div>
+    <div><small>Line OEE</small><b>{pct(biz.oee_baseline || 0)}</b><div className="microbar"><i style={{ width: `${(biz.oee_baseline || 0) * 100}%` }} /></div></div>
+  </div>;
 }
 
-function AssetCard({ a, selected, onClick, warn }) {
-  const showMode = a.failure_prob >= warn && a.predicted_mode && a.predicted_mode !== "NONE";
-  return (
-    <div className={`asset s-${a.status} ${selected ? "sel" : ""}`} onClick={onClick}>
-      <div className="rail" />
-      <div className="asset-top">
-        <div className="icon"><ClassIcon cls={a.equipment_class} /></div>
-        <div style={{ minWidth: 0 }}>
-          <div className="id">{a.equipment_id}</div>
-          <div className="nm">{a.name}</div>
-        </div>
-        <span className={`badge ${a.status}`}>{a.status}</span>
-      </div>
-      <div className="prob-row">
-        <span className="prob">{pct(a.failure_prob)}</span>
-        <small>24h fail risk</small>
-      </div>
-      <div className="mode">{showMode ? `▸ ${a.predicted_mode_label}` : " "}</div>
-      <MiniSpark point={a.point} status={a.status} />
-    </div>
-  );
+function FleetPanel({ fleet, selected, onSelect }) {
+  const sorted = [...fleet].sort((a, b) => (STATUS_ORDER[a.status] - STATUS_ORDER[b.status]) || b.failure_prob - a.failure_prob);
+  return <Panel title="Factory overview" meta="8-machine simulated floor"><div className="fleet-grid">{sorted.map((asset) => <AssetCard key={asset.equipment_id} asset={asset} selected={selected === asset.equipment_id} onClick={() => onSelect(asset.equipment_id)} />)}</div></Panel>;
 }
 
-// tiny sparkline that accumulates the last ~24 probs client-side per card
-function MiniSpark({ point, status }) {
-  const ref = useRef([]);
-  if (point) {
-    ref.current = [...ref.current, point.prob].slice(-24);
-  }
-  const data = ref.current.map((p, i) => ({ i, p }));
-  const color = { CRITICAL: "#ff5470", WARNING: "#ffb84d", SCHEDULED: "#5aa9ff", HEALTHY: "#34e2b0", DOWN: "#7a8299" }[status];
-  return (
-    <div className="spark">
-      <ResponsiveContainer width="100%" height="100%">
-        <AreaChart data={data} margin={{ top: 2, bottom: 0, left: 0, right: 0 }}>
-          <defs>
-            <linearGradient id={`sg-${status}`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={color} stopOpacity={0.5} />
-              <stop offset="100%" stopColor={color} stopOpacity={0} />
-            </linearGradient>
-          </defs>
-          <YAxis domain={[0, 1]} hide />
-          <Area type="monotone" dataKey="p" stroke={color} strokeWidth={1.6}
-            fill={`url(#sg-${status})`} isAnimationActive={false} dot={false} />
-        </AreaChart>
-      </ResponsiveContainer>
-    </div>
-  );
+function AssetCard({ asset, selected, onClick }) {
+  return <button className={`asset-card ${asset.status.toLowerCase()} ${selected ? "selected" : ""}`} onClick={onClick}>
+    <div className="asset-top"><span className="asset-icon"><ClassIcon cls={asset.equipment_class} /></span><span className="asset-name"><b>{asset.equipment_id}</b><small>{asset.name}</small></span><Status value={asset.status}>{asset.status}</Status></div>
+    <div className="risk-row"><b>{pct(asset.failure_prob)}</b><span>24h risk</span></div><div className="asset-mode">{asset.predicted_mode && asset.predicted_mode !== "NONE" ? asset.predicted_mode_label : "Nominal signature"}</div><Spark point={asset.point} status={asset.status} />
+  </button>;
 }
 
-/* --------------------------------------------------------- Chart panel ---- */
-function ChartPanel({ state, focusId }) {
-  // Which assets to plot: everything currently non-healthy, plus the focused one.
-  const plotted = useMemo(() => {
-    const ids = new Set(state.fleet.filter((a) => a.status !== "HEALTHY").map((a) => a.equipment_id));
-    if (focusId) ids.add(focusId);
-    return [...ids].slice(0, 6);
-  }, [state.fleet, focusId]);
-
-  const { data, series } = useMemo(() => {
-    const byT = new Map();
-    const series = [];
-    plotted.forEach((id, idx) => {
-      const hist = state.histories[id] || [];
-      const color = SERIES_COLORS[idx % SERIES_COLORS.length];
-      const label = state.fleet.find((a) => a.equipment_id === id)?.equipment_id || id;
-      series.push({ id, color, label });
-      for (const pt of hist) {
-        if (!byT.has(pt.t)) byT.set(pt.t, { t: pt.t });
-        byT.get(pt.t)[id] = pt.prob;
-      }
-    });
-    const data = [...byT.values()].sort((a, b) => a.t - b.t).slice(-70);
-    return { data, series };
-  }, [plotted, state.histories, state.fleet]);
-
-  return (
-    <section className="panel">
-      <div className="panel-head">
-        <h2>Failure Probability · 24h Horizon</h2>
-        <span className="count">action threshold {pct(state.triggerThreshold)}</span>
-      </div>
-      <div className="panel-body">
-        <div className="hero-chart">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={data} margin={{ top: 8, right: 10, left: -18, bottom: 0 }}>
-              <CartesianGrid stroke="rgba(120,140,190,0.10)" vertical={false} />
-              <ReferenceArea y1={state.triggerThreshold} y2={1} fill="rgba(255,84,112,0.06)" />
-              <XAxis dataKey="t" tick={{ fill: "#5f6d8f", fontSize: 11 }} tickLine={false} axisLine={false}
-                minTickGap={28} />
-              <YAxis domain={[0, 1]} tickFormatter={(v) => `${Math.round(v * 100)}`}
-                tick={{ fill: "#5f6d8f", fontSize: 11 }} tickLine={false} axisLine={false} width={40} />
-              <ReferenceLine y={state.triggerThreshold} stroke="#ff5470" strokeDasharray="5 4" strokeOpacity={0.7} />
-              <ReferenceLine y={state.warnThreshold} stroke="#ffb84d" strokeDasharray="3 4" strokeOpacity={0.5} />
-              <Tooltip contentStyle={{ background: "#0f1729", border: "1px solid rgba(120,140,190,0.3)",
-                borderRadius: 10, fontSize: 12 }} labelStyle={{ color: "#94a3c4" }}
-                formatter={(v, n) => [pct(v), n]} />
-              {series.map((s) => (
-                <Line key={s.id} type="monotone" dataKey={s.id} stroke={s.color} strokeWidth={2.2}
-                  dot={false} isAnimationActive={false} connectNulls
-                  strokeOpacity={focusId && focusId !== s.id ? 0.4 : 1} />
-              ))}
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-        <div className="legend">
-          {series.length === 0 && <span style={{ color: "#5f6d8f", fontSize: 12 }}>Fleet nominal — monitoring…</span>}
-          {series.map((s) => (
-            <span className="k" key={s.id}><span className="sw" style={{ background: s.color }} />{s.label}</span>
-          ))}
-        </div>
-      </div>
-    </section>
-  );
+function Spark({ point, status }) {
+  const history = useRef([]); if (point) history.current = [...history.current, point.prob].slice(-26);
+  const color = { CRITICAL: "#ff5d73", WARNING: "#f6b94a", SCHEDULED: "#67a5ff", HEALTHY: "#31d6a0", DOWN: "#7b849a" }[status];
+  return <div className="spark"><ResponsiveContainer><AreaChart data={history.current.map((p, i) => ({ i, p }))}><YAxis hide domain={[0, 1]} /><Area dataKey="p" type="monotone" stroke={color} fill={color} fillOpacity={0.08} strokeWidth={1.5} dot={false} isAnimationActive={false} /></AreaChart></ResponsiveContainer></div>;
 }
 
-/* --------------------------------------------------------- Agent panel ---- */
-function AgentPanel({ alerts, triage, focusId, onSelect, approve, reject, threshold }) {
-  const active = alerts.filter((a) => ["ANALYZING", "PENDING_APPROVAL", "REJECTED"].includes(a.status));
-  const resolved = alerts.filter((a) => ["APPROVED", "FAILED"].includes(a.status));
-  return (
-    <section className="panel">
-      <div className="panel-head">
-        <h2>Maintenance Agent</h2>
-        <span className="count">{active.length} open · {resolved.length} resolved</span>
-      </div>
-      <div className="panel-body">
-        {triage.count > 1 && (
-          <div className="triage-banner" style={{ marginBottom: 12 }}>
-            <span>⚖️</span><span>{triage.rationale}</span>
-          </div>
-        )}
-        <MonitoringBanner m={triage.monitoring} />
-        {alerts.length === 0 && (
-          <div className="empty">
-            <div className="big">Monitoring the fleet</div>
-            The agent activates automatically when an asset's failure probability
-            crosses the {pct(threshold)} action threshold.
-          </div>
-        )}
-        <div className="queue">
-          <AnimatePresence>
-            {alerts.map((a) => (
-              <motion.div key={a.equipment_id} layout
-                initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-                transition={{ type: "spring", stiffness: 320, damping: 30 }}>
-                <AlertCard a={a} expanded={focusId === a.equipment_id}
-                  onToggle={() => onSelect(a.equipment_id)}
-                  approve={approve} reject={reject} />
-              </motion.div>
-            ))}
-          </AnimatePresence>
-        </div>
-      </div>
-    </section>
-  );
+function RiskChart({ state, focusId }) {
+  const ids = useMemo(() => { const value = new Set(state.fleet.filter((a) => a.status !== "HEALTHY").map((a) => a.equipment_id)); if (focusId) value.add(focusId); return [...value].slice(0, 6); }, [state.fleet, focusId]);
+  const data = useMemo(() => { const times = new Map(); ids.forEach((id) => (state.histories[id] || []).forEach((point) => { if (!times.has(point.t)) times.set(point.t, { t: point.t }); times.get(point.t)[id] = point.prob; })); return [...times.values()].sort((a, b) => a.t - b.t).slice(-70); }, [ids, state.histories]);
+  return <Panel title="Predictive signal" meta={`action gate ${pct(state.triggerThreshold)}`}><div className="risk-chart"><ResponsiveContainer><LineChart data={data} margin={{ top: 8, right: 8, left: -22, bottom: 0 }}><CartesianGrid vertical={false} stroke="rgba(139,158,191,.09)" /><ReferenceArea y1={state.triggerThreshold} y2={1} fill="rgba(255,93,115,.06)" /><XAxis dataKey="t" tick={{ fill: "#67748b", fontSize: 10 }} axisLine={false} tickLine={false} minTickGap={28} /><YAxis domain={[0, 1]} tickFormatter={(v) => Math.round(v * 100)} tick={{ fill: "#67748b", fontSize: 10 }} axisLine={false} tickLine={false} /><ReferenceLine y={state.triggerThreshold} stroke="#ff5d73" strokeDasharray="4 4" /><Tooltip formatter={(value) => pct(value)} contentStyle={{ background: "#101722", border: "1px solid #2a3547", borderRadius: 8 }} />{ids.map((id, i) => <Line key={id} dataKey={id} type="monotone" stroke={SERIES[i]} strokeWidth={focusId === id ? 2.4 : 1.4} strokeOpacity={focusId && focusId !== id ? .3 : 1} dot={false} connectNulls isAnimationActive={false} />)}</LineChart></ResponsiveContainer></div><div className="chart-legend">{ids.map((id, i) => <span key={id}><i style={{ background: SERIES[i] }} />{id}</span>)}</div></Panel>;
 }
 
-const GOV_META = {
-  APPROVE: { tone: "ok", label: "Approved" },
-  CONDITIONS: { tone: "warn", label: "Approve with conditions" },
-  VETO: { tone: "bad", label: "Vetoed" },
-  UNAVAILABLE: { tone: "muted", label: "Review unavailable" },
-};
-
-function GovPill({ g }) {
-  if (!g) return null;
-  const m = GOV_META[g.decision] || GOV_META.UNAVAILABLE;
-  return <span className={`gov-pill ${m.tone}`} title={`Governance: ${m.label}`}>⚖ {g.decision}</span>;
+function IncidentQueue({ alerts, selected, onSelect }) {
+  if (!alerts.length) return null;
+  return <div className="incident-queue">{alerts.map((item) => <button key={item.incident_id} className={selected === item.equipment_id ? "selected" : ""} onClick={() => onSelect(item.equipment_id)}><span className={`phase-dot ${tone(item.lifecycle?.phase)}`} /><span><b>{item.equipment_id}</b><small>{item.lifecycle?.phase || item.status}</small></span><em>{pct(item.failure_prob)}</em></button>)}</div>;
 }
 
-function GovernanceVerdict({ g }) {
-  if (!g) return null;
-  const m = GOV_META[g.decision] || GOV_META.UNAVAILABLE;
-  const items = [
-    ...(g.reasons || []).map((t) => ({ t, cond: false })),
-    ...(g.conditions || []).map((t) => ({ t, cond: true })),
-  ];
-  return (
-    <div className={`gov ${m.tone}`}>
-      <div className="gov-head">
-        <span className="gov-mark">⚖</span>
-        <span className="gov-label">Governance · {m.label}</span>
-        {g.decision === "VETO" && <span className="gov-hint">human override required</span>}
-      </div>
-      {items.length > 0 && (
-        <ul className="gov-list">
-          {items.map((it, i) => (
-            <li key={i} className={it.cond ? "cond" : ""}>{it.cond ? "⚑ " : ""}{it.t}</li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
+function IncidentCommand({ incident, state, approve, reject }) {
+  const lifecycle = incident.lifecycle || {}, view = lifecycle.read_model || {}, phase = lifecycle.phase || "OPEN";
+  return <motion.div key={incident.incident_id} className="incident-command" initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }}>
+    <div className="incident-hero"><div><span className="eyebrow">Incident command center</span><h1>{incident.equipment_name}</h1><p><CopyId value={incident.incident_id} /> · {incident.equipment_id} · revision {lifecycle.revision}</p></div><div className="hero-risk"><small>24h failure risk</small><b>{pct(incident.failure_prob)}</b><span>{incident.predicted_mode_label || "Predictive anomaly"}</span></div><Status value={phase}>{phase.replaceAll("_", " ")}</Status></div>
+    <Lifecycle phase={phase} events={view.events || []} /><Invariant />
+    <div className="command-grid"><div className="command-column"><DiagnosisCard incident={incident} view={view} /><EvidenceCard evidence={view.evidence || []} /><AgentCard view={view} lifecycle={lifecycle} provenance={state.reasoningProvenance} /></div><div className="command-column"><InterventionCard incident={incident} view={view} /><ApprovalCard incident={incident} view={view} approve={approve} reject={reject} pending={state.action.pending} /><OutcomeCard incident={incident} view={view} /><EventCard events={view.events || []} /></div></div>
+  </motion.div>;
 }
 
-function MonitoringBanner({ m }) {
-  if (!m || !m.escalate) return null;
-  const ids = [...new Set((m.correlations || []).flatMap((c) => c.equipment_ids || []))];
-  return (
-    <div className="monitor-banner" style={{ marginBottom: 12 }}>
-      <span className="mb-icon">📡</span>
-      <div className="mb-body">
-        <div className="mb-title">Monitoring · systemic pattern detected</div>
-        <div className="mb-text">{m.rationale}</div>
-        {ids.length > 0 && (
-          <div className="mb-tags">{ids.map((id) => <span key={id} className="mb-tag">{id}</span>)}</div>
-        )}
-      </div>
-    </div>
-  );
+function Lifecycle({ phase, events }) {
+  const reached = new Set(events.filter((event) => event.event_type === "PHASE_CHANGED").map((event) => event.payload?.to).filter(Boolean)); reached.add("OPEN"); reached.add(phase);
+  const currentIndex = FLOW.indexOf(phase), exceptional = ["ESCALATED", "EXECUTION_FAILED", "CANCELLED"].includes(phase);
+  return <section className="lifecycle-block"><div className="section-title"><span>Authoritative lifecycle</span><small>committed application state</small></div><div className="lifecycle-flow">{FLOW.map((step, i) => { const done = reached.has(step) || (!exceptional && currentIndex >= 0 && i < currentIndex); return <div key={step} className={`${done ? "done" : ""} ${phase === step ? "current" : ""}`}><i>{done ? "✓" : i + 1}</i><span>{FLOW_LABELS[step]}</span></div>; })}{exceptional && <div className="exception current"><i>!</i><span>{phase.replaceAll("_", " ")}</span></div>}</div></section>;
 }
 
-function AlertCard({ a, expanded, onToggle, approve, reject }) {
-  const p = a.proposal;
-  return (
-    <div className={`alert-card ${a.triage_rank === 1 ? "rank1" : ""}`}>
-      <div className="alert-head" onClick={onToggle}>
-        {a.triage_rank && <span className="rank">{a.triage_rank}</span>}
-        <div className="who">
-          <span className="a">{a.equipment_name}</span>
-          <span className="b">{a.equipment_id} · {a.predicted_mode_label || a.predicted_mode}</span>
-        </div>
-        {a.status === "PENDING_APPROVAL" && <GovPill g={p?.governance} />}
-        <div className="pr">
-          <div className="v">{pct(a.failure_prob)}</div>
-          <div className="l">{a.criticality}</div>
-        </div>
-      </div>
+function Invariant() { return <div className="invariant"><span>Prediction</span><i>≠</i><span>Diagnosis</span><i>≠</i><span>Intervention</span><i>≠</i><span>Approval</span><i>≠</i><span>Execution</span><i>≠</i><span>Outcome</span></div>; }
 
-      {a.status === "ANALYZING" && (
-        <div className="analyzing"><span className="spin" />Agent reasoning over the semantic model…</div>
-      )}
-
-      <AnimatePresence initial={false}>
-        {expanded && p && (
-          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.25 }} style={{ overflow: "hidden" }}>
-            <Trace steps={p.trace} />
-            {a.status === "PENDING_APPROVAL" && (
-              <>
-                <GovernanceVerdict g={p.governance} />
-                <div className="actions-row">
-                  <button className="btn-approve" onClick={() => approve(a)}>
-                    ✓ Approve &amp; dispatch
-                  </button>
-                  <button className="btn-reject" onClick={() => reject(a)}>Reject</button>
-                </div>
-              </>
-            )}
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {a.status === "APPROVED" && a.result && (
-        <div className="resolved-tag ok">
-          ✓ Dispatched <span className="wo">{a.result.wo_number}</span> · recovered {money0(a.result.recovered_value)}
-        </div>
-      )}
-      {a.status === "REJECTED" && (
-        <div className="resolved-tag bad">⚠ Rejected — asset running to unplanned failure…</div>
-      )}
-      {a.status === "FAILED" && a.result && (
-        <div className="resolved-tag bad">✕ Unplanned failure · loss {money0(a.result.loss)} · {a.result.downtime_hours}h down</div>
-      )}
-    </div>
-  );
+function DiagnosisCard({ incident, view }) {
+  const diagnosis = view.diagnosis, verdict = [...(view.verdicts || [])].reverse().find((item) => item.target_kind === "diagnosis"), signal = (view.evidence || []).find((item) => item.kind === "model_signal");
+  return <Card title="Evidence → diagnosis" icon="◎" meta={diagnosis ? "application validated" : "investigation active"}><div className="signal-box"><div><small>Predictive signal</small><b>{incident.predicted_mode_label || "Elevated failure risk"}</b></div><Status value="signal">prediction, not cause</Status></div>
+    {signal?.payload?.attribution?.length > 0 && <div className="drivers">{signal.payload.attribution.slice(0, 3).map((item) => <span key={item.feature}><b>{item.label || item.feature}</b> {Number(item.value).toFixed(1)} <em>+{Number(item.contribution).toFixed(2)}</em></span>)}</div>}
+    {diagnosis ? <div className="diagnosis"><span className="validated-mark">✓</span><div><small>Validated diagnosis</small><h3>{diagnosis.conclusion}</h3><p>{diagnosis.evidence_ids.length} cited evidence records · confidence {diagnosis.confidence == null ? "not asserted" : pct(diagnosis.confidence)}</p></div></div> : <EmptyLine text="No diagnosis has crossed the application validation boundary." />}{verdict && <Verdict item={verdict} />}</Card>;
 }
 
-function Trace({ steps }) {
-  return (
-    <div className="trace">
-      <AnimatePresence>
-        {(steps || []).map((s, i) => (
-          <motion.div key={i} className={`step ${s.actor}`}
-            initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: i * 0.08 }}>
-            <span className="marker">{actorGlyph[s.actor] || "•"}</span>
-            <div className="body">
-              <div className="t">{s.title}</div>
-              <div className="x">{s.text}</div>
-            </div>
-          </motion.div>
-        ))}
-      </AnimatePresence>
-    </div>
-  );
+function EvidenceCard({ evidence }) {
+  const [expanded, setExpanded] = useState(false), items = [...evidence].reverse();
+  return <Card title="Evidence ledger" icon="▤" meta={`${evidence.length} durable records`}><div className="evidence-list">{items.slice(0, expanded ? 12 : 5).map((item) => <div key={item.id} className="evidence-row"><span className={`source-mark ${item.provenance?.toLowerCase()}`}>{item.kind === "model_signal" ? "◆" : "●"}</span><div><b>{item.kind.replaceAll("_", " ")}</b><p>{item.summary}</p><small>{item.source_system} · {item.provenance} · {item.quality}</small></div><CopyId value={item.id} short /></div>)}</div>{items.length > 5 && <button className="inline-btn" onClick={() => setExpanded(!expanded)}>{expanded ? "Show less" : `Show ${items.length - 5} more`}</button>}</Card>;
 }
 
-/* ------------------------------------------------------ Business panel ---- */
-function BusinessPanel({ biz }) {
-  const oeeBase = biz.oee_baseline ?? 0.712;
-  const oeeTarget = biz.oee_target ?? 0.855;
-  const prevented = biz.events_prevented || 0;
-  const net = biz.net_value || 0;
-  return (
-    <section className="panel">
-      <div className="panel-head"><h2>Business Value</h2>
-        <span className="count">illustrative · editable in config</span></div>
-      <div className="panel-body">
-        <div className="biz">
-          <div className="stat pos">
-            <div className="l">Recovered value</div>
-            <div className="v"><Count value={biz.recovered_value || 0} money /></div>
-            <div className="s">{prevented} event{prevented === 1 ? "" : "s"} prevented</div>
-          </div>
-          <div className={"stat " + (net >= 0 ? "pos" : "neg")}>
-            <div className="l">Net impact</div>
-            <div className="v"><Count value={net} money signed /></div>
-            <div className="s">{biz.events_failed ? `${biz.events_failed} unplanned loss` : "no losses"}</div>
-          </div>
-          <div className="stat accent">
-            <div className="l">Per-event upside</div>
-            <div className="v">{money0(biz.recovered_per_event || 0)}</div>
-            <div className="s">planned vs unplanned swap</div>
-          </div>
-          <div className="stat">
-            <div className="l">Fleet projection</div>
-            <div className="v">{money0(biz.fleet_projection || 0)}</div>
-            <div className="s">across {biz.fleet_lines || 7} lines</div>
-          </div>
-        </div>
-        <div style={{ marginTop: 14 }}>
-          <div className="l" style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.7, color: "#5f6d8f", fontWeight: 600 }}>
-            Line OEE
-          </div>
-          <div className="oee">
-            <div className="oee-bar">
-              <div className="oee-fill" style={{ width: `${(prevented ? oeeBase + 0.031 : oeeBase) * 100}%` }} />
-            </div>
-            <div className="oee-nums">
-              {pct(oeeBase)} → <b>{pct(prevented ? Math.min(oeeTarget, oeeBase + 0.031) : oeeBase)}</b>
-              <span style={{ color: "#5f6d8f" }}> (target {pct(oeeTarget)})</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-  );
+function AgentCard({ view, lifecycle, provenance }) {
+  const runs = view.agent_runs || [], run = runs[runs.length - 1], assessments = run?.assessments || [], delegations = run?.delegations || [], baseline = (view.agent_actions || []).filter((item) => item.actor === "operon.investigation");
+  return <Card title="Strands agent activity" icon="✦" meta={run ? `${run.status} · ${run.tool_calls} tool calls` : "awaiting reasoning runtime"}><div className="agent-boundary"><span>Advisory reasoning</span><i>cannot transition lifecycle</i></div>{run ? <><div className="run-strip"><span><small>Run ID</small><CopyId value={run.run_id} /></span><span><small>Stage</small><b>{run.stage}</b></span><span><small>Backend</small><b>{run.runtime_identity?.backend || provenance?.backend || "local"}</b></span></div>{run.summary && <p className="run-summary">{run.summary}</p>}<div className="agent-list"><AgentLine name="Reliability Supervisor" role="supervisor" status={run.status} text={run.disposition} />{delegations.map((item) => <AgentLine key={item.key} name={roleName(item.role)} role={item.role} status={item.status} text={item.question} />)}{assessments.filter((item) => !delegations.some((d) => d.key === item.key)).map((item) => <AgentLine key={item.key} name={roleName(inferRole(item.assessment))} role={inferRole(item.assessment)} status="SUCCEEDED" text={item.assessment.reasoning_summary} />)}</div>{run.blockers?.length > 0 && <ul className="blockers">{run.blockers.map((item) => <li key={item}>{item}</li>)}</ul>}</> : <>{baseline.map((item) => <AgentLine key={item.id} name="Application Investigator" role="system" status={item.status} text={item.summary} />)}<EmptyLine text={lifecycle.supervisor_available ? "Supervisor run will appear here." : "Durable evidence is ready; reasoning runtime is not connected."} /></>}</Card>;
 }
 
-// count-up animated number
-function Count({ value, money: isMoney, signed }) {
-  const [disp, setDisp] = useState(value);
-  const from = useRef(value);
-  useEffect(() => {
-    const start = from.current, end = value, t0 = performance.now(), dur = 650;
-    let raf;
-    const step = (t) => {
-      const k = Math.min(1, (t - t0) / dur);
-      const e = 1 - Math.pow(1 - k, 3);
-      setDisp(start + (end - start) * e);
-      if (k < 1) raf = requestAnimationFrame(step);
-      else from.current = end;
-    };
-    raf = requestAnimationFrame(step);
-    return () => cancelAnimationFrame(raf);
-  }, [value]);
-  const s = (signed && disp > 0 ? "+" : "") + (isMoney ? money0(disp) : Math.round(disp));
-  return <>{s}</>;
+function AgentLine({ name, role, status, text }) { return <div className="agent-line"><span className={`agent-avatar ${role}`}>{role === "supervisor" ? "S" : role?.[0]?.toUpperCase() || "A"}</span><div><b>{name}</b><p>{text || "Structured report recorded"}</p></div><Status value={status}>{status}</Status></div>; }
+
+function InterventionCard({ incident, view }) {
+  const item = view.intervention, binding = view.binding, verdict = [...(view.verdicts || [])].reverse().find((entry) => entry.target_kind === "intervention");
+  return <Card title="Proposed intervention" icon="⌁" meta={item?.status || "not proposed"}>{item ? <><div className="plan-head"><div><small>Typed maintenance action</small><h3>{item.steps[0]?.parameters?.description || item.steps[0]?.capability?.replaceAll("_", " ")}</h3></div><Status value={item.risk}>{item.risk} risk</Status></div><div className="plan-grid"><KV label="Capability" value={item.steps[0]?.capability} /><KV label="Technician" value={binding?.technician_id} /><KV label="Estimated cost" value={money0(item.estimated_cost)} /><KV label="Downtime" value={`${item.estimated_downtime_minutes} min`} /><KV label="Window" value={formatWindow(item.window_start, item.window_end)} /><KV label="Avoided loss" value={money0(item.estimated_avoided_loss)} /></div>{binding?.parts?.length > 0 && <div className="parts"><small>Reserved parts</small>{binding.parts.map((part) => <span key={part.part_id}>{part.quantity}× {part.part_id}</span>)}</div>}{verdict && <Verdict item={verdict} />}</> : <EmptyLine text={incident.lifecycle?.phase === "DIAGNOSIS_VALIDATED" ? "Diagnosis accepted. Maintenance planning is next." : "No intervention has been promoted."} />}</Card>;
 }
 
-/* -------------------------------------------------------------- Toasts ---- */
-// Stable identity for an engine event, so each transition is surfaced only once.
-const eventKey = (ev) => `${ev.kind}:${ev.id}:${ev.phase || ""}`;
-
-// Map an engine event to a user-facing toast — or null to drop it as noise.
-// Alerts (red) are alarms that need attention; notifications (green) are
-// informative outcomes. Anything not informative returns null and never shows.
-function toastFor(ev, name) {
-  switch (ev.kind) {
-    case "alert":
-      // only the moment it crosses the threshold is informative; the later
-      // "ready" phase (proposal populated) is not a new thing to announce.
-      return ev.phase === "analyzing"
-        ? { category: "alert", kind: "bad", msg: `⚠ Alert · ${name(ev.id)} crossed the action threshold` }
-        : null;
-    case "failure":
-      return { category: "alert", kind: "bad", msg: `✕ Unplanned failure · ${name(ev.id)}` };
-    case "resolved":
-      return { category: "notification", kind: "ok", msg: `✓ Notification · work order dispatched for ${name(ev.id)}` };
-    default:
-      return null; // rejected / reset / ready — surfaced elsewhere in the UI, not as a toast
-  }
+function ApprovalCard({ incident, view, approve, reject, pending }) {
+  const phase = incident.lifecycle?.phase, current = [...(view.requirements || [])].reverse()[0], decision = [...(view.approval_decisions || [])].reverse()[0], canApprove = phase === "AWAITING_APPROVAL" && incident.lifecycle?.requirement_id;
+  if (!current && !canApprove) return <Card title="Governance & approval" icon="◇" meta="application gate"><EmptyLine text="No approval requirement has been issued." /></Card>;
+  return <Card title="Governance & approval" icon="◇" meta={current?.policy_version || "policy evaluated"} accent={canApprove ? "approval" : ""}><div className="governance-result"><span className="shield-small">◆</span><div><small>Application policy result</small><b>{canApprove ? "Human approval required" : current?.status || "Evaluated"}</b><p>{(current?.conditions || []).join(" · ") || "Exact promoted work package binding enforced."}</p></div></div>{current && <div className="binding-strip"><span>Bound to</span><CopyId value={current.intervention_id} short /><span>hash</span><CopyId value={current.intervention_hash} short /></div>}{canApprove && <div className="approval-actions"><button disabled={!!pending} onClick={() => approve(incident)}>Approve exact plan & dispatch</button><button disabled={!!pending} className="reject" onClick={() => reject(incident)}>Reject</button></div>}{decision && <div className={`decision ${decision.decision.toLowerCase()}`}><b>{decision.decision}</b><span>{decision.actor_role} · {decision.actor_id}</span><small>bound to the viewed intervention hash</small></div>}</Card>;
 }
 
-function Toasts({ lastEvent, fleet }) {
-  const [toasts, setToasts] = useState([]);
-  const seq = useRef(0);
-  const seen = useRef(new Set());   // event keys already surfaced — the dedupe queue
-  const timers = useRef([]);
-  const fleetRef = useRef(fleet);   // latest fleet for name lookups, WITHOUT re-running on every tick
-  fleetRef.current = fleet;
-
-  // cancel any pending removal timers on unmount
-  useEffect(() => () => timers.current.forEach(clearTimeout), []);
-
-  useEffect(() => {
-    // a reset clears lastEvent → forget history so a fresh run can alert again
-    if (!lastEvent) { seen.current.clear(); return; }
-    const key = eventKey(lastEvent);
-    if (seen.current.has(key)) return;                 // already shown once — dedupe
-    const name = (id) => fleetRef.current.find((a) => a.equipment_id === id)?.name || id;
-    const t = toastFor(lastEvent, name);
-    if (!t) return;                                    // not informative — drop
-    seen.current.add(key);
-    const id = ++seq.current;
-    // keep only the 3 most recent so the stack can never wall off the layout
-    setToasts((list) => [...list, { id, ...t }].slice(-3));
-    const to = setTimeout(() => setToasts((list) => list.filter((x) => x.id !== id)), 3600);
-    timers.current.push(to);
-  }, [lastEvent]);                                     // NB: not `fleet` — that fired every tick
-
-  return (
-    <div className="toast-wrap">
-      <AnimatePresence>
-        {toasts.map((t) => (
-          <motion.div key={t.id} className={`toast ${t.kind}`}
-            initial={{ opacity: 0, y: 20, scale: 0.9 }} animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.9 }}>{t.msg}</motion.div>
-        ))}
-      </AnimatePresence>
-    </div>
-  );
+function OutcomeCard({ incident, view }) {
+  const receipts = view.execution_receipts || [], receipt = receipts[receipts.length - 1], plans = view.observation_plans || [], plan = plans[plans.length - 1], outcomes = view.outcomes || [], outcome = outcomes[outcomes.length - 1], phase = incident.lifecycle?.phase;
+  return <Card title="Execution & outcome" icon="◉" meta="deterministic verification"><div className="outcome-flow"><div className={receipt ? "done" : ""}><i>{receipt ? "✓" : "1"}</i><span><b>Execution</b><small>{receipt?.status || "not dispatched"}</small></span></div><em>→</em><div className={plan ? "active" : ""}><i>{plan ? "◌" : "2"}</i><span><b>Observe</b><small>{plan ? "post-maintenance telemetry" : "not started"}</small></span></div><em>→</em><div className={outcome ? "done" : ""}><i>{outcome ? "✓" : "3"}</i><span><b>Verify</b><small>{outcome?.result || "not established"}</small></span></div></div>{receipt && <div className="receipt"><span><small>Execution receipt</small><CopyId value={receipt.id} /></span><Status value={receipt.status}>{receipt.status}</Status><p>{Object.entries(receipt.external_ids || {}).map(([key, value]) => `${key}: ${value}`).join(" · ") || receipt.adapter}</p></div>}{phase === "OBSERVING" && !outcome && <div className="observing-callout"><span className="pulse-ring" /><div><b>Execution confirmed — recovery not yet established</b><p>Operon is evaluating telemetry after the frozen observation boundary.</p></div></div>}{outcome && <div className={`outcome-result ${tone(outcome.result)}`}><b>{outcome.result.replaceAll("_", " ")}</b><p>{outcome.reason}</p><div>{Object.entries(outcome.before_metrics || {}).slice(0, 3).map(([key, value]) => <span key={`b-${key}`}>{key}: {Number(value).toFixed(2)} before</span>)}{Object.entries(outcome.after_metrics || {}).slice(0, 3).map(([key, value]) => <span key={`a-${key}`}>{key}: {Number(value).toFixed(2)} after</span>)}</div></div>}{!receipt && <EmptyLine text="No governed execution receipt exists." />}</Card>;
 }
+
+function EventCard({ events }) { return <Card title="Application activity" icon="⋮" meta={`${events.length} committed events`}><div className="event-list">{[...events].reverse().slice(0, 8).map((event) => <div key={event.id}><i className={tone(event.event_type)} /><span><b>{event.event_type.replaceAll("_", " ")}</b><small>revision {event.revision} · {relativeTime(event.created_at)}</small></span></div>)}</div></Card>; }
+function EmptyCommand({ threshold }) { return <div className="empty-command"><ShieldMark /><h2>Operon is monitoring the factory</h2><p>A predictive signal at {pct(threshold)} opens a durable incident. Every step after that is evidence-bound and independently governed.</p><Invariant /><div className="empty-pipeline">Telemetry → predictive signal → incident → investigation → human-governed action → observed outcome</div></div>; }
+function Panel({ title, meta, children }) { return <section className="panel"><div className="panel-title"><h2>{title}</h2><span>{meta}</span></div>{children}</section>; }
+function Card({ title, icon, meta, accent = "", children }) { return <section className={`detail-card ${accent}`}><div className="card-title"><span>{icon}</span><h2>{title}</h2><small>{meta}</small></div>{children}</section>; }
+function Status({ value, children }) { return <span className={`status ${tone(value)}`}>{children}</span>; }
+function KV({ label, value }) { return <div className="kv"><small>{label}</small><b>{value || "Not recorded"}</b></div>; }
+function EmptyLine({ text }) { return <div className="empty-line"><i />{text}</div>; }
+function CopyId({ value, short = false }) { if (!value) return <span>—</span>; return <code title={value}>{short ? `${value.slice(0, 7)}…` : value.length > 22 ? `${value.slice(0, 12)}…${value.slice(-5)}` : value}</code>; }
+function Verdict({ item }) { return <div className={`verdict ${tone(item.decision)}`}><b>{item.decision === "ACCEPT" ? "✓ Critic + application validation passed" : item.decision}</b>{(item.blocking_issues || []).length > 0 && <p>{item.blocking_issues.join(" · ")}</p>}<small>{item.validation_policy_version || "validation policy"}</small></div>; }
+function tone(value = "") { const v = String(value).toUpperCase(); if (["HEALTHY", "CLOSED", "CONFIRMED", "ACCEPT", "APPROVE", "APPROVED", "SUCCEEDED", "VERIFIED_RECOVERY", "READY"].includes(v)) return "good"; if (["WARNING", "AWAITING_APPROVAL", "AWAITING_EVIDENCE", "OBSERVING", "PENDING", "CONDITIONS", "SIGNAL"].includes(v)) return "warn"; if (["CRITICAL", "ESCALATED", "EXECUTION_FAILED", "FAILED", "REJECT", "REJECTED", "REGRESSED", "NOT_RECOVERED", "ERROR"].includes(v)) return "bad"; if (v.includes("CLOSED") || v.includes("OUTCOME_RECORDED")) return "good"; if (v.includes("EXECUTION") || v.includes("APPROVAL")) return "warn"; return "info"; }
+function roleName(role) { return ({ diagnostic: "Diagnostic Specialist", engineering: "Engineering Specialist", operations: "Operations Specialist", critic: "Critic / Validator", planner: "Maintenance Planner", supervisor: "Reliability Supervisor" })[role] || "Specialist"; }
+function inferRole(value = {}) { if ("competing_hypotheses" in value) return "diagnostic"; if ("intervention_feasibility" in value) return "engineering"; if ("resource_feasibility" in value) return "operations"; if ("recommendation" in value) return "critic"; if ("proposed_steps" in value) return "planner"; return "agent"; }
+function formatWindow(start, end) { if (!start) return null; const fmt = (v) => new Date(v).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); return `${fmt(start)} – ${fmt(end)}`; }
+function relativeTime(value) { return value ? new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : ""; }

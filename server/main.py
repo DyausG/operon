@@ -75,6 +75,12 @@ class DraftSubmission(BaseModel):
     binding: dict
 
 
+class DemoScenarioCommand(BaseModel):
+    """Explicit local simulator scenario; never accepted as lifecycle authority."""
+    model_config = ConfigDict(extra="forbid")
+    equipment_id: str = "AC-COMP-01"
+
+
 def _status(result: dict, *, refused=409):
     return JSONResponse(result, status_code=200 if result.get("ok") else refused)
 
@@ -213,6 +219,12 @@ async def draft(incident_id: str, submission: DraftSubmission):
 async def reset():
     await engine.reset()
     return {"ok": True}
+
+
+@app.post("/api/demo/scenario")
+async def guided_demo(command: DemoScenarioCommand):
+    """Start the typed offline recording flow and stop at exact human approval."""
+    return _status(await engine.start_guided_demo(command.equipment_id), refused=400)
 
 
 # ---- WebSocket -----------------------------------------------------------
