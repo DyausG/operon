@@ -148,7 +148,6 @@ export default function App() {
       <main className="workspace">
         <aside className="overview-stack">
           <FleetPanel fleet={state.fleet} selected={focusEquipmentId} onSelect={handleSelectAsset} />
-          <RiskChart state={state} focusId={focusEquipmentId} />
         </aside>
         <section className="command-stack">
           <SessionPipeline
@@ -644,10 +643,61 @@ function Spark({ point, status }) {
   );
 }
 
-function RiskChart({ state, focusId }) {
-  const ids = useMemo(() => { const value = new Set(state.fleet.filter((a) => a.status !== "HEALTHY").map((a) => a.equipment_id)); if (focusId) value.add(focusId); return [...value].slice(0, 6); }, [state.fleet, focusId]);
-  const data = useMemo(() => { const times = new Map(); ids.forEach((id) => (state.histories[id] || []).forEach((point) => { if (!times.has(point.t)) times.set(point.t, { t: point.t }); times.get(point.t)[id] = point.prob; })); return [...times.values()].sort((a, b) => a.t - b.t).slice(-70); }, [ids, state.histories]);
-  return <Panel title="Predictive signal" meta={`action gate ${pct(state.triggerThreshold)}`}><div className="risk-chart"><ResponsiveContainer><LineChart data={data} margin={{ top: 8, right: 8, left: -22, bottom: 0 }}><CartesianGrid vertical={false} stroke="rgba(139,158,191,.09)" /><ReferenceArea y1={state.triggerThreshold} y2={1} fill="rgba(255,93,115,.06)" /><XAxis dataKey="t" tick={{ fill: "#67748b", fontSize: 10 }} axisLine={false} tickLine={false} minTickGap={28} /><YAxis domain={[0, 1]} tickFormatter={(v) => Math.round(v * 100)} tick={{ fill: "#67748b", fontSize: 10 }} axisLine={false} tickLine={false} /><ReferenceLine y={state.triggerThreshold} stroke="#ff5d73" strokeDasharray="4 4" /><Tooltip formatter={(value) => pct(value)} contentStyle={{ background: "#101722", border: "1px solid #2a3547", borderRadius: 8 }} />{ids.map((id, i) => <Line key={id} dataKey={id} type="monotone" stroke={SERIES[i]} strokeWidth={focusId === id ? 2.4 : 1.4} strokeOpacity={focusId && focusId !== id ? .3 : 1} dot={false} connectNulls isAnimationActive={false} />)}</LineChart></ResponsiveContainer></div><div className="chart-legend">{ids.map((id, i) => <span key={id}><i style={{ background: SERIES[i] }} />{id}</span>)}</div></Panel>;
+function RiskChart({ state, focusId, title = "Predictive Anomaly Signal", meta }) {
+  const ids = useMemo(() => {
+    const value = new Set(state.fleet.filter((a) => a.status !== "HEALTHY").map((a) => a.equipment_id));
+    if (focusId) value.add(focusId);
+    return [...value].slice(0, 6);
+  }, [state.fleet, focusId]);
+
+  const data = useMemo(() => {
+    const times = new Map();
+    ids.forEach((id) => (state.histories[id] || []).forEach((point) => {
+      if (!times.has(point.t)) times.set(point.t, { t: point.t });
+      times.get(point.t)[id] = point.prob;
+    }));
+    return [...times.values()].sort((a, b) => a.t - b.t).slice(-70);
+  }, [ids, state.histories]);
+
+  const metaText = meta || `Action gate: ${pct(state.triggerThreshold)}`;
+
+  return (
+    <Card title={title} icon="📈" meta={metaText}>
+      <div className="risk-chart">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={data} margin={{ top: 8, right: 12, left: -22, bottom: 0 }}>
+            <CartesianGrid vertical={false} stroke="rgba(139,158,191,.09)" />
+            <ReferenceArea y1={state.triggerThreshold} y2={1} fill="rgba(255,93,115,.06)" />
+            <XAxis dataKey="t" tick={{ fill: "#67748b", fontSize: 10 }} axisLine={false} tickLine={false} minTickGap={28} />
+            <YAxis domain={[0, 1]} tickFormatter={(v) => Math.round(v * 100)} tick={{ fill: "#67748b", fontSize: 10 }} axisLine={false} tickLine={false} />
+            <ReferenceLine y={state.triggerThreshold} stroke="#ff5d73" strokeDasharray="4 4" />
+            <Tooltip formatter={(value) => pct(value)} contentStyle={{ background: "#101722", border: "1px solid #2a3547", borderRadius: 8 }} />
+            {ids.map((id, i) => (
+              <Line
+                key={id}
+                dataKey={id}
+                type="monotone"
+                stroke={SERIES[i % SERIES.length]}
+                strokeWidth={focusId === id ? 2.4 : 1.4}
+                strokeOpacity={focusId && focusId !== id ? 0.35 : 1}
+                dot={false}
+                connectNulls
+                isAnimationActive={false}
+              />
+            ))}
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+      <div className="chart-legend">
+        {ids.map((id, i) => (
+          <span key={id} className={focusId === id ? "active-series" : ""}>
+            <i style={{ background: SERIES[i % SERIES.length] }} />
+            {id}
+          </span>
+        ))}
+      </div>
+    </Card>
+  );
 }
 
 const ASSET_SENSORS = {
@@ -975,11 +1025,44 @@ function AssetNominalCommand({ asset, state, onSimulate }) {
 
 function IncidentCommand({ incident, state, approve, reject }) {
   const lifecycle = incident.lifecycle || {}, view = lifecycle.read_model || {}, phase = lifecycle.phase || "OPEN";
-  return <motion.div key={incident.incident_id} className="incident-command" initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }}>
-    <div className="incident-hero"><div><span className="eyebrow">Incident command center</span><h1>{incident.equipment_name}</h1><p><CopyId value={incident.incident_id} /> · {incident.equipment_id} · revision {lifecycle.revision}</p></div><div className="hero-risk"><small>24h failure risk</small><b>{pct(incident.failure_prob)}</b><span>{incident.predicted_mode_label || "Predictive anomaly"}</span></div><Status value={phase}>{phase.replaceAll("_", " ")}</Status></div>
-    <Lifecycle phase={phase} events={view.events || []} /><Invariant />
-    <div className="command-grid"><div className="command-column"><DiagnosisCard incident={incident} view={view} /><EvidenceCard evidence={view.evidence || []} /><AgentCard view={view} lifecycle={lifecycle} provenance={state.reasoningProvenance} /></div><div className="command-column"><InterventionCard incident={incident} view={view} /><ApprovalCard incident={incident} view={view} approve={approve} reject={reject} pending={state.action.pending} /><OutcomeCard incident={incident} view={view} /><EventCard events={view.events || []} /></div></div>
-  </motion.div>;
+  return (
+    <motion.div key={incident.incident_id} className="incident-command" initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }}>
+      <div className="incident-hero">
+        <div>
+          <span className="eyebrow">Autonomous Incident Command</span>
+          <h1>{incident.equipment_name} <span className="hero-eid">({incident.equipment_id})</span></h1>
+          <p><CopyId value={incident.incident_id} /> · {incident.equipment_id} · revision {lifecycle.revision}</p>
+        </div>
+        <div className="hero-risk">
+          <small>24h failure risk</small>
+          <b>{pct(incident.failure_prob)}</b>
+          <span>{incident.predicted_mode_label || "Predictive anomaly"}</span>
+        </div>
+        <Status value={phase}>{phase.replaceAll("_", " ")}</Status>
+      </div>
+
+      <Lifecycle phase={phase} events={view.events || []} />
+      <Invariant />
+
+      <div className="command-grid">
+        {/* Left Column: Agent Investigation & Evidence (The "Why") */}
+        <div className="command-column">
+          <DiagnosisCard incident={incident} view={view} />
+          <RiskChart state={state} focusId={incident.equipment_id} title="Telemetry & Anomaly Signal Curve" />
+          <AgentCard view={view} lifecycle={lifecycle} provenance={state.reasoningProvenance} />
+          <EvidenceCard evidence={view.evidence || []} />
+        </div>
+
+        {/* Right Column: Action & Human-in-the-Loop Governance (The "What to Do") */}
+        <div className="command-column">
+          <InterventionCard incident={incident} view={view} />
+          <ApprovalCard incident={incident} view={view} approve={approve} reject={reject} pending={state.action.pending} />
+          <OutcomeCard incident={incident} view={view} />
+          <EventCard events={view.events || []} />
+        </div>
+      </div>
+    </motion.div>
+  );
 }
 
 function Lifecycle({ phase, events }) {
