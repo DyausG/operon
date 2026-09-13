@@ -396,22 +396,86 @@ function ImpactBar({ state, alerts }) {
   );
 }
 
-function FleetPanel({ fleet, selected, onSelect }) {
-  const sorted = [...fleet].sort((a, b) => (STATUS_ORDER[a.status] - STATUS_ORDER[b.status]) || b.failure_prob - a.failure_prob);
-  return <Panel title="Factory overview" meta="8-machine simulated floor"><div className="fleet-grid">{sorted.map((asset) => <AssetCard key={asset.equipment_id} asset={asset} selected={selected === asset.equipment_id} onClick={() => onSelect(asset.equipment_id)} />)}</div></Panel>;
+const EQUIPMENT_MODES = {
+  "AC-COMP-01": "Discharge Pressure Anomaly",
+  "CONV-02": "Drive Motor Thermal Overload",
+  "COOL-PMP-09": "Impeller Cavitation / Seal",
+  "PRESS-08": "Hydraulic Overpressure",
+  "WELD-ROB-03": "Servo Backlash Drift",
+  "CNC-MILL-04": "Spindle Bearing Wear",
+  "HYD-PUMP-02": "Fluid Aeration / Cavitation",
+  "GRIND-05": "Wheel Unbalance / Runout",
+};
+
+function assetContextMode(asset) {
+  if (asset.status === "HEALTHY" || asset.status === "NOMINAL" || asset.failure_prob < 0.15) {
+    return "Nominal envelope";
+  }
+  if (asset.predicted_mode && asset.predicted_mode !== "NONE" && asset.predicted_mode !== "FM-TWF" && asset.predicted_mode_label !== "Tool Wear Failure") {
+    return asset.predicted_mode_label;
+  }
+  return EQUIPMENT_MODES[asset.equipment_id] || asset.name || "Elevated anomaly";
 }
 
-function AssetCard({ asset, selected, onClick }) {
-  return <button className={`asset-card ${asset.status.toLowerCase()} ${selected ? "selected" : ""}`} onClick={onClick}>
-    <div className="asset-top"><span className="asset-icon"><ClassIcon cls={asset.equipment_class} /></span><span className="asset-name"><b>{asset.equipment_id}</b><small>{asset.name}</small></span><Status value={asset.status}>{asset.status}</Status></div>
-    <div className="risk-row"><b>{pct(asset.failure_prob)}</b><span>24h risk</span></div><div className="asset-mode">{asset.predicted_mode && asset.predicted_mode !== "NONE" ? asset.predicted_mode_label : "Nominal signature"}</div><Spark point={asset.point} status={asset.status} />
-  </button>;
+function FleetPanel({ fleet, selected, onSelect }) {
+  const sorted = [...fleet].sort((a, b) => (STATUS_ORDER[a.status] - STATUS_ORDER[b.status]) || b.failure_prob - a.failure_prob);
+  return (
+    <Panel title="Fleet Assets" meta={`${fleet.length || 8} Monitored`}>
+      <div className="fleet-list">
+        {sorted.map((asset) => (
+          <AssetRow
+            key={asset.equipment_id}
+            asset={asset}
+            selected={selected === asset.equipment_id}
+            onClick={() => onSelect(asset.equipment_id)}
+          />
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+function AssetRow({ asset, selected, onClick }) {
+  return (
+    <button
+      className={`asset-row ${asset.status.toLowerCase()} ${selected ? "selected" : ""}`}
+      onClick={onClick}
+      title={`${asset.equipment_id} (${asset.name}) — ${asset.status}`}
+    >
+      <div className="asset-row-left">
+        <span className={`status-indicator-dot ${tone(asset.status)}`} />
+        <div className="asset-id-col">
+          <span className="asset-id">{asset.equipment_id}</span>
+          <span className="asset-sub">{assetContextMode(asset)}</span>
+        </div>
+      </div>
+      <div className="asset-row-right">
+        <div className="asset-risk-col">
+          <b className={`asset-risk-val ${tone(asset.status)}`}>{pct(asset.failure_prob)}</b>
+          <span className="asset-risk-label">24h risk</span>
+        </div>
+        <div className="asset-spark-col">
+          <Spark point={asset.point} status={asset.status} />
+        </div>
+      </div>
+    </button>
+  );
 }
 
 function Spark({ point, status }) {
-  const history = useRef([]); if (point) history.current = [...history.current, point.prob].slice(-26);
-  const color = { CRITICAL: "#ff5d73", WARNING: "#f6b94a", SCHEDULED: "#67a5ff", HEALTHY: "#31d6a0", DOWN: "#7b849a" }[status];
-  return <div className="spark"><ResponsiveContainer><AreaChart data={history.current.map((p, i) => ({ i, p }))}><YAxis hide domain={[0, 1]} /><Area dataKey="p" type="monotone" stroke={color} fill={color} fillOpacity={0.08} strokeWidth={1.5} dot={false} isAnimationActive={false} /></AreaChart></ResponsiveContainer></div>;
+  const history = useRef([]);
+  if (point) history.current = [...history.current, point.prob].slice(-26);
+  const color = { CRITICAL: "#ff5d73", WARNING: "#f6b94a", SCHEDULED: "#67a5ff", HEALTHY: "#31d6a0", DOWN: "#7b849a" }[status] || "#31d6a0";
+  return (
+    <div className="spark-wrapper">
+      <ResponsiveContainer width="100%" height="100%">
+        <AreaChart data={history.current.map((p, i) => ({ i, p }))} margin={{ top: 1, right: 0, bottom: 1, left: 0 }}>
+          <YAxis hide domain={[0, 1]} />
+          <Area dataKey="p" type="monotone" stroke={color} fill={color} fillOpacity={0.12} strokeWidth={1.5} dot={false} isAnimationActive={false} />
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
+  );
 }
 
 function RiskChart({ state, focusId }) {
