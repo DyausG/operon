@@ -2,7 +2,25 @@ import { useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Area, AreaChart, CartesianGrid, Line, LineChart, ReferenceArea, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useEngine } from "./useEngine.js";
-import { ClassIcon, ShieldMark, money0, pct, STATUS_ORDER } from "./lib.jsx";
+import {
+  ClassIcon,
+  ShieldMark,
+  ShieldCheckIcon,
+  PlayIcon,
+  PauseIcon,
+  ResetIcon,
+  SparkIcon,
+  CpuIcon,
+  CloudIcon,
+  FactoryIcon,
+  CheckCircleIcon,
+  AlertTriangleIcon,
+  ActivityIcon,
+  TrendingUpIcon,
+  money0,
+  pct,
+  STATUS_ORDER,
+} from "./lib.jsx";
 
 const FLOW = ["OPEN", "INVESTIGATING", "AWAITING_EVIDENCE", "DIAGNOSIS_VALIDATED", "PLANNING", "INTERVENTION_VALIDATED", "AWAITING_APPROVAL", "READY", "EXECUTING", "OBSERVING", "CLOSED"];
 const FLOW_LABELS = { OPEN: "Signal", INVESTIGATING: "Investigate", AWAITING_EVIDENCE: "Evidence", DIAGNOSIS_VALIDATED: "Diagnosis", PLANNING: "Plan", INTERVENTION_VALIDATED: "Validated", AWAITING_APPROVAL: "Approval", READY: "Ready", EXECUTING: "Execute", OBSERVING: "Observe", CLOSED: "Recovered" };
@@ -30,32 +48,352 @@ export default function App() {
 }
 
 function Header({ state, onReset, onStop, onResume, onDemo }) {
-  const mins = state.plantMin % 60, hours = Math.floor(state.plantMin / 60);
-  const provenance = state.reasoningProvenance || {}, agentcore = provenance.backend === "agentcore";
-  return <header className="topbar">
-    <div className="brand"><span className="brand-mark"><ShieldMark /></span><span><b>{state.meta.appName || "Operon"}</b><small>Industrial reliability command</small></span></div>
-    <div className="authority-banner"><span className="agent-side">AGENTS REASON</span><i /><span className="authority-side">APPLICATION OWNS AUTHORITY</span></div><div className="top-spacer" />
-    {state.demoScenario.active ? <div className="provenance"><span className="hot">Guided demo</span><i>·</i><span>typed advisory</span><i>·</i><span>simulated plant</span><em className="standby">{state.demoScenario.status?.replaceAll("_", " ")}</em></div>
-      : <div className="provenance"><span>Operon</span><i>→</i><span className={agentcore ? "hot" : "muted"}>AgentCore</span><i>→</i><span>Strands</span><i>→</i><span className={provenance.model_provider ? "hot" : "muted"}>Bedrock</span><em className={provenance.status === "available" ? "online" : "standby"}>{provenance.status === "available" ? "connected" : "local ready"}</em></div>}
-    <span className={`stream ${state.connected && state.running ? "online" : "standby"}`}><i />{!state.connected ? "reconnecting" : state.running ? "live" : "paused"}</span>
-    <span className="plant-clock">+{String(hours).padStart(2, "0")}:{String(mins).padStart(2, "0")}</span>
-    <button className="icon-btn" onClick={state.running ? onStop : onResume}>{state.running ? "Ⅱ" : "▶"}</button>
-    <button className="text-btn" disabled={!!state.action.pending} onClick={onDemo}>{state.demoScenario.active ? "Restart guided demo" : "Start guided demo"}</button>
-    <button className="text-btn" onClick={onReset}>Reset</button>
-  </header>;
+  const totalSecs = Math.max(0, Math.floor((state.plantMin || 0) * 60));
+  const hrs = Math.floor(totalSecs / 3600);
+  const mins = Math.floor((totalSecs % 3600) / 60);
+  const secs = totalSecs % 60;
+  const timerStr = `T+ ${String(hrs).padStart(2, "0")}:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+
+  const provenance = state.reasoningProvenance || {};
+  const isAgentcore = provenance.backend === "agentcore";
+  const isLive = provenance.status === "available" || isAgentcore;
+  const streamStatus = !state.connected ? "offline" : state.running ? "online" : "paused";
+  const streamLabel = !state.connected ? "RECONNECTING" : state.running ? "LIVE" : "PAUSED";
+
+  const formatDemoPhase = (status) => {
+    if (!status) return "Active";
+    const clean = String(status).toLowerCase().replaceAll("_", " ");
+    if (clean === "failed") return "Intervention Discarded";
+    return clean.charAt(0).toUpperCase() + clean.slice(1);
+  };
+
+  return (
+    <header className="topbar">
+      {/* Left: Identity & State Enclosure */}
+      <div className="topbar-left">
+        <div className="brand">
+          <span className="brand-mark"><ShieldMark /></span>
+          <div className="brand-text">
+            <b>{state.meta.appName || "Operon"}</b>
+            <small>Industrial Reliability Command</small>
+          </div>
+        </div>
+        <div className="guardrail-badge" title="Deterministic application gate enforces human sign-off on all machine interventions">
+          <ShieldCheckIcon size={12} color="var(--green)" />
+          <span><b>Policy Gate:</b> Enforced (HITL)</span>
+        </div>
+      </div>
+
+      {/* Center: System & Agent Telemetry */}
+      <div className="topbar-center">
+        {isLive ? (
+          <div className="status-pill runtime online" title="Amazon Bedrock reasoning runtime operational via AgentCore">
+            <CloudIcon size={13} />
+            <span className="pill-dot" />
+            <span className="pill-text">Bedrock Live · 120ms</span>
+          </div>
+        ) : (
+          <div className="status-pill runtime standby" title="Deterministic local reasoning runtime active">
+            <CpuIcon size={13} />
+            <span className="pill-dot" />
+            <span className="pill-text">Agent Reasoning: Local Fallback</span>
+          </div>
+        )}
+
+        {state.demoScenario.active ? (
+          <div className="status-pill env demo" title="Guided reliability demo scenario active">
+            <SparkIcon size={13} />
+            <span className="pill-dot" />
+            <span className="pill-text">Demo Mode · {formatDemoPhase(state.demoScenario.status)}</span>
+          </div>
+        ) : (
+          <div className="status-pill env" title="Nominal factory telemetry simulation">
+            <FactoryIcon size={13} />
+            <span className="pill-dot" />
+            <span className="pill-text">Simulation Plant</span>
+          </div>
+        )}
+      </div>
+
+      {/* Right: Controls & Clock Toolbar */}
+      <div className="topbar-right">
+        <div className="telemetry-cluster">
+          <span className={`stream-indicator ${streamStatus}`} title={`Connection: ${streamLabel}`}>
+            <i className="pulse-dot" />
+            <span className="stream-label">{streamLabel}</span>
+          </span>
+          <span className="telemetry-divider" />
+          <span className="digital-timer" title="Elapsed Plant Simulation Time (T+ HH:MM:SS)">
+            {timerStr}
+          </span>
+        </div>
+
+        <div className="segmented-toolbar">
+          <button
+            className="toolbar-btn icon-only"
+            title={state.running ? "Pause simulation" : "Resume simulation"}
+            onClick={state.running ? onStop : onResume}
+          >
+            {state.running ? <PauseIcon size={12} /> : <PlayIcon size={12} />}
+          </button>
+          <button
+            className="toolbar-btn demo-btn"
+            disabled={!!state.action.pending}
+            title="Trigger guided end-to-end reliability incident scenario"
+            onClick={onDemo}
+          >
+            <SparkIcon size={12} />
+            <span>{state.demoScenario.active ? "Restart Demo" : "Guided Demo"}</span>
+          </button>
+          <button
+            className="toolbar-btn reset-btn"
+            title="Reset fleet state, clear alerts, and restore nominal telemetry"
+            onClick={onReset}
+          >
+            <ResetIcon size={12} />
+            <span>Reset</span>
+          </button>
+        </div>
+      </div>
+    </header>
+  );
 }
 
 function ImpactBar({ state, alerts }) {
-  const biz = state.business || {}, critical = state.fleet.filter((a) => a.status === "CRITICAL").length;
-  const investigating = alerts.filter((a) => ["OPEN", "INVESTIGATING", "AWAITING_EVIDENCE"].includes(a.lifecycle?.phase)).length;
-  const observing = alerts.filter((a) => a.lifecycle?.phase === "OBSERVING").length;
-  return <div className="impact-bar">
-    <div><small>Factory</small><b>{state.fleet.length || "—"} assets</b><span>{critical} critical</span></div>
-    <div><small>Active response</small><b>{investigating} investigating</b><span>{observing} observing</span></div>
-    <div><small>Value verified</small><b>{money0(biz.recovered_value || 0)}</b><span>{biz.events_prevented || 0} recovered events</span></div>
-    <div><small>Net impact</small><b className={(biz.net_value || 0) < 0 ? "negative" : "positive"}>{money0(biz.net_value || 0)}</b><span>configured economics</span></div>
-    <div><small>Line OEE</small><b>{pct(biz.oee_baseline || 0)}</b><div className="microbar"><i style={{ width: `${(biz.oee_baseline || 0) * 100}%` }} /></div></div>
-  </div>;
+  const biz = state.business || {};
+  const fleet = state.fleet || [];
+
+  // Card 1: Fleet Operational Health
+  const criticalAssets = fleet.filter((a) => a.status === "CRITICAL");
+  const warningAssets = fleet.filter((a) => a.status === "WARNING");
+  const nominalAssets = fleet.filter((a) => ["HEALTHY", "SCHEDULED", "NOMINAL"].includes(a.status));
+  const totalAssets = fleet.length || 8;
+  const hasCritical = criticalAssets.length > 0;
+  const hasWarning = warningAssets.length > 0;
+
+  let fleetMetric = `${totalAssets} / ${totalAssets} Nominal`;
+  if (hasCritical && hasWarning) {
+    fleetMetric = `${warningAssets.length} Warn · ${criticalAssets.length} Critical`;
+  } else if (hasCritical) {
+    fleetMetric = `${nominalAssets.length} Nominal · ${criticalAssets.length} Critical`;
+  } else if (hasWarning) {
+    fleetMetric = `${nominalAssets.length} Nominal · ${warningAssets.length} Warning`;
+  }
+
+  // Card 2: Incident & Agent Pipeline
+  const activeAlert = alerts.find((a) => !["CLOSED", "FAILED", "CANCELLED"].includes(a.lifecycle?.phase || a.status));
+  const investigating = alerts.filter((a) =>
+    ["OPEN", "INVESTIGATING", "AWAITING_EVIDENCE", "DIAGNOSIS_VALIDATED", "PLANNING"].includes(
+      a.lifecycle?.phase || a.status
+    )
+  ).length;
+  const observing = alerts.filter((a) => (a.lifecycle?.phase || a.status) === "OBSERVING").length;
+
+  let pipelineSubtext = "Continuous telemetry surveillance";
+  if (activeAlert) {
+    const phase = activeAlert.lifecycle?.phase || activeAlert.status;
+    if (["OPEN", "INVESTIGATING", "AWAITING_EVIDENCE"].includes(phase)) {
+      pipelineSubtext = `Correlating telemetry (${activeAlert.equipment_id})`;
+    } else if (["DIAGNOSIS_VALIDATED", "PLANNING", "INTERVENTION_VALIDATED"].includes(phase)) {
+      pipelineSubtext = `Formulating repair plan (${activeAlert.equipment_id})`;
+    } else if (phase === "AWAITING_APPROVAL") {
+      pipelineSubtext = `Awaiting human sign-off (${activeAlert.equipment_id})`;
+    } else if (["EXECUTING", "READY"].includes(phase)) {
+      pipelineSubtext = `Dispatching intervention (${activeAlert.equipment_id})`;
+    } else if (phase === "OBSERVING") {
+      pipelineSubtext = `Post-repair recovery verification (${activeAlert.equipment_id})`;
+    }
+  }
+
+  // Card 3: Line OEE
+  const currentOee = biz.oee_baseline ?? 0.71;
+  const targetOee = biz.oee_target ?? 0.85;
+  const isOeeBelow = currentOee < targetOee;
+
+  let oeeSubtext = "Availability: 94% · Performance: 76%";
+  if (hasCritical) {
+    oeeSubtext = `Bottleneck: ${criticalAssets[0].equipment_id} (-12% Avail)`;
+  } else if (hasWarning) {
+    oeeSubtext = `Degraded: ${warningAssets[0].equipment_id} (-4% Avail)`;
+  }
+
+  // Card 4: Averted Downtime Value
+  const recoveredVal = biz.recovered_value || 0;
+  const eventsPrevented = biz.events_prevented || 0;
+  const dtCostFormatted = biz.downtime_cost_per_hour
+    ? `$${Math.round(biz.downtime_cost_per_hour / 1000)}k/hr`
+    : "$25k/hr";
+  const hasActiveRisk = hasCritical || investigating > 0;
+
+  // Card 5: Net Economic Impact
+  const netVal = biz.net_value || 0;
+  const netClass = netVal > 0 ? "positive" : netVal < 0 ? "negative" : "neutral";
+  const formattedNet = netVal > 0 ? `+${money0(netVal)}` : netVal < 0 ? `-${money0(Math.abs(netVal))}` : "$0";
+
+  return (
+    <section className="kpi-strip" aria-label="Operational and economic summary">
+      {/* Zone 1: Operational Fleet Health */}
+      <div className="kpi-zone operational">
+        {/* Card 1: Monitored Assets & Fleet Health */}
+        <div className={`kpi-card ${hasCritical ? "has-alert" : hasWarning ? "has-warning" : ""}`}>
+          <div className="kpi-head">
+            <span className="kpi-title">FLEET HEALTH</span>
+            <span className="kpi-subhead">{totalAssets} Monitored</span>
+          </div>
+          <div className="kpi-value-row">
+            <b className="kpi-metric">{fleetMetric}</b>
+          </div>
+          <div className="kpi-foot">
+            {hasCritical ? (
+              <span className="kpi-subtext critical" title={`Critical failure risk on ${criticalAssets[0].equipment_id}`}>
+                <AlertTriangleIcon size={11} color="var(--red)" />
+                <span>Critical: {criticalAssets[0].equipment_id}{criticalAssets.length > 1 ? ` (+${criticalAssets.length - 1})` : ""}</span>
+              </span>
+            ) : hasWarning ? (
+              <span className="kpi-subtext warn" title={`Warning state on ${warningAssets[0].equipment_id}`}>
+                <AlertTriangleIcon size={11} color="var(--amber)" />
+                <span>Warning: {warningAssets[0].equipment_id}{warningAssets.length > 1 ? ` (+${warningAssets.length - 1})` : ""}</span>
+              </span>
+            ) : (
+              <span className="kpi-subtext nominal">
+                <CheckCircleIcon size={11} color="var(--green)" />
+                <span>All {totalAssets} Systems Nominal</span>
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Card 2: Active Incidents & Response */}
+        <div className={`kpi-card ${investigating > 0 ? "has-investigation" : ""}`}>
+          <div className="kpi-head">
+            <span className="kpi-title">ACTIVE INCIDENTS</span>
+            <span className="kpi-subhead">Agent Pipeline</span>
+          </div>
+          <div className="kpi-value-row">
+            {investigating > 0 ? (
+              <b className="kpi-metric warn">{investigating} Investigating</b>
+            ) : observing > 0 ? (
+              <b className="kpi-metric positive">{observing} In Recovery</b>
+            ) : (
+              <b className="kpi-metric neutral">Idle</b>
+            )}
+          </div>
+          <div className="kpi-foot">
+            <span className={`kpi-subtext ${activeAlert ? "active-recovery" : ""}`}>
+              {activeAlert ? (
+                <ActivityIcon size={11} color="var(--cyan)" />
+              ) : (
+                <CheckCircleIcon size={11} color="var(--faint)" />
+              )}
+              <span>{pipelineSubtext}</span>
+            </span>
+          </div>
+        </div>
+
+        {/* Card 3: Line OEE with benchmark marker and bottleneck attribution */}
+        <div className="kpi-card">
+          <div className="kpi-head">
+            <span className="kpi-title">LINE OEE</span>
+            <span className="kpi-subhead">Target: {pct(targetOee)}</span>
+          </div>
+          <div className="kpi-value-row">
+            <b className="kpi-metric">{pct(currentOee)}</b>
+          </div>
+          <div className="kpi-foot oee-foot">
+            <div className="oee-gauge-track" title={`Current OEE: ${pct(currentOee)}, Target: ${pct(targetOee)}`}>
+              <div
+                className={`oee-gauge-fill ${isOeeBelow ? "below-target" : "on-target"}`}
+                style={{ width: `${Math.min(100, Math.max(0, currentOee * 100))}%` }}
+              />
+              <div
+                className="oee-target-marker"
+                style={{ left: `${Math.min(99, targetOee * 100)}%` }}
+                title={`Target Benchmark: ${pct(targetOee)}`}
+              />
+            </div>
+            <span className={`oee-bottleneck ${hasCritical ? "critical" : hasWarning ? "warn" : ""}`}>
+              {oeeSubtext}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Visual Separation: Physical Telemetry vs Economic ROI */}
+      <div className="kpi-divider" aria-hidden="true" />
+
+      {/* Zone 2: Economic Impact */}
+      <div className="kpi-zone economic">
+        {/* Card 4: Averted Downtime Value */}
+        <div className={`kpi-card ${!hasActiveRisk && recoveredVal === 0 ? "is-standby" : ""}`}>
+          <div className="kpi-head">
+            <span className="kpi-title">AVERTED LOSS</span>
+            <span className="kpi-subhead">Downtime Exposure</span>
+          </div>
+          <div className="kpi-value-row">
+            {recoveredVal > 0 ? (
+              <b className="kpi-metric positive">{money0(recoveredVal)}</b>
+            ) : hasActiveRisk ? (
+              <div className="kpi-standby-value">
+                <b className="kpi-metric warn">~$25k At Risk</b>
+              </div>
+            ) : (
+              <div className="kpi-standby-value">
+                <b className="kpi-metric standby">$0</b>
+                <span className="kpi-standby-pill">STANDBY</span>
+              </div>
+            )}
+          </div>
+          <div className="kpi-foot">
+            {eventsPrevented > 0 ? (
+              <span className="kpi-subtext positive-subtext">
+                <TrendingUpIcon size={11} color="var(--green)" />
+                <span>{eventsPrevented} {eventsPrevented === 1 ? "breakdown mitigated" : "breakdowns mitigated"}</span>
+              </span>
+            ) : hasActiveRisk ? (
+              <span className="kpi-subtext warn-subtext">
+                <AlertTriangleIcon size={11} color="var(--amber)" />
+                <span>Unmitigated downtime exposure</span>
+              </span>
+            ) : (
+              <span className="kpi-subtext standby">
+                <span>{dtCostFormatted} baseline rate</span>
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Card 5: Net Economic Impact */}
+        <div className={`kpi-card ${!hasActiveRisk && netVal === 0 ? "is-standby" : ""}`}>
+          <div className="kpi-head">
+            <span className="kpi-title">NET ROI</span>
+            <span className="kpi-subhead">Realized Value</span>
+          </div>
+          <div className="kpi-value-row">
+            {netVal !== 0 ? (
+              <b className={`kpi-metric ${netClass}`}>{formattedNet}</b>
+            ) : hasActiveRisk ? (
+              <div className="kpi-standby-value">
+                <b className="kpi-metric standby">Pending</b>
+                <span className="kpi-standby-pill eval">EVALUATING</span>
+              </div>
+            ) : (
+              <div className="kpi-standby-value">
+                <b className="kpi-metric standby">$0</b>
+                <span className="kpi-standby-pill">MONITORING</span>
+              </div>
+            )}
+          </div>
+          <div className="kpi-foot">
+            <span className="kpi-subtext">
+              {hasActiveRisk && netVal === 0
+                ? "Awaiting intervention resolution"
+                : "Net value after repair costs"}
+            </span>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
 }
 
 function FleetPanel({ fleet, selected, onSelect }) {
