@@ -35,7 +35,7 @@ export default function App() {
 
   const [selectedEquipmentId, setSelectedEquipmentId] = useState(null);
   const [selectedIncidentId, setSelectedIncidentId] = useState(null);
-  const [showHistory, setShowHistory] = useState(false);
+  const [sessionFilter, setSessionFilter] = useState("ACTIVE"); // "ACTIVE" | "PAST" | "NOMINAL"
 
   const activeAlerts = useMemo(
     () => alerts.filter((a) => !["CLOSED", "FAILED", "CANCELLED"].includes(a.lifecycle?.phase || a.status)),
@@ -47,33 +47,81 @@ export default function App() {
     [alerts]
   );
 
-  // Dynamic bidirectional resolution of current incident & machine
-  let currentIncident = null;
-  if (selectedIncidentId) {
-    currentIncident = alerts.find((a) => a.incident_id === selectedIncidentId) || null;
-  }
-  if (!currentIncident && selectedEquipmentId) {
-    currentIncident = alerts.find((a) => a.equipment_id === selectedEquipmentId) || null;
-  }
-  if (!currentIncident) {
-    currentIncident = activeAlerts[0] || (showHistory ? resolvedAlerts[0] : null) || alerts[0] || null;
-  }
+  // Resolved equipment in focus
+  const focusEquipmentId = selectedEquipmentId || activeAlerts[0]?.equipment_id || state.fleet[0]?.equipment_id || "AC-COMP-01";
+  const focusedAsset = state.fleet.find((a) => a.equipment_id === focusEquipmentId) || state.fleet[0] || {
+    equipment_id: focusEquipmentId,
+    name: focusEquipmentId,
+    equipment_class: "compressor",
+    status: "HEALTHY",
+    failure_prob: 0.01,
+  };
 
-  const focusEquipmentId = selectedEquipmentId || currentIncident?.equipment_id || state.fleet[0]?.equipment_id;
+  // Resolve incident based on active view and selection
+  const currentActiveIncident = useMemo(() => {
+    if (selectedIncidentId) {
+      const inc = activeAlerts.find((a) => a.incident_id === selectedIncidentId);
+      if (inc) return inc;
+    }
+    const forAsset = activeAlerts.find((a) => a.equipment_id === focusEquipmentId);
+    if (forAsset) return forAsset;
+    return null;
+  }, [selectedIncidentId, activeAlerts, focusEquipmentId]);
+
+  const currentPastIncident = useMemo(() => {
+    if (selectedIncidentId) {
+      const inc = resolvedAlerts.find((a) => a.incident_id === selectedIncidentId);
+      if (inc) return inc;
+    }
+    const forAsset = resolvedAlerts.find((a) => a.equipment_id === focusEquipmentId);
+    if (forAsset) return forAsset;
+    return resolvedAlerts[0] || null;
+  }, [selectedIncidentId, resolvedAlerts, focusEquipmentId]);
 
   const handleSelectAsset = (equipmentId) => {
     setSelectedEquipmentId(equipmentId);
-    const alert = alerts.find((a) => a.equipment_id === equipmentId);
-    if (alert) {
-      setSelectedIncidentId(alert.incident_id);
+    const activeInc = activeAlerts.find((a) => a.equipment_id === equipmentId);
+    const pastInc = resolvedAlerts.find((a) => a.equipment_id === equipmentId);
+
+    if (activeInc) {
+      setSelectedIncidentId(activeInc.incident_id);
+      setSessionFilter("ACTIVE");
+    } else if (pastInc && sessionFilter === "PAST") {
+      setSelectedIncidentId(pastInc.incident_id);
     } else {
       setSelectedIncidentId(null);
+      setSessionFilter("NOMINAL");
     }
   };
 
   const handleSelectIncident = (incidentItem) => {
     setSelectedIncidentId(incidentItem.incident_id);
     setSelectedEquipmentId(incidentItem.equipment_id);
+    const isPast = ["CLOSED", "FAILED", "CANCELLED"].includes(incidentItem.lifecycle?.phase || incidentItem.status);
+    setSessionFilter(isPast ? "PAST" : "ACTIVE");
+  };
+
+  const handleFilterChange = (newFilter) => {
+    setSessionFilter(newFilter);
+    if (newFilter === "ACTIVE") {
+      const matchingActive = activeAlerts.find((a) => a.equipment_id === focusEquipmentId) || activeAlerts[0];
+      if (matchingActive) {
+        setSelectedIncidentId(matchingActive.incident_id);
+        setSelectedEquipmentId(matchingActive.equipment_id);
+      } else {
+        setSelectedIncidentId(null);
+      }
+    } else if (newFilter === "PAST") {
+      const matchingPast = resolvedAlerts.find((a) => a.equipment_id === focusEquipmentId) || resolvedAlerts[0];
+      if (matchingPast) {
+        setSelectedIncidentId(matchingPast.incident_id);
+        setSelectedEquipmentId(matchingPast.equipment_id);
+      } else {
+        setSelectedIncidentId(null);
+      }
+    } else {
+      setSelectedIncidentId(null);
+    }
   };
 
   return (
@@ -83,7 +131,7 @@ export default function App() {
         onReset={() => {
           setSelectedEquipmentId(null);
           setSelectedIncidentId(null);
-          setShowHistory(false);
+          setSessionFilter("ACTIVE");
           reset();
         }}
         onStop={stop}
@@ -91,6 +139,7 @@ export default function App() {
         onDemo={() => {
           const target = focusEquipmentId || "AC-COMP-01";
           setSelectedEquipmentId(target);
+          setSessionFilter("ACTIVE");
           startDemo(target);
         }}
       />
@@ -105,15 +154,58 @@ export default function App() {
           <SessionPipeline
             activeAlerts={activeAlerts}
             resolvedAlerts={resolvedAlerts}
-            currentIncidentId={currentIncident?.incident_id}
-            showHistory={showHistory}
-            onToggleHistory={() => setShowHistory((prev) => !prev)}
+            currentIncidentId={
+              sessionFilter === "ACTIVE"
+                ? currentActiveIncident?.incident_id
+                : sessionFilter === "PAST"
+                ? currentPastIncident?.incident_id
+                : null
+            }
+            sessionFilter={sessionFilter}
+            onFilterChange={handleFilterChange}
             onSelect={handleSelectIncident}
+            focusedAsset={focusedAsset}
           />
-          {currentIncident ? (
-            <IncidentCommand incident={currentIncident} state={state} approve={approve} reject={reject} />
-          ) : (
-            <EmptyCommand threshold={state.triggerThreshold} />
+
+          {sessionFilter === "ACTIVE" && (
+            currentActiveIncident ? (
+              <IncidentCommand incident={currentActiveIncident} state={state} approve={approve} reject={reject} />
+            ) : (
+              <NoActiveIncidentState
+                asset={focusedAsset}
+                activeAlerts={activeAlerts}
+                onViewNominal={() => setSessionFilter("NOMINAL")}
+                onSelectActive={(eid) => handleSelectAsset(eid)}
+                onSimulate={() => {
+                  setSessionFilter("ACTIVE");
+                  startDemo(focusedAsset?.equipment_id || "AC-COMP-01");
+                }}
+              />
+            )
+          )}
+
+          {sessionFilter === "PAST" && (
+            currentPastIncident ? (
+              <IncidentCommand incident={currentPastIncident} state={state} approve={approve} reject={reject} isResolved />
+            ) : (
+              <NoPastIncidentState
+                asset={focusedAsset}
+                resolvedAlerts={resolvedAlerts}
+                onViewNominal={() => setSessionFilter("NOMINAL")}
+                onSelectResolved={(eid) => handleSelectAsset(eid)}
+              />
+            )
+          )}
+
+          {sessionFilter === "NOMINAL" && (
+            <AssetNominalCommand
+              asset={focusedAsset}
+              state={state}
+              onSimulate={() => {
+                setSessionFilter("ACTIVE");
+                startDemo(focusedAsset?.equipment_id || "AC-COMP-01");
+              }}
+            />
           )}
         </section>
       </main>
@@ -558,17 +650,60 @@ function RiskChart({ state, focusId }) {
   return <Panel title="Predictive signal" meta={`action gate ${pct(state.triggerThreshold)}`}><div className="risk-chart"><ResponsiveContainer><LineChart data={data} margin={{ top: 8, right: 8, left: -22, bottom: 0 }}><CartesianGrid vertical={false} stroke="rgba(139,158,191,.09)" /><ReferenceArea y1={state.triggerThreshold} y2={1} fill="rgba(255,93,115,.06)" /><XAxis dataKey="t" tick={{ fill: "#67748b", fontSize: 10 }} axisLine={false} tickLine={false} minTickGap={28} /><YAxis domain={[0, 1]} tickFormatter={(v) => Math.round(v * 100)} tick={{ fill: "#67748b", fontSize: 10 }} axisLine={false} tickLine={false} /><ReferenceLine y={state.triggerThreshold} stroke="#ff5d73" strokeDasharray="4 4" /><Tooltip formatter={(value) => pct(value)} contentStyle={{ background: "#101722", border: "1px solid #2a3547", borderRadius: 8 }} />{ids.map((id, i) => <Line key={id} dataKey={id} type="monotone" stroke={SERIES[i]} strokeWidth={focusId === id ? 2.4 : 1.4} strokeOpacity={focusId && focusId !== id ? .3 : 1} dot={false} connectNulls isAnimationActive={false} />)}</LineChart></ResponsiveContainer></div><div className="chart-legend">{ids.map((id, i) => <span key={id}><i style={{ background: SERIES[i] }} />{id}</span>)}</div></Panel>;
 }
 
+const ASSET_SENSORS = {
+  compressor: [
+    { name: "Discharge Pressure", value: "7.8 bar", status: "good", envelope: "6.5 – 8.5 bar" },
+    { name: "Intercooler Temp", value: "48.2 °C", status: "good", envelope: "< 65.0 °C" },
+    { name: "Shaft Vibration", value: "1.4 mm/s", status: "good", envelope: "< 4.5 mm/s" },
+    { name: "Motor Power", value: "45.1 kW", status: "good", envelope: "40 – 55 kW" },
+  ],
+  conveyor: [
+    { name: "Belt Speed", value: "1.8 m/s", status: "good", envelope: "1.5 – 2.0 m/s" },
+    { name: "Drive Motor Temp", value: "54.0 °C", status: "good", envelope: "< 75.0 °C" },
+    { name: "Roller Vibration", value: "0.8 mm/s", status: "good", envelope: "< 2.8 mm/s" },
+    { name: "Belt Tension", value: "12.4 kN", status: "good", envelope: "10 – 15 kN" },
+  ],
+  pump: [
+    { name: "Suction Pressure", value: "2.1 bar", status: "good", envelope: "> 1.5 bar" },
+    { name: "Discharge Flow", value: "120 L/min", status: "good", envelope: "100 – 140 L/min" },
+    { name: "Impeller Vibration", value: "1.1 mm/s", status: "good", envelope: "< 3.5 mm/s" },
+    { name: "Seal Temp", value: "42.5 °C", status: "good", envelope: "< 60.0 °C" },
+  ],
+  press: [
+    { name: "Hydraulic Pressure", value: "210 bar", status: "good", envelope: "190 – 230 bar" },
+    { name: "Cycle Time", value: "3.2 sec", status: "good", envelope: "3.0 – 3.5 sec" },
+    { name: "Ram Alignment", value: "0.02 mm", status: "good", envelope: "< 0.05 mm" },
+    { name: "Fluid Temp", value: "46.8 °C", status: "good", envelope: "< 60.0 °C" },
+  ],
+  robot: [
+    { name: "Joint 1 Torque", value: "42 Nm", status: "good", envelope: "< 85 Nm" },
+    { name: "Joint 2 Backlash", value: "0.01 mm", status: "good", envelope: "< 0.04 mm" },
+    { name: "Servo Drive Temp", value: "39.5 °C", status: "good", envelope: "< 65.0 °C" },
+    { name: "Repeatability", value: "±0.02 mm", status: "good", envelope: "±0.05 mm" },
+  ],
+  mill: [
+    { name: "Spindle Speed", value: "4,500 RPM", status: "good", envelope: "0 – 8,000 RPM" },
+    { name: "Spindle Bearing Temp", value: "41.0 °C", status: "good", envelope: "< 60.0 °C" },
+    { name: "Axis Runout", value: "0.008 mm", status: "good", envelope: "< 0.02 mm" },
+    { name: "Coolant Flow", value: "18.5 L/min", status: "good", envelope: "> 15.0 L/min" },
+  ],
+  grinder: [
+    { name: "Wheel Speed", value: "3,200 RPM", status: "good", envelope: "3,000 – 3,500 RPM" },
+    { name: "Wheel Vibration", value: "0.6 mm/s", status: "good", envelope: "< 2.0 mm/s" },
+    { name: "Spindle Power", value: "8.4 kW", status: "good", envelope: "< 15.0 kW" },
+    { name: "Hydrostatic Pressure", value: "28 bar", status: "good", envelope: "25 – 35 bar" },
+  ],
+};
+
 function SessionPipeline({
   activeAlerts,
   resolvedAlerts,
   currentIncidentId,
-  showHistory,
-  onToggleHistory,
+  sessionFilter,
+  onFilterChange,
   onSelect,
+  focusedAsset,
 }) {
-  const hasSessions = activeAlerts.length > 0 || resolvedAlerts.length > 0;
-  const visibleSessions = showHistory ? [...activeAlerts, ...resolvedAlerts] : activeAlerts;
-
   const formatShortId = (id) => {
     if (!id) return "#---";
     const parts = id.split("-");
@@ -584,52 +719,257 @@ function SessionPipeline({
     <div className="session-pipeline-bar">
       <div className="pipeline-lead">
         <span className="pipeline-title">Incident Sessions</span>
-        <span className={`pipeline-count-badge ${activeAlerts.length === 0 ? "idle" : ""}`}>
-          {activeAlerts.length > 0 ? `${activeAlerts.length} Active` : "Quiescent"}
-        </span>
-      </div>
-
-      <div className="pipeline-tabs">
-        {visibleSessions.map((item) => {
-          const isSelected = currentIncidentId === item.incident_id;
-          const isResolved = ["CLOSED", "FAILED", "CANCELLED"].includes(item.lifecycle?.phase || item.status);
-          const phase = item.lifecycle?.phase || item.status || "OPEN";
-          const riskTone = item.failure_prob > 0.8 ? "bad" : item.failure_prob > 0.4 ? "warn" : "good";
-
-          return (
-            <button
-              key={item.incident_id}
-              className={`session-tab ${isSelected ? "active" : ""} ${isResolved ? "resolved" : ""}`}
-              onClick={() => onSelect(item)}
-              title={`Session ${item.incident_id} · ${item.equipment_name || item.equipment_id}`}
-            >
-              <span className={`status-indicator-dot ${tone(phase)}`} />
-              <span className="session-tab-id">{formatShortId(item.incident_id)}</span>
-              <span className="session-tab-asset">{item.equipment_id}</span>
-              <span className="session-tab-phase">{formatPhaseName(phase)}</span>
-              <span className={`session-tab-risk ${riskTone}`}>{pct(item.failure_prob)}</span>
-            </button>
-          );
-        })}
-
-        {!hasSessions && (
-          <span className="pipeline-empty-text">Continuous surveillance · No active incident runs</span>
-        )}
-      </div>
-
-      {resolvedAlerts.length > 0 && (
-        <div className="pipeline-history">
-          <button
-            className={`history-pill ${showHistory ? "active" : ""}`}
-            onClick={onToggleHistory}
-            title="Toggle recently resolved incident sessions"
+        <div className="pipeline-dropdown-wrapper">
+          <select
+            className="pipeline-select-filter"
+            value={sessionFilter}
+            onChange={(e) => onFilterChange(e.target.value)}
+            title="Switch operational workspace view: Active incidents, past resolutions, or nominal baseline"
           >
-            <CheckCircleIcon size={11} color={showHistory ? "var(--green)" : "var(--muted)"} />
-            <span>{showHistory ? "Hide Past" : `${resolvedAlerts.length} Resolved`}</span>
-          </button>
+            <option value="ACTIVE">Active Incidents ({activeAlerts.length})</option>
+            <option value="PAST">Past Incidents ({resolvedAlerts.length})</option>
+            <option value="NOMINAL">Nominal Status ({focusedAsset?.equipment_id})</option>
+          </select>
+        </div>
+      </div>
+
+      {sessionFilter === "ACTIVE" && (
+        <div className="pipeline-tabs">
+          {activeAlerts.map((item) => {
+            const isSelected = currentIncidentId === item.incident_id;
+            const phase = item.lifecycle?.phase || item.status || "OPEN";
+            const riskTone = item.failure_prob > 0.8 ? "bad" : item.failure_prob > 0.4 ? "warn" : "good";
+
+            return (
+              <button
+                key={item.incident_id}
+                className={`session-tab ${isSelected ? "active" : ""}`}
+                onClick={() => onSelect(item)}
+                title={`Active Run ${item.incident_id} · ${item.equipment_name || item.equipment_id}`}
+              >
+                <span className={`status-indicator-dot ${tone(phase)}`} />
+                <span className="session-tab-id">{formatShortId(item.incident_id)}</span>
+                <span className="session-tab-asset">{item.equipment_id}</span>
+                <span className="session-tab-phase">{formatPhaseName(phase)}</span>
+                <span className={`session-tab-risk ${riskTone}`}>{pct(item.failure_prob)}</span>
+              </button>
+            );
+          })}
+
+          {activeAlerts.length === 0 && (
+            <span className="pipeline-empty-text">Continuous surveillance · Zero active incident runs</span>
+          )}
+        </div>
+      )}
+
+      {sessionFilter === "PAST" && (
+        <div className="pipeline-tabs">
+          {resolvedAlerts.map((item) => {
+            const isSelected = currentIncidentId === item.incident_id;
+
+            return (
+              <button
+                key={item.incident_id}
+                className={`session-tab resolved ${isSelected ? "active" : ""}`}
+                onClick={() => onSelect(item)}
+                title={`Resolved Incident ${item.incident_id} · ${item.equipment_name || item.equipment_id}`}
+              >
+                <span className="status-indicator-dot good" />
+                <span className="session-tab-id">{formatShortId(item.incident_id)}</span>
+                <span className="session-tab-asset">{item.equipment_id}</span>
+                <span className="session-tab-phase">Recovered</span>
+                <span className="session-tab-risk good">✓ Verified</span>
+              </button>
+            );
+          })}
+
+          {resolvedAlerts.length === 0 && (
+            <span className="pipeline-empty-text">No archived incident resolutions in session database</span>
+          )}
+        </div>
+      )}
+
+      {sessionFilter === "NOMINAL" && (
+        <div className="pipeline-nominal-strip">
+          <span className="nominal-asset-badge">
+            <span className={`status-indicator-dot ${tone(focusedAsset?.status || "HEALTHY")}`} />
+            <b>{focusedAsset?.equipment_id}</b>
+            <small>{focusedAsset?.name}</small>
+          </span>
+          <span className="nominal-status-text">
+            <CheckCircleIcon size={12} color="var(--green)" />
+            <span>Continuous Telemetry Surveillance Active</span>
+          </span>
         </div>
       )}
     </div>
+  );
+}
+
+function NoActiveIncidentState({ asset, activeAlerts, onViewNominal, onSelectActive, onSimulate }) {
+  return (
+    <div className="empty-command asset-empty-state">
+      <span className="empty-state-icon"><CheckCircleIcon size={36} color="var(--green)" /></span>
+      <h2>{asset ? `${asset.equipment_id} is Operating Normally` : "No Active Incidents"}</h2>
+      <p>
+        {asset
+          ? `${asset.name} has no open faults or active agent investigations. 24h risk is ${pct(asset.failure_prob || 0.01)}. All telemetry indicators are within deterministic safety thresholds.`
+          : "All plant assets are currently operating within their deterministic safety envelopes."}
+      </p>
+      <div className="empty-state-actions">
+        <button className="empty-action-btn primary" onClick={onViewNominal}>
+          View Live Sensor Telemetry
+        </button>
+        {activeAlerts.length > 0 && (
+          <button
+            className="empty-action-btn secondary"
+            onClick={() => onSelectActive(activeAlerts[0].equipment_id)}
+          >
+            Switch to Active Incident ({activeAlerts[0].equipment_id})
+          </button>
+        )}
+        {asset && (
+          <button className="empty-action-btn demo" onClick={onSimulate}>
+            <SparkIcon size={12} />
+            <span>Simulate Fault on {asset.equipment_id}</span>
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function NoPastIncidentState({ asset, resolvedAlerts, onViewNominal, onSelectResolved }) {
+  return (
+    <div className="empty-command asset-empty-state">
+      <span className="empty-state-icon"><CheckCircleIcon size={36} color="var(--faint)" /></span>
+      <h2>No Past Incidents on Record for {asset ? asset.equipment_id : "Selected Machine"}</h2>
+      <p>
+        Zero recorded downtime interventions or recovered fault receipts exist for this unit in the active session database.
+      </p>
+      <div className="empty-state-actions">
+        <button className="empty-action-btn primary" onClick={onViewNominal}>
+          View Live Sensor Telemetry
+        </button>
+        {resolvedAlerts.length > 0 && (
+          <button
+            className="empty-action-btn secondary"
+            onClick={() => onSelectResolved(resolvedAlerts[0].equipment_id)}
+          >
+            View Resolved Incident ({resolvedAlerts[0].equipment_id})
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AssetNominalCommand({ asset, state, onSimulate }) {
+  if (!asset) return <EmptyCommand threshold={state.triggerThreshold} />;
+
+  const sensorConfig = ASSET_SENSORS[asset.equipment_class] || ASSET_SENSORS.compressor;
+  const failureProb = asset.failure_prob || 0.01;
+
+  return (
+    <motion.div
+      key={`nominal-${asset.equipment_id}`}
+      className="incident-command nominal-command"
+      initial={{ opacity: 0, y: 5 }}
+      animate={{ opacity: 1, y: 0 }}
+    >
+      <div className="incident-hero nominal-hero">
+        <div className="hero-lead">
+          <div className="hero-title-row">
+            <span className="asset-class-icon-lg"><ClassIcon cls={asset.equipment_class} /></span>
+            <div>
+              <span className="eyebrow">Continuous Machine Surveillance · Operational Baseline</span>
+              <h1>{asset.name} <span className="hero-eid">({asset.equipment_id})</span></h1>
+              <p>Type: {asset.equipment_class.toUpperCase()} · Criticality: HIGH · Monitored Baseline</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="hero-risk">
+          <small>24h Failure Risk</small>
+          <b className={tone(asset.status)}>{pct(failureProb)}</b>
+          <span>{assetContextMode(asset)}</span>
+        </div>
+
+        <Status value={asset.status}>{asset.status}</Status>
+      </div>
+
+      <div className="nominal-safety-banner">
+        <ShieldCheckIcon size={14} color="var(--green)" />
+        <span><b>Deterministic Safety Envelopes:</b> All continuous physical parameters verified within nominal operating bounds.</span>
+      </div>
+
+      <div className="command-grid">
+        {/* Left Column: Physical Sensor Telemetry */}
+        <div className="command-column">
+          <Card title="Live Operating Telemetry" icon="◎" meta="Deterministic sensor streams">
+            <div className="nominal-sensors-grid">
+              {sensorConfig.map((s) => (
+                <div key={s.name} className="nominal-sensor-card">
+                  <div className="sensor-card-head">
+                    <span className="sensor-name">{s.name}</span>
+                    <span className={`sensor-tag ${s.status}`}>{s.status.toUpperCase()}</span>
+                  </div>
+                  <b className="sensor-val">{s.value}</b>
+                  <small className="sensor-envelope">Safe Envelope: {s.envelope}</small>
+                </div>
+              ))}
+            </div>
+
+            <div className="nominal-chart-section">
+              <div className="section-title">
+                <span>Telemetry Stability Envelope</span>
+                <small>Last 60 ticks · Zero threshold breaches</small>
+              </div>
+              <div className="nominal-spark-box">
+                <Spark point={asset.point} status={asset.status} />
+              </div>
+            </div>
+          </Card>
+        </div>
+
+        {/* Right Column: Readiness & Reliability Operations */}
+        <div className="command-column">
+          <Card title="Equipment Reliability Readiness" icon="◈" meta="Autonomous agent surveillance">
+            <div className="readiness-card-body">
+              <div className="readiness-status-row">
+                <span className="shield-large"><ShieldCheckIcon size={24} color="var(--green)" /></span>
+                <div>
+                  <b>Continuous Monitoring Active</b>
+                  <p>Operon agents are continuously streaming high-frequency vibration, thermal, and electrical telemetry.</p>
+                </div>
+              </div>
+
+              <div className="readiness-kv-grid">
+                <KV label="Health Status" value={`${asset.status} (Zero active faults)`} />
+                <KV label="Attributed Bottleneck" value="None (100% Availability)" />
+                <KV label="Preventive Overhaul" value="Scheduled in 42 Days" />
+                <KV label="Autonomous Response" value="Standby (Gate Armed)" />
+              </div>
+
+              <div className="simulate-box">
+                <div className="simulate-lead">
+                  <b>Reliability Testing & Anomaly Injection</b>
+                  <p>Simulate an anomalous operational drift on {asset.equipment_id} to trigger the multi-agent diagnostic pipeline, policy gate, and human-in-the-loop intervention workflow.</p>
+                </div>
+                <button
+                  className="simulate-anomaly-btn"
+                  onClick={onSimulate}
+                  title={`Trigger guided reliability scenario on ${asset.equipment_id}`}
+                >
+                  <SparkIcon size={12} />
+                  <span>Simulate Fault & Trigger Agent on {asset.equipment_id}</span>
+                </button>
+              </div>
+            </div>
+          </Card>
+        </div>
+      </div>
+    </motion.div>
   );
 }
 
