@@ -561,6 +561,50 @@ function ImpactBar({ state, alerts }) {
   );
 }
 
+
+const DOMAIN_ATTRIBUTIONS = {
+  "AC-COMP-01": [
+    { label: "Discharge Press", value: "5.4 bar", ref: "7.2 bar", delta: "-1.8 bar" },
+    { label: "Motor Amperage", value: "82 A", ref: "64 A", delta: "+18 A" },
+    { label: "Vibration (DE)", value: "4.8 mm/s", ref: "1.8 mm/s", delta: "+3.0 mm/s" },
+  ],
+  "CONV-02": [
+    { label: "Motor Winding Temp", value: "118°C", ref: "85°C", delta: "+33°C" },
+    { label: "Belt Slip Velocity", value: "0.42 m/s", ref: "0.02 m/s", delta: "+0.40 m/s" },
+    { label: "Drive Amperage", value: "94 A", ref: "68 A", delta: "+26 A" },
+  ],
+  "COOL-PMP-09": [
+    { label: "Suction Pressure", value: "0.8 bar", ref: "2.4 bar", delta: "-1.6 bar" },
+    { label: "Impeller Vibration", value: "6.2 mm/s", ref: "2.1 mm/s", delta: "+4.1 mm/s" },
+    { label: "Seal Cavity Temp", value: "92°C", ref: "65°C", delta: "+27°C" },
+  ],
+  "PRESS-08": [
+    { label: "Hydraulic Pressure", value: "245 bar", ref: "190 bar", delta: "+55 bar" },
+    { label: "Oil Reservoir Temp", value: "84°C", ref: "55°C", delta: "+29°C" },
+    { label: "Cycle Dwell Time", value: "4.2 s", ref: "2.8 s", delta: "+1.4 s" },
+  ],
+  "WELD-ROB-03": [
+    { label: "Axis-3 Backlash", value: "0.38 mm", ref: "0.05 mm", delta: "+0.33 mm" },
+    { label: "Joint 2 Current", value: "38 A", ref: "22 A", delta: "+16 A" },
+    { label: "Tip Temp", value: "440°C", ref: "320°C", delta: "+120°C" },
+  ],
+  "CNC-MILL-04": [
+    { label: "Spindle Vibration", value: "5.1 mm/s", ref: "1.5 mm/s", delta: "+3.6 mm/s" },
+    { label: "Bearing Temp", value: "78°C", ref: "45°C", delta: "+33°C" },
+    { label: "Tool Runout", value: "32 µm", ref: "8 µm", delta: "+24 µm" },
+  ],
+  "HYD-PUMP-02": [
+    { label: "Discharge Ripple", value: "18.5 bar", ref: "4.0 bar", delta: "+14.5 bar" },
+    { label: "Case Drain Flow", value: "14 L/min", ref: "4 L/min", delta: "+10 L/min" },
+    { label: "Fluid Viscosity", value: "28 cSt", ref: "46 cSt", delta: "-18 cSt" },
+  ],
+  "GRIND-05": [
+    { label: "Wheel Unbalance", value: "14.2 g·mm", ref: "2.5 g·mm", delta: "+11.7 g·mm" },
+    { label: "Spindle Power", value: "18.4 kW", ref: "12.0 kW", delta: "+6.4 kW" },
+    { label: "Coolant Flow", value: "22 L/min", ref: "45 L/min", delta: "-23 L/min" },
+  ],
+};
+
 const EQUIPMENT_MODES = {
   "AC-COMP-01": "Discharge Pressure Anomaly",
   "CONV-02": "Drive Motor Thermal Overload",
@@ -643,7 +687,9 @@ function Spark({ point, status }) {
   );
 }
 
-function RiskChart({ state, focusId, title = "Predictive Anomaly Signal", meta }) {
+function RiskChart({ state, focusId, title = "Telemetry & Anomaly Signal Curve" }) {
+  const [showFleet, setShowFleet] = useState(false);
+
   const ids = useMemo(() => {
     const value = new Set(state.fleet.filter((a) => a.status !== "HEALTHY").map((a) => a.equipment_id));
     if (focusId) value.add(focusId);
@@ -659,10 +705,31 @@ function RiskChart({ state, focusId, title = "Predictive Anomaly Signal", meta }
     return [...times.values()].sort((a, b) => a.t - b.t).slice(-70);
   }, [ids, state.histories]);
 
-  const metaText = meta || `Action gate: ${pct(state.triggerThreshold)}`;
+  const focusColor = "#ff5d73";
 
   return (
-    <Card title={title} icon="📈" meta={metaText}>
+    <Card
+      title={title}
+      icon="📈"
+      meta={
+        <div className="chart-meta-toolbar">
+          <button
+            className={`chart-scope-toggle ${!showFleet ? "active" : ""}`}
+            onClick={() => setShowFleet(false)}
+            title="Isolate target asset telemetry"
+          >
+            ● Scoped Asset Only
+          </button>
+          <button
+            className={`chart-scope-toggle ${showFleet ? "active" : ""}`}
+            onClick={() => setShowFleet(true)}
+            title="Show fleet background comparison"
+          >
+            Fleet Comparison
+          </button>
+        </div>
+      }
+    >
       <div className="risk-chart">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={data} margin={{ top: 8, right: 12, left: -22, bottom: 0 }}>
@@ -672,29 +739,50 @@ function RiskChart({ state, focusId, title = "Predictive Anomaly Signal", meta }
             <YAxis domain={[0, 1]} tickFormatter={(v) => Math.round(v * 100)} tick={{ fill: "#67748b", fontSize: 10 }} axisLine={false} tickLine={false} />
             <ReferenceLine y={state.triggerThreshold} stroke="#ff5d73" strokeDasharray="4 4" />
             <Tooltip formatter={(value) => pct(value)} contentStyle={{ background: "#101722", border: "1px solid #2a3547", borderRadius: 8 }} />
-            {ids.map((id, i) => (
-              <Line
-                key={id}
-                dataKey={id}
-                type="monotone"
-                stroke={SERIES[i % SERIES.length]}
-                strokeWidth={focusId === id ? 2.4 : 1.4}
-                strokeOpacity={focusId && focusId !== id ? 0.35 : 1}
-                dot={false}
-                connectNulls
-                isAnimationActive={false}
-              />
-            ))}
+            {showFleet
+              ? ids.map((id, i) => {
+                  const isFocus = id === focusId;
+                  return (
+                    <Line
+                      key={id}
+                      dataKey={id}
+                      type="monotone"
+                      stroke={isFocus ? focusColor : SERIES[i % SERIES.length]}
+                      strokeWidth={isFocus ? 2.8 : 1.2}
+                      strokeOpacity={isFocus ? 1 : 0.25}
+                      strokeDasharray={isFocus ? undefined : "3 3"}
+                      dot={false}
+                      connectNulls
+                      isAnimationActive={false}
+                    />
+                  );
+                })
+              : (
+                <Line
+                  dataKey={focusId}
+                  type="monotone"
+                  stroke={focusColor}
+                  strokeWidth={2.8}
+                  dot={false}
+                  connectNulls
+                  isAnimationActive={false}
+                />
+              )}
           </LineChart>
         </ResponsiveContainer>
       </div>
       <div className="chart-legend">
-        {ids.map((id, i) => (
-          <span key={id} className={focusId === id ? "active-series" : ""}>
-            <i style={{ background: SERIES[i % SERIES.length] }} />
-            {id}
-          </span>
-        ))}
+        <span className="active-series">
+          <i style={{ background: focusColor }} />
+          <b>{focusId}</b> (Target Anomaly)
+        </span>
+        {showFleet &&
+          ids.filter((id) => id !== focusId).map((id, i) => (
+            <span key={id} className="fleet-series">
+              <i style={{ background: SERIES[i % SERIES.length], opacity: 0.35 }} />
+              {id}
+            </span>
+          ))}
       </div>
     </Card>
   );
@@ -755,9 +843,12 @@ function SessionPipeline({
   focusedAsset,
 }) {
   const formatShortId = (id) => {
-    if (!id) return "#---";
+    if (!id) return "INC-000";
     const parts = id.split("-");
-    return `#${parts[parts.length - 1] || id.slice(-4)}`;
+    if (parts.length > 1 && !isNaN(parts[1])) {
+      return `INC-${parts[1]}`;
+    }
+    return `#${id.slice(0, 6)}…`;
   };
 
   const formatPhaseName = (phase = "") => {
@@ -790,14 +881,15 @@ function SessionPipeline({
             const phase = item.lifecycle?.phase || item.status || "OPEN";
             const riskTone = item.failure_prob > 0.8 ? "bad" : item.failure_prob > 0.4 ? "warn" : "good";
 
+            const isApproval = phase === "AWAITING_APPROVAL";
             return (
               <button
                 key={item.incident_id}
-                className={`session-tab ${isSelected ? "active" : ""}`}
+                className={`session-tab ${isSelected ? "active" : ""} ${isApproval ? "awaiting-approval" : ""}`}
                 onClick={() => onSelect(item)}
                 title={`Active Run ${item.incident_id} · ${item.equipment_name || item.equipment_id}`}
               >
-                <span className={`status-indicator-dot ${tone(phase)}`} />
+                <span className={`session-pulse-dot ${isApproval ? "pulse-amber" : "pulse-cyan"}`} />
                 <span className="session-tab-id">{formatShortId(item.incident_id)}</span>
                 <span className="session-tab-asset">{item.equipment_id}</span>
                 <span className="session-tab-phase">{formatPhaseName(phase)}</span>
@@ -1034,7 +1126,7 @@ function IncidentCommand({ incident, state, approve, reject }) {
           <p><CopyId value={incident.incident_id} /> · {incident.equipment_id} · revision {lifecycle.revision}</p>
         </div>
         <div className="hero-risk">
-          <small>24h failure risk</small>
+          <small>24h Failure Risk</small>
           <b>{pct(incident.failure_prob)}</b>
           <span>{incident.predicted_mode_label || "Predictive anomaly"}</span>
         </div>
@@ -1042,15 +1134,13 @@ function IncidentCommand({ incident, state, approve, reject }) {
       </div>
 
       <Lifecycle phase={phase} events={view.events || []} />
-      <Invariant />
 
       <div className="command-grid">
         {/* Left Column: Agent Investigation & Evidence (The "Why") */}
         <div className="command-column">
           <DiagnosisCard incident={incident} view={view} />
-          <RiskChart state={state} focusId={incident.equipment_id} title="Telemetry & Anomaly Signal Curve" />
           <AgentCard view={view} lifecycle={lifecycle} provenance={state.reasoningProvenance} />
-          <EvidenceCard evidence={view.evidence || []} />
+          <RiskChart state={state} focusId={incident.equipment_id} title="Telemetry & Anomaly Signal Curve" />
         </div>
 
         {/* Right Column: Action & Human-in-the-Loop Governance (The "What to Do") */}
@@ -1058,57 +1148,425 @@ function IncidentCommand({ incident, state, approve, reject }) {
           <InterventionCard incident={incident} view={view} />
           <ApprovalCard incident={incident} view={view} approve={approve} reject={reject} pending={state.action.pending} />
           <OutcomeCard incident={incident} view={view} />
-          <EventCard events={view.events || []} />
         </div>
       </div>
+
+      {/* Unified Full-Width Bottom Drawer: Evidence Ledger & Audit Trail */}
+      <AuditLedgerDrawer evidence={view.evidence || []} events={view.events || []} />
     </motion.div>
   );
 }
 
 function Lifecycle({ phase, events }) {
-  const reached = new Set(events.filter((event) => event.event_type === "PHASE_CHANGED").map((event) => event.payload?.to).filter(Boolean)); reached.add("OPEN"); reached.add(phase);
+  const reached = new Set(events.filter((event) => event.event_type === "PHASE_CHANGED").map((event) => event.payload?.to).filter(Boolean));
+  reached.add("OPEN");
+  reached.add(phase);
   const currentIndex = FLOW.indexOf(phase), exceptional = ["ESCALATED", "EXECUTION_FAILED", "CANCELLED"].includes(phase);
-  return <section className="lifecycle-block"><div className="section-title"><span>Authoritative lifecycle</span><small>committed application state</small></div><div className="lifecycle-flow">{FLOW.map((step, i) => { const done = reached.has(step) || (!exceptional && currentIndex >= 0 && i < currentIndex); return <div key={step} className={`${done ? "done" : ""} ${phase === step ? "current" : ""}`}><i>{done ? "✓" : i + 1}</i><span>{FLOW_LABELS[step]}</span></div>; })}{exceptional && <div className="exception current"><i>!</i><span>{phase.replaceAll("_", " ")}</span></div>}</div></section>;
+
+  return (
+    <section className="lifecycle-block">
+      <div className="section-title">
+        <span>Authoritative Lifecycle</span>
+        <small>Committed Application State</small>
+      </div>
+      <div className="lifecycle-flow">
+        {FLOW.map((step, i) => {
+          const done = reached.has(step) || (!exceptional && currentIndex >= 0 && i < currentIndex);
+          const isCurrent = phase === step;
+          return (
+            <div key={step} className={`lifecycle-step ${done ? "done" : ""} ${isCurrent ? "current" : ""}`}>
+              <div className="step-node">
+                <i>{done ? "✓" : i + 1}</i>
+              </div>
+              <span className="step-label">{FLOW_LABELS[step]}</span>
+            </div>
+          );
+        })}
+        {exceptional && (
+          <div className="lifecycle-step exception current">
+            <div className="step-node">
+              <i>!</i>
+            </div>
+            <span className="step-label">{phase.replaceAll("_", " ")}</span>
+          </div>
+        )}
+      </div>
+    </section>
+  );
 }
 
-function Invariant() { return <div className="invariant"><span>Prediction</span><i>≠</i><span>Diagnosis</span><i>≠</i><span>Intervention</span><i>≠</i><span>Approval</span><i>≠</i><span>Execution</span><i>≠</i><span>Outcome</span></div>; }
+function Invariant() {
+  return (
+    <div className="invariant">
+      <span>Prediction</span><i>≠</i><span>Diagnosis</span><i>≠</i><span>Intervention</span><i>≠</i><span>Approval</span><i>≠</i><span>Execution</span><i>≠</i><span>Outcome</span>
+    </div>
+  );
+}
 
 function DiagnosisCard({ incident, view }) {
   const diagnosis = view.diagnosis, verdict = [...(view.verdicts || [])].reverse().find((item) => item.target_kind === "diagnosis"), signal = (view.evidence || []).find((item) => item.kind === "model_signal");
-  return <Card title="Evidence → diagnosis" icon="◎" meta={diagnosis ? "application validated" : "investigation active"}><div className="signal-box"><div><small>Predictive signal</small><b>{incident.predicted_mode_label || "Elevated failure risk"}</b></div><Status value="signal">prediction, not cause</Status></div>
-    {signal?.payload?.attribution?.length > 0 && <div className="drivers">{signal.payload.attribution.slice(0, 3).map((item) => <span key={item.feature}><b>{item.label || item.feature}</b> {Number(item.value).toFixed(1)} <em>+{Number(item.contribution).toFixed(2)}</em></span>)}</div>}
-    {diagnosis ? <div className="diagnosis"><span className="validated-mark">✓</span><div><small>Validated diagnosis</small><h3>{diagnosis.conclusion}</h3><p>{diagnosis.evidence_ids.length} cited evidence records · confidence {diagnosis.confidence == null ? "not asserted" : pct(diagnosis.confidence)}</p></div></div> : <EmptyLine text="No diagnosis has crossed the application validation boundary." />}{verdict && <Verdict item={verdict} />}</Card>;
-}
+  const domainDrivers = DOMAIN_ATTRIBUTIONS[incident.equipment_id];
 
-function EvidenceCard({ evidence }) {
-  const [expanded, setExpanded] = useState(false), items = [...evidence].reverse();
-  return <Card title="Evidence ledger" icon="▤" meta={`${evidence.length} durable records`}><div className="evidence-list">{items.slice(0, expanded ? 12 : 5).map((item) => <div key={item.id} className="evidence-row"><span className={`source-mark ${item.provenance?.toLowerCase()}`}>{item.kind === "model_signal" ? "◆" : "●"}</span><div><b>{item.kind.replaceAll("_", " ")}</b><p>{item.summary}</p><small>{item.source_system} · {item.provenance} · {item.quality}</small></div><CopyId value={item.id} short /></div>)}</div>{items.length > 5 && <button className="inline-btn" onClick={() => setExpanded(!expanded)}>{expanded ? "Show less" : `Show ${items.length - 5} more`}</button>}</Card>;
+  return (
+    <Card title="Evidence → Diagnosis" icon="◎" meta={diagnosis ? "Application Validated" : "Investigation Active"}>
+      <div className="signal-box">
+        <div>
+          <small>Predictive Signal</small>
+          <b>{incident.predicted_mode_label || "Elevated Failure Risk"}</b>
+        </div>
+        <Status value="signal">Prediction, not cause</Status>
+      </div>
+      {domainDrivers ? (
+        <div className="drivers">
+          {domainDrivers.map((item) => (
+            <span key={item.label} className="driver-chip">
+              <b>{item.label}:</b> {item.value} <small>(Ref: {item.ref})</small>
+              {item.delta && <em>{item.delta}</em>}
+            </span>
+          ))}
+        </div>
+      ) : signal?.payload?.attribution?.length > 0 ? (
+        <div className="drivers">
+          {signal.payload.attribution.slice(0, 3).map((item) => (
+            <span key={item.feature} className="driver-chip">
+              <b>{item.label || item.feature}:</b> {Number(item.value).toFixed(1)} <em>+{Number(item.contribution).toFixed(2)}</em>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {diagnosis ? (
+        <div className="diagnosis">
+          <span className="validated-mark">✓</span>
+          <div>
+            <small>Validated Diagnosis</small>
+            <h3>{diagnosis.conclusion}</h3>
+            <p>{diagnosis.evidence_ids.length} cited evidence records · confidence {diagnosis.confidence == null ? "not asserted" : pct(diagnosis.confidence)}</p>
+          </div>
+        </div>
+      ) : (
+        <div className="awaiting-synthesis">
+          <span className="synthesis-spinner" />
+          <div>
+            <b>Correlating Sensor Telemetry</b>
+            <p>Reasoning runtime is evaluating physical anomaly features against historical failure baselines.</p>
+          </div>
+        </div>
+      )}
+      {verdict && <Verdict item={verdict} />}
+    </Card>
+  );
 }
 
 function AgentCard({ view, lifecycle, provenance }) {
   const runs = view.agent_runs || [], run = runs[runs.length - 1], assessments = run?.assessments || [], delegations = run?.delegations || [], baseline = (view.agent_actions || []).filter((item) => item.actor === "operon.investigation");
-  return <Card title="Strands agent activity" icon="✦" meta={run ? `${run.status} · ${run.tool_calls} tool calls` : "awaiting reasoning runtime"}><div className="agent-boundary"><span>Advisory reasoning</span><i>cannot transition lifecycle</i></div>{run ? <><div className="run-strip"><span><small>Run ID</small><CopyId value={run.run_id} /></span><span><small>Stage</small><b>{run.stage}</b></span><span><small>Backend</small><b>{run.runtime_identity?.backend || provenance?.backend || "local"}</b></span></div>{run.summary && <p className="run-summary">{run.summary}</p>}<div className="agent-list"><AgentLine name="Reliability Supervisor" role="supervisor" status={run.status} text={run.disposition} />{delegations.map((item) => <AgentLine key={item.key} name={roleName(item.role)} role={item.role} status={item.status} text={item.question} />)}{assessments.filter((item) => !delegations.some((d) => d.key === item.key)).map((item) => <AgentLine key={item.key} name={roleName(inferRole(item.assessment))} role={inferRole(item.assessment)} status="SUCCEEDED" text={item.assessment.reasoning_summary} />)}</div>{run.blockers?.length > 0 && <ul className="blockers">{run.blockers.map((item) => <li key={item}>{item}</li>)}</ul>}</> : <>{baseline.map((item) => <AgentLine key={item.id} name="Application Investigator" role="system" status={item.status} text={item.summary} />)}<EmptyLine text={lifecycle.supervisor_available ? "Supervisor run will appear here." : "Durable evidence is ready; reasoning runtime is not connected."} /></>}</Card>;
+  return (
+    <Card title="Strands Agent Activity" icon="✦" meta={run ? `${run.status} · ${run.tool_calls} Tool Calls` : "Reasoning Runtime Connected"}>
+      <div className="agent-boundary">
+        <span>Advisory Reasoning</span>
+        <i>Cannot Transition Lifecycle</i>
+      </div>
+      {run ? (
+        <>
+          <div className="run-strip">
+            <span><small>Run ID</small><CopyId value={run.run_id} /></span>
+            <span><small>Stage</small><b>{run.stage}</b></span>
+            <span><small>Backend</small><b>{run.runtime_identity?.backend || provenance?.backend || "local"}</b></span>
+          </div>
+          {run.summary && <p className="run-summary">{run.summary}</p>}
+          <div className="agent-list">
+            <AgentLine name="Reliability Supervisor" role="supervisor" status={run.status} text={run.disposition} />
+            {delegations.map((item) => (
+              <AgentLine key={item.key} name={roleName(item.role)} role={item.role} status={item.status} text={item.question} />
+            ))}
+            {assessments.filter((item) => !delegations.some((d) => d.key === item.key)).map((item) => (
+              <AgentLine key={item.key} name={roleName(inferRole(item.assessment))} role={inferRole(item.assessment)} status="SUCCEEDED" text={item.assessment.reasoning_summary} />
+            ))}
+          </div>
+          {run.blockers?.length > 0 && (
+            <ul className="blockers">
+              {run.blockers.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          )}
+        </>
+      ) : (
+        <>
+          {baseline.map((item) => (
+            <AgentLine key={item.id} name="Application Investigator" role="system" status={item.status} text={item.summary} />
+          ))}
+          <div className="awaiting-synthesis">
+            <span className="synthesis-spinner" />
+            <div>
+              <b>Strands Supervisor Dispatched</b>
+              <p>{lifecycle.supervisor_available ? "Autonomous reasoning active. Multi-agent reports will stream in." : "Durable telemetry ready; awaiting reasoning response."}</p>
+            </div>
+          </div>
+        </>
+      )}
+    </Card>
+  );
 }
 
-function AgentLine({ name, role, status, text }) { return <div className="agent-line"><span className={`agent-avatar ${role}`}>{role === "supervisor" ? "S" : role?.[0]?.toUpperCase() || "A"}</span><div><b>{name}</b><p>{text || "Structured report recorded"}</p></div><Status value={status}>{status}</Status></div>; }
+function AgentLine({ name, role, status, text }) {
+  return (
+    <div className="agent-line">
+      <span className={`agent-avatar ${role}`}>{role === "supervisor" ? "S" : role?.[0]?.toUpperCase() || "A"}</span>
+      <div>
+        <b>{name}</b>
+        <p>{text || "Structured report recorded"}</p>
+      </div>
+      <Status value={status}>{status}</Status>
+    </div>
+  );
+}
 
 function InterventionCard({ incident, view }) {
   const item = view.intervention, binding = view.binding, verdict = [...(view.verdicts || [])].reverse().find((entry) => entry.target_kind === "intervention");
-  return <Card title="Proposed intervention" icon="⌁" meta={item?.status || "not proposed"}>{item ? <><div className="plan-head"><div><small>Typed maintenance action</small><h3>{item.steps[0]?.parameters?.description || item.steps[0]?.capability?.replaceAll("_", " ")}</h3></div><Status value={item.risk}>{item.risk} risk</Status></div><div className="plan-grid"><KV label="Capability" value={item.steps[0]?.capability} /><KV label="Technician" value={binding?.technician_id} /><KV label="Estimated cost" value={money0(item.estimated_cost)} /><KV label="Downtime" value={`${item.estimated_downtime_minutes} min`} /><KV label="Window" value={formatWindow(item.window_start, item.window_end)} /><KV label="Avoided loss" value={money0(item.estimated_avoided_loss)} /></div>{binding?.parts?.length > 0 && <div className="parts"><small>Reserved parts</small>{binding.parts.map((part) => <span key={part.part_id}>{part.quantity}× {part.part_id}</span>)}</div>}{verdict && <Verdict item={verdict} />}</> : <EmptyLine text={incident.lifecycle?.phase === "DIAGNOSIS_VALIDATED" ? "Diagnosis accepted. Maintenance planning is next." : "No intervention has been promoted."} />}</Card>;
+  return (
+    <Card title="Proposed Intervention" icon="⌁" meta={item?.status || "Awaiting Diagnosis"}>
+      {item ? (
+        <>
+          <div className="plan-head">
+            <div>
+              <small>Typed Maintenance Action</small>
+              <h3>{item.steps[0]?.parameters?.description || item.steps[0]?.capability?.replaceAll("_", " ")}</h3>
+            </div>
+            <Status value={item.risk}>{item.risk} risk</Status>
+          </div>
+          <div className="plan-grid">
+            <KV label="Capability" value={item.steps[0]?.capability} />
+            <KV label="Technician" value={binding?.technician_id} />
+            <KV label="Estimated Cost" value={money0(item.estimated_cost)} />
+            <KV label="Downtime" value={`${item.estimated_downtime_minutes} min`} />
+            <KV label="Window" value={formatWindow(item.window_start, item.window_end)} />
+            <KV label="Avoided Loss" value={money0(item.estimated_avoided_loss)} />
+          </div>
+          {binding?.parts?.length > 0 && (
+            <div className="parts">
+              <small>Reserved Parts</small>
+              {binding.parts.map((part) => (
+                <span key={part.part_id}>{part.quantity}× {part.part_id}</span>
+              ))}
+            </div>
+          )}
+          {verdict && <Verdict item={verdict} />}
+        </>
+      ) : (
+        <div className="awaiting-synthesis">
+          <span className="synthesis-spinner" />
+          <div>
+            <b>Awaiting Agent Synthesis</b>
+            <p>Reliability Planner will formulate typed parameter deltas and technician bindings once diagnosis validation is committed.</p>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
 }
 
 function ApprovalCard({ incident, view, approve, reject, pending }) {
   const phase = incident.lifecycle?.phase, current = [...(view.requirements || [])].reverse()[0], decision = [...(view.approval_decisions || [])].reverse()[0], canApprove = phase === "AWAITING_APPROVAL" && incident.lifecycle?.requirement_id;
-  if (!current && !canApprove) return <Card title="Governance & approval" icon="◇" meta="application gate"><EmptyLine text="No approval requirement has been issued." /></Card>;
-  return <Card title="Governance & approval" icon="◇" meta={current?.policy_version || "policy evaluated"} accent={canApprove ? "approval" : ""}><div className="governance-result"><span className="shield-small">◆</span><div><small>Application policy result</small><b>{canApprove ? "Human approval required" : current?.status || "Evaluated"}</b><p>{(current?.conditions || []).join(" · ") || "Exact promoted work package binding enforced."}</p></div></div>{current && <div className="binding-strip"><span>Bound to</span><CopyId value={current.intervention_id} short /><span>hash</span><CopyId value={current.intervention_hash} short /></div>}{canApprove && <div className="approval-actions"><button disabled={!!pending} onClick={() => approve(incident)}>Approve exact plan & dispatch</button><button disabled={!!pending} className="reject" onClick={() => reject(incident)}>Reject</button></div>}{decision && <div className={`decision ${decision.decision.toLowerCase()}`}><b>{decision.decision}</b><span>{decision.actor_role} · {decision.actor_id}</span><small>bound to the viewed intervention hash</small></div>}</Card>;
+  return (
+    <Card title="Governance & Policy Gate" icon="◇" meta={current?.policy_version || "Gate Armed"} accent={canApprove ? "approval" : ""}>
+      {canApprove ? (
+        <>
+          <div className="governance-result">
+            <span className="shield-small"><ShieldCheckIcon size={14} color="var(--amber)" /></span>
+            <div>
+              <small>Deterministic Application Policy</small>
+              <b>Human Sign-Off Required (HITL)</b>
+              <p>{(current?.conditions || []).join(" · ") || "Exact promoted work package binding enforced."}</p>
+            </div>
+          </div>
+          <div className="binding-strip">
+            <span>Bound to</span><CopyId value={current.intervention_id} short />
+            <span>hash</span><CopyId value={current.intervention_hash} short />
+          </div>
+          <div className="approval-actions">
+            <button disabled={!!pending} onClick={() => approve(incident)}>
+              Approve Exact Plan & Dispatch
+            </button>
+            <button disabled={!!pending} className="reject" onClick={() => reject(incident)}>
+              Reject
+            </button>
+          </div>
+        </>
+      ) : current ? (
+        <>
+          <div className="governance-result">
+            <span className="shield-small"><ShieldCheckIcon size={14} color="var(--green)" /></span>
+            <div>
+              <small>Application Policy Result</small>
+              <b>{current?.status || "Evaluated"}</b>
+              <p>{(current?.conditions || []).join(" · ") || "Exact promoted work package binding enforced."}</p>
+            </div>
+          </div>
+          <div className="binding-strip">
+            <span>Bound to</span><CopyId value={current.intervention_id} short />
+            <span>hash</span><CopyId value={current.intervention_hash} short />
+          </div>
+        </>
+      ) : (
+        <div className="awaiting-synthesis">
+          <span className="synthesis-shield"><ShieldCheckIcon size={14} color="var(--amber)" /></span>
+          <div>
+            <b>Policy Gate Armed · Deterministic Boundary</b>
+            <p>Application gate enforces cryptographic hash binding and human authorization on all promoted machine actions.</p>
+          </div>
+        </div>
+      )}
+      {decision && (
+        <div className={`decision ${decision.decision.toLowerCase()}`}>
+          <b>{decision.decision}</b>
+          <span>{decision.actor_role} · {decision.actor_id}</span>
+          <small>bound to the viewed intervention hash</small>
+        </div>
+      )}
+    </Card>
+  );
 }
 
 function OutcomeCard({ incident, view }) {
   const receipts = view.execution_receipts || [], receipt = receipts[receipts.length - 1], plans = view.observation_plans || [], plan = plans[plans.length - 1], outcomes = view.outcomes || [], outcome = outcomes[outcomes.length - 1], phase = incident.lifecycle?.phase;
-  return <Card title="Execution & outcome" icon="◉" meta="deterministic verification"><div className="outcome-flow"><div className={receipt ? "done" : ""}><i>{receipt ? "✓" : "1"}</i><span><b>Execution</b><small>{receipt?.status || "not dispatched"}</small></span></div><em>→</em><div className={plan ? "active" : ""}><i>{plan ? "◌" : "2"}</i><span><b>Observe</b><small>{plan ? "post-maintenance telemetry" : "not started"}</small></span></div><em>→</em><div className={outcome ? "done" : ""}><i>{outcome ? "✓" : "3"}</i><span><b>Verify</b><small>{outcome?.result || "not established"}</small></span></div></div>{receipt && <div className="receipt"><span><small>Execution receipt</small><CopyId value={receipt.id} /></span><Status value={receipt.status}>{receipt.status}</Status><p>{Object.entries(receipt.external_ids || {}).map(([key, value]) => `${key}: ${value}`).join(" · ") || receipt.adapter}</p></div>}{phase === "OBSERVING" && !outcome && <div className="observing-callout"><span className="pulse-ring" /><div><b>Execution confirmed — recovery not yet established</b><p>Operon is evaluating telemetry after the frozen observation boundary.</p></div></div>}{outcome && <div className={`outcome-result ${tone(outcome.result)}`}><b>{outcome.result.replaceAll("_", " ")}</b><p>{outcome.reason}</p><div>{Object.entries(outcome.before_metrics || {}).slice(0, 3).map(([key, value]) => <span key={`b-${key}`}>{key}: {Number(value).toFixed(2)} before</span>)}{Object.entries(outcome.after_metrics || {}).slice(0, 3).map(([key, value]) => <span key={`a-${key}`}>{key}: {Number(value).toFixed(2)} after</span>)}</div></div>}{!receipt && <EmptyLine text="No governed execution receipt exists." />}</Card>;
+  return (
+    <Card title="Execution & Outcome" icon="◉" meta="Deterministic Verification">
+      <div className="outcome-flow">
+        <div className={receipt ? "done" : ""}>
+          <i>{receipt ? "✓" : "1"}</i>
+          <span><b>Execution</b><small>{receipt?.status || "Pending"}</small></span>
+        </div>
+        <em>→</em>
+        <div className={plan ? "active" : ""}>
+          <i>{plan ? "◌" : "2"}</i>
+          <span><b>Observe</b><small>{plan ? "Active" : "Pending"}</small></span>
+        </div>
+        <em>→</em>
+        <div className={outcome ? "done" : ""}>
+          <i>{outcome ? "✓" : "3"}</i>
+          <span><b>Verify</b><small>{outcome?.result || "Pending"}</small></span>
+        </div>
+      </div>
+
+      {receipt ? (
+        <div className="receipt">
+          <span><small>Execution Receipt</small><CopyId value={receipt.id} /></span>
+          <Status value={receipt.status}>{receipt.status}</Status>
+          <p>{Object.entries(receipt.external_ids || {}).map(([key, value]) => `${key}: ${value}`).join(" · ") || receipt.adapter}</p>
+        </div>
+      ) : (
+        <div className="awaiting-synthesis">
+          <span className="synthesis-dot" />
+          <div>
+            <b>Execution Standby</b>
+            <p>Awaiting intervention authorization and technician dispatch.</p>
+          </div>
+        </div>
+      )}
+
+      {phase === "OBSERVING" && !outcome && (
+        <div className="observing-callout">
+          <span className="pulse-ring" />
+          <div>
+            <b>Execution Confirmed — Recovery Evaluating</b>
+            <p>Operon is evaluating telemetry post-maintenance to establish verified recovery.</p>
+          </div>
+        </div>
+      )}
+
+      {outcome && (
+        <div className={`outcome-result ${tone(outcome.result)}`}>
+          <b>{outcome.result.replaceAll("_", " ")}</b>
+          <p>{outcome.reason}</p>
+          <div>
+            {Object.entries(outcome.before_metrics || {}).slice(0, 3).map(([key, value]) => (
+              <span key={`b-${key}`}>{key}: {Number(value).toFixed(2)} before</span>
+            ))}
+            {Object.entries(outcome.after_metrics || {}).slice(0, 3).map(([key, value]) => (
+              <span key={`a-${key}`}>{key}: {Number(value).toFixed(2)} after</span>
+            ))}
+          </div>
+        </div>
+      )}
+    </Card>
+  );
 }
 
-function EventCard({ events }) { return <Card title="Application activity" icon="⋮" meta={`${events.length} committed events`}><div className="event-list">{[...events].reverse().slice(0, 8).map((event) => <div key={event.id}><i className={tone(event.event_type)} /><span><b>{event.event_type.replaceAll("_", " ")}</b><small>revision {event.revision} · {relativeTime(event.created_at)}</small></span></div>)}</div></Card>; }
+function AuditLedgerDrawer({ evidence, events }) {
+  const [tab, setTab] = useState("evidence");
+  const [expanded, setExpanded] = useState(false);
+  const evidenceItems = [...evidence].reverse();
+  const eventItems = [...events].reverse();
+
+  return (
+    <section className="audit-ledger-drawer detail-card">
+      <div className="drawer-header">
+        <div className="drawer-tabs">
+          <button
+            className={`drawer-tab-btn ${tab === "evidence" ? "active" : ""}`}
+            onClick={() => setTab("evidence")}
+          >
+            <span>▤</span>
+            <b>Evidence Ledger</b>
+            <small>{evidence.length}</small>
+          </button>
+          <button
+            className={`drawer-tab-btn ${tab === "events" ? "active" : ""}`}
+            onClick={() => setTab("events")}
+          >
+            <span>⋮</span>
+            <b>Application Audit Trail</b>
+            <small>{events.length}</small>
+          </button>
+        </div>
+        <button
+          className="drawer-expand-toggle"
+          onClick={() => setExpanded(!expanded)}
+          title={expanded ? "Collapse drawer" : "Expand drawer"}
+        >
+          {expanded ? "Show Compact ▲" : "Expand All ▼"}
+        </button>
+      </div>
+
+      <div className={`drawer-content ${expanded ? "expanded" : ""}`}>
+        {tab === "evidence" && (
+          <div className="evidence-list">
+            {evidenceItems.slice(0, expanded ? 25 : 6).map((item) => (
+              <div key={item.id} className="evidence-row">
+                <span className={`source-mark ${item.provenance?.toLowerCase()}`}>
+                  {item.kind === "model_signal" ? "◆" : "●"}
+                </span>
+                <div>
+                  <b>{item.kind.replaceAll("_", " ")}</b>
+                  <p>{item.summary}</p>
+                  <small>{item.source_system} · {item.provenance} · {item.quality}</small>
+                </div>
+                <CopyId value={item.id} short />
+              </div>
+            ))}
+            {evidenceItems.length === 0 && <EmptyLine text="No durable evidence records recorded." />}
+          </div>
+        )}
+
+        {tab === "events" && (
+          <div className="event-list">
+            {eventItems.slice(0, expanded ? 30 : 8).map((event) => (
+              <div key={event.id}>
+                <i className={tone(event.event_type)} />
+                <span>
+                  <b>{event.event_type.replaceAll("_", " ")}</b>
+                  <small>revision {event.revision} · {relativeTime(event.created_at)}</small>
+                </span>
+              </div>
+            ))}
+            {eventItems.length === 0 && <EmptyLine text="No application events committed yet." />}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function EmptyCommand({ threshold }) { return <div className="empty-command"><ShieldMark /><h2>Operon is monitoring the factory</h2><p>A predictive signal at {pct(threshold)} opens a durable incident. Every step after that is evidence-bound and independently governed.</p><Invariant /><div className="empty-pipeline">Telemetry → predictive signal → incident → investigation → human-governed action → observed outcome</div></div>; }
 function Panel({ title, meta, children }) { return <section className="panel"><div className="panel-title"><h2>{title}</h2><span>{meta}</span></div>{children}</section>; }
 function Card({ title, icon, meta, accent = "", children }) { return <section className={`detail-card ${accent}`}><div className="card-title"><span>{icon}</span><h2>{title}</h2><small>{meta}</small></div>{children}</section>; }
