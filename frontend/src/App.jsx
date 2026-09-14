@@ -15,6 +15,12 @@ import {
   CloudIcon,
   FactoryIcon,
   CheckCircleIcon,
+  CopyIcon,
+  LockIcon,
+  UnlockIcon,
+  EyeIcon,
+  RefreshCwIcon,
+  ZapIcon,
   AlertTriangleIcon,
   ActivityIcon,
   TrendingUpIcon,
@@ -28,7 +34,18 @@ const FLOW_LABELS = { OPEN: "Signal", INVESTIGATING: "Investigate", AWAITING_EVI
 const SERIES = ["#ff5d73", "#f6b94a", "#748ffc", "#30c7d2", "#31d6a0", "#b478f2"];
 
 export default function App() {
-  const { state, approve, reject, reset, stop, resume, startDemo } = useEngine();
+  const {
+    state,
+    approve,
+    reject,
+    verifyOutcome,
+    reset,
+    stop,
+    resume,
+    startDemo,
+    refreshState,
+    clearError,
+  } = useEngine();
   const alerts = useMemo(
     () => Object.values(state.alerts).sort((a, b) => (a.triage_rank || 99) - (b.triage_rank || 99)),
     [state.alerts]
@@ -174,7 +191,15 @@ export default function App() {
 
           {sessionFilter === "ACTIVE" && (
             currentActiveIncident ? (
-              <IncidentCommand incident={currentActiveIncident} state={state} approve={approve} reject={reject} />
+              <IncidentCommand
+                incident={currentActiveIncident}
+                state={state}
+                approve={approve}
+                reject={reject}
+                verifyOutcome={verifyOutcome}
+                clearError={clearError}
+                refreshState={refreshState}
+              />
             ) : (
               <NoActiveIncidentState
                 asset={focusedAsset}
@@ -191,7 +216,16 @@ export default function App() {
 
           {sessionFilter === "PAST" && (
             currentPastIncident ? (
-              <IncidentCommand incident={currentPastIncident} state={state} approve={approve} reject={reject} isResolved />
+              <IncidentCommand
+                incident={currentPastIncident}
+                state={state}
+                approve={approve}
+                reject={reject}
+                verifyOutcome={verifyOutcome}
+                clearError={clearError}
+                refreshState={refreshState}
+                isResolved
+              />
             ) : (
               <NoPastIncidentState
                 asset={focusedAsset}
@@ -1141,7 +1175,16 @@ function formatDetectionTime(ts) {
   }
 }
 
-function IncidentCommand({ incident, state, approve, reject, isResolved }) {
+function IncidentCommand({
+  incident,
+  state,
+  approve,
+  reject,
+  verifyOutcome,
+  clearError,
+  refreshState,
+  isResolved,
+}) {
   const lifecycle = incident.lifecycle || {}, view = lifecycle.read_model || {}, phase = lifecycle.phase || "OPEN";
   const isResolvedIncident = isResolved || ["CLOSED", "FAILED", "CANCELLED"].includes(phase || incident.status);
 
@@ -1196,8 +1239,22 @@ function IncidentCommand({ incident, state, approve, reject, isResolved }) {
         {/* Right Column: Action & Human-in-the-Loop Governance (The "What to Do") */}
         <div className="command-column">
           <InterventionCard incident={incident} view={view} />
-          <ApprovalCard incident={incident} view={view} approve={approve} reject={reject} pending={state.action.pending} />
-          <OutcomeCard incident={incident} view={view} />
+          <ApprovalCard
+            incident={incident}
+            view={view}
+            approve={approve}
+            reject={reject}
+            pending={state.action.pending}
+            actionError={state.action.error}
+            clearError={clearError}
+            refreshState={refreshState}
+          />
+          <OutcomeCard
+            incident={incident}
+            view={view}
+            verifyOutcome={verifyOutcome}
+            pending={state.action.pending}
+          />
         </div>
       </div>
 
@@ -1207,39 +1264,234 @@ function IncidentCommand({ incident, state, approve, reject, isResolved }) {
   );
 }
 
-function Lifecycle({ phase, events }) {
-  const reached = new Set(events.filter((event) => event.event_type === "PHASE_CHANGED").map((event) => event.payload?.to).filter(Boolean));
-  reached.add("OPEN");
-  reached.add(phase);
-  const currentIndex = FLOW.indexOf(phase), exceptional = ["ESCALATED", "EXECUTION_FAILED", "CANCELLED"].includes(phase);
+const STAGES = [
+  { id: "detection", number: 1, title: "Detection", subline: "Signal Admitted" },
+  { id: "diagnosis", number: 2, title: "Diagnosis", subline: "Consensus Validated" },
+  { id: "planning", number: 3, title: "Planning", subline: "Package Formulated" },
+  { id: "dispatch", number: 4, title: "Dispatch", subline: "CMMS Execution" },
+  { id: "verification", number: 5, title: "Verification", subline: "Recovery Proven" },
+];
+
+function Lifecycle({ phase = "OPEN", events = [] }) {
+  // Compute stage statuses based strictly on authoritative lineage
+  const stageStatuses = useMemo(() => {
+    const s = {};
+    const p = phase || "OPEN";
+
+    // Exceptional terminal states
+    if (["ESCALATED", "CANCELLED", "EXECUTION_FAILED"].includes(p)) {
+      s.detection = "done";
+      s.diagnosis = "done";
+      s.planning = "done";
+      s.gate = p === "ESCALATED" ? "refused" : "passed";
+      s.dispatch = p === "EXECUTION_FAILED" ? "failed" : "pending";
+      s.verification = "pending";
+      return s;
+    }
+
+    if (p === "OPEN") {
+      s.detection = "active";
+      s.diagnosis = "pending";
+      s.planning = "pending";
+      s.gate = "standby";
+      s.dispatch = "pending";
+      s.verification = "pending";
+    } else if (["INVESTIGATING", "AWAITING_EVIDENCE", "DIAGNOSIS_VALIDATED"].includes(p)) {
+      s.detection = "done";
+      s.diagnosis = "active";
+      s.planning = "pending";
+      s.gate = "standby";
+      s.dispatch = "pending";
+      s.verification = "pending";
+    } else if (["PLANNING", "INTERVENTION_VALIDATED"].includes(p)) {
+      s.detection = "done";
+      s.diagnosis = "done";
+      s.planning = "active";
+      s.gate = "standby";
+      s.dispatch = "pending";
+      s.verification = "pending";
+    } else if (p === "AWAITING_APPROVAL") {
+      s.detection = "done";
+      s.diagnosis = "done";
+      s.planning = "done";
+      s.gate = "armed";
+      s.dispatch = "pending";
+      s.verification = "pending";
+    } else if (p === "READY") {
+      s.detection = "done";
+      s.diagnosis = "done";
+      s.planning = "done";
+      s.gate = "passed";
+      s.dispatch = "ready";
+      s.verification = "pending";
+    } else if (p === "EXECUTING") {
+      s.detection = "done";
+      s.diagnosis = "done";
+      s.planning = "done";
+      s.gate = "passed";
+      s.dispatch = "active";
+      s.verification = "pending";
+    } else if (p === "OBSERVING") {
+      s.detection = "done";
+      s.diagnosis = "done";
+      s.planning = "done";
+      s.gate = "passed";
+      s.dispatch = "done";
+      s.verification = "active";
+    } else if (p === "CLOSED") {
+      s.detection = "done";
+      s.diagnosis = "done";
+      s.planning = "done";
+      s.gate = "passed";
+      s.dispatch = "done";
+      s.verification = "done";
+    }
+    return s;
+  }, [phase]);
+
+  const getSubtext = (stageId, status) => {
+    if (status === "done") {
+      if (stageId === "detection") return "Signal Admitted";
+      if (stageId === "diagnosis") return "Critic Validated";
+      if (stageId === "planning") return "Package Validated";
+      if (stageId === "dispatch") return "Execution Confirmed";
+      if (stageId === "verification") return "Recovery Proven";
+    }
+    if (status === "active") {
+      if (stageId === "detection") return "Evaluating Signal";
+      if (stageId === "diagnosis") {
+        if (phase === "INVESTIGATING") return "Gathering Telemetry";
+        if (phase === "AWAITING_EVIDENCE") return "Missing Evidence";
+        return "Consensus Validated";
+      }
+      if (stageId === "planning") {
+        if (phase === "PLANNING") return "Synthesizing Plan";
+        return "Package Validated";
+      }
+      if (stageId === "dispatch") return "CMMS Executing";
+      if (stageId === "verification") return "Sensor Watch Active";
+    }
+    return STAGES.find((s) => s.id === stageId)?.subline || "Pending";
+  };
+
+  const gateState = useMemo(() => {
+    const s = stageStatuses.gate;
+    if (s === "armed") {
+      return {
+        status: "armed",
+        icon: <AlertTriangleIcon size={12} color="#f59e0b" />,
+        label: "Sign-Off Required",
+        subtext: "Governance Gate Armed",
+        beacon: true,
+      };
+    }
+    if (s === "passed") {
+      return {
+        status: "passed",
+        icon: <ShieldCheckIcon size={12} color="var(--signal-nominal-text)" />,
+        label: "Approved",
+        subtext: "Human Gate Passed",
+        beacon: false,
+      };
+    }
+    if (s === "refused") {
+      return {
+        status: "refused",
+        icon: <LockIcon size={12} color="#ef4444" />,
+        label: "Gate Refused",
+        subtext: "Escalated / Rejected",
+        beacon: false,
+      };
+    }
+    return {
+      status: "standby",
+      icon: <LockIcon size={12} color="var(--text-muted)" />,
+      label: "Approval Gate",
+      subtext: "Governance Boundary",
+      beacon: false,
+    };
+  }, [stageStatuses.gate]);
+
+  const renderStageNode = (st) => {
+    const status = stageStatuses[st.id] || "pending";
+    const isDone = status === "done";
+    const isActive = status === "active" || status === "ready";
+    const isFailed = status === "failed";
+    const sub = getSubtext(st.id, status);
+
+    return (
+      <div key={st.id} className={`pipeline-stage ${status}`}>
+        <div className="stage-node-container">
+          <div className="stage-node">
+            {isDone ? (
+              <i className="node-icon check">✓</i>
+            ) : isFailed ? (
+              <i className="node-icon fail">!</i>
+            ) : (
+              <i className="node-icon num">{st.number}</i>
+            )}
+            {isActive && <span className="active-ring" />}
+          </div>
+        </div>
+        <div className="stage-meta">
+          <span className="stage-title">{st.title}</span>
+          <span className="stage-sub">{sub}</span>
+        </div>
+      </div>
+    );
+  };
+
+  const renderRail = (fromStatus) => {
+    const filled = fromStatus === "done";
+    return (
+      <div className={`pipeline-rail ${filled ? "filled" : ""}`}>
+        <div className="rail-fill" />
+      </div>
+    );
+  };
 
   return (
-    <section className="lifecycle-block">
-      <div className="section-title">
-        <span>Authoritative Lifecycle</span>
-        <small>Committed Application State</small>
+    <section className="lifecycle-pipeline-card">
+      <div className="pipeline-header">
+        <span className="pipeline-badge">Lifecycle</span>
+        <div className="pipeline-phase-tag">
+          <span className="phase-indicator-dot" />
+          <span>Active Phase: <b>{phase.replaceAll("_", " ")}</b></span>
+        </div>
       </div>
-      <div className="lifecycle-flow">
-        {FLOW.map((step, i) => {
-          const done = reached.has(step) || (!exceptional && currentIndex >= 0 && i < currentIndex);
-          const isCurrent = phase === step;
-          return (
-            <div key={step} className={`lifecycle-step ${done ? "done" : ""} ${isCurrent ? "current" : ""}`}>
-              <div className="step-node">
-                <i>{done ? "✓" : i + 1}</i>
-              </div>
-              <span className="step-label">{FLOW_LABELS[step]}</span>
+
+      <div className="pipeline-track">
+        {/* Stage 1: Detection */}
+        {renderStageNode(STAGES[0])}
+        {renderRail(stageStatuses.detection)}
+
+        {/* Stage 2: Diagnosis */}
+        {renderStageNode(STAGES[1])}
+        {renderRail(stageStatuses.diagnosis)}
+
+        {/* Stage 3: Planning */}
+        {renderStageNode(STAGES[2])}
+
+        {/* --- CENTRAL GOVERNANCE AIR-GAP GATE --- */}
+        <div className="pipeline-gate-segment">
+          <div className={`gate-rail left ${stageStatuses.planning === "done" ? "filled" : ""}`} />
+          <div className={`gate-capsule ${gateState.status}`}>
+            <span className="gate-icon-wrap">{gateState.icon}</span>
+            <div className="gate-text-wrap">
+              <span className="gate-headline">{gateState.label}</span>
+              <span className="gate-tagline">{gateState.subtext}</span>
             </div>
-          );
-        })}
-        {exceptional && (
-          <div className="lifecycle-step exception current">
-            <div className="step-node">
-              <i>!</i>
-            </div>
-            <span className="step-label">{phase.replaceAll("_", " ")}</span>
+            {gateState.beacon && <span className="gate-beacon-ping" />}
           </div>
-        )}
+          <div className={`gate-rail right ${["passed", "active", "done"].includes(stageStatuses.dispatch) ? "filled" : ""}`} />
+        </div>
+
+        {/* Stage 4: Dispatch */}
+        {renderStageNode(STAGES[3])}
+        {renderRail(stageStatuses.dispatch)}
+
+        {/* Stage 5: Verification */}
+        {renderStageNode(STAGES[4])}
       </div>
     </section>
   );
@@ -1415,10 +1667,32 @@ function InterventionCard({ incident, view }) {
   );
 }
 
-function ApprovalCard({ incident, view, approve, reject, pending }) {
-  const phase = incident.lifecycle?.phase, current = [...(view.requirements || [])].reverse()[0], decision = [...(view.approval_decisions || [])].reverse()[0], canApprove = phase === "AWAITING_APPROVAL" && incident.lifecycle?.requirement_id;
+function ApprovalCard({ incident, view, approve, reject, pending, actionError, clearError, refreshState }) {
+  const [inspectOpen, setInspectOpen] = useState(false);
+  const phase = incident.lifecycle?.phase;
+  const current = [...(view.requirements || [])].reverse()[0];
+  const decision = [...(view.approval_decisions || [])].reverse()[0];
+  const canApprove = phase === "AWAITING_APPROVAL" && incident.lifecycle?.requirement_id;
+  const intervention = view.intervention;
+  const step = intervention?.steps?.[0];
+  const binding = view.binding;
+
   return (
     <Card title="Governance & Policy Gate" icon="◇" meta={current?.policy_version || "Gate Armed"} accent={canApprove ? "approval" : ""}>
+      {actionError && (
+        <div className="inline-action-error">
+          <div className="error-header">
+            <AlertTriangleIcon size={12} color="#ef4444" />
+            <b>Approval Refused by Application Gate</b>
+          </div>
+          <p>{actionError}</p>
+          <button type="button" className="btn-refresh-state" onClick={() => { clearError?.(); refreshState?.(); }}>
+            <RefreshCwIcon size={10} />
+            <span>Refresh State & Re-validate</span>
+          </button>
+        </div>
+      )}
+
       {canApprove ? (
         <>
           <div className="governance-result">
@@ -1432,10 +1706,46 @@ function ApprovalCard({ incident, view, approve, reject, pending }) {
           <div className="binding-strip">
             <span>Bound to</span><CopyId value={current.intervention_id} short />
             <span>hash</span><CopyId value={current.intervention_hash} short />
+            <button
+              type="button"
+              className="btn-inspect-plan"
+              onClick={() => setInspectOpen(!inspectOpen)}
+              title="Inspect work package specification"
+            >
+              <EyeIcon size={10} />
+              <span>{inspectOpen ? "Hide Spec" : "Inspect Spec"}</span>
+            </button>
           </div>
+
+          {inspectOpen && (
+            <div className="work-package-inspector">
+              <div className="inspector-header">
+                <b>Signed Work Package Specification</b>
+                <small>SHA-256 Verified</small>
+              </div>
+              <div className="inspector-details">
+                <KV label="Action" value={step?.parameters?.description || step?.capability} />
+                <KV label="Technician" value={binding?.technician_id || "Lead Technician"} />
+                <KV label="Downtime" value={`${intervention?.estimated_downtime_minutes ?? 45} min`} />
+                <KV label="Cost / Avoided" value={`${money0(intervention?.estimated_cost)} / +${money0(intervention?.estimated_avoided_loss)}`} />
+                {step?.parameters && (
+                  <div className="inspector-params">
+                    <small>Dispatched Parameters</small>
+                    <code>{JSON.stringify(step.parameters, null, 2)}</code>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          <div className="approver-identity-strip">
+            <span className="identity-dot" />
+            <span>Signing Role: <b>Maintenance Approver</b> (dashboard-operator)</span>
+          </div>
+
           <div className="approval-actions">
             <button disabled={!!pending} onClick={() => approve(incident)}>
-              Approve Exact Plan & Dispatch
+              {pending ? "Signing & Dispatching…" : "Approve Exact Plan & Dispatch"}
             </button>
             <button disabled={!!pending} className="reject" onClick={() => reject(incident)}>
               Reject
@@ -1455,7 +1765,36 @@ function ApprovalCard({ incident, view, approve, reject, pending }) {
           <div className="binding-strip">
             <span>Bound to</span><CopyId value={current.intervention_id} short />
             <span>hash</span><CopyId value={current.intervention_hash} short />
+            <button
+              type="button"
+              className="btn-inspect-plan"
+              onClick={() => setInspectOpen(!inspectOpen)}
+              title="Inspect work package specification"
+            >
+              <EyeIcon size={10} />
+              <span>{inspectOpen ? "Hide Spec" : "Inspect Spec"}</span>
+            </button>
           </div>
+          {inspectOpen && (
+            <div className="work-package-inspector">
+              <div className="inspector-header">
+                <b>Signed Work Package Specification</b>
+                <small>SHA-256 Verified</small>
+              </div>
+              <div className="inspector-details">
+                <KV label="Action" value={step?.parameters?.description || step?.capability} />
+                <KV label="Technician" value={binding?.technician_id || "Lead Technician"} />
+                <KV label="Downtime" value={`${intervention?.estimated_downtime_minutes ?? 45} min`} />
+                <KV label="Cost / Avoided" value={`${money0(intervention?.estimated_cost)} / +${money0(intervention?.estimated_avoided_loss)}`} />
+                {step?.parameters && (
+                  <div className="inspector-params">
+                    <small>Dispatched Parameters</small>
+                    <code>{JSON.stringify(step.parameters, null, 2)}</code>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </>
       ) : (
         <div className="awaiting-synthesis">
@@ -1477,8 +1816,24 @@ function ApprovalCard({ incident, view, approve, reject, pending }) {
   );
 }
 
-function OutcomeCard({ incident, view }) {
-  const receipts = view.execution_receipts || [], receipt = receipts[receipts.length - 1], plans = view.observation_plans || [], plan = plans[plans.length - 1], outcomes = view.outcomes || [], outcome = outcomes[outcomes.length - 1], phase = incident.lifecycle?.phase;
+function OutcomeCard({ incident, view, verifyOutcome, pending }) {
+  const receipts = view.execution_receipts || [], receipt = receipts[receipts.length - 1];
+  const plans = view.observation_plans || [], plan = plans[plans.length - 1];
+  const outcomes = view.outcomes || [], outcome = outcomes[outcomes.length - 1];
+  const phase = incident.lifecycle?.phase;
+  const isObserving = phase === "OBSERVING" && !outcome;
+  const [verifying, setVerifying] = useState(false);
+
+  const handleVerify = async () => {
+    if (!verifyOutcome || verifying) return;
+    setVerifying(true);
+    try {
+      await verifyOutcome(incident.incident_id);
+    } finally {
+      setVerifying(false);
+    }
+  };
+
   return (
     <Card title="Execution & Outcome" icon="◉" meta="Deterministic Verification">
       <div className="outcome-flow">
@@ -1514,13 +1869,25 @@ function OutcomeCard({ incident, view }) {
         </div>
       )}
 
-      {phase === "OBSERVING" && !outcome && (
-        <div className="observing-callout">
-          <span className="pulse-ring" />
-          <div>
-            <b>Execution Confirmed — Recovery Evaluating</b>
-            <p>Operon is evaluating telemetry post-maintenance to establish verified recovery.</p>
+      {isObserving && (
+        <div className="observing-station">
+          <div className="observing-callout">
+            <span className="pulse-ring" />
+            <div>
+              <b>Execution Confirmed · Telemetry Observation Active</b>
+              <p>Physical sensor telemetry is being gathered and evaluated against nominal safety envelopes.</p>
+            </div>
           </div>
+          <button
+            type="button"
+            className="btn-verify-outcome"
+            disabled={verifying || !!pending}
+            onClick={handleVerify}
+            title="Explicitly evaluate post-maintenance telemetry against safety envelope (Step 14)"
+          >
+            <ZapIcon size={12} />
+            <span>{verifying ? "Verifying Sensor Envelopes…" : "Run Verification Now (Step 14)"}</span>
+          </button>
         </div>
       )}
 
@@ -1545,8 +1912,8 @@ function OutcomeCard({ incident, view }) {
 function AuditLedgerDrawer({ evidence, events }) {
   const [tab, setTab] = useState("evidence");
   const [expanded, setExpanded] = useState(false);
-  const evidenceItems = [...evidence].reverse();
-  const eventItems = [...events].reverse();
+  const evidenceItems = useMemo(() => [...evidence].reverse(), [evidence]);
+  const eventItems = useMemo(() => [...events].reverse(), [events]);
 
   return (
     <section className="audit-ledger-drawer detail-card">
@@ -1574,14 +1941,14 @@ function AuditLedgerDrawer({ evidence, events }) {
           onClick={() => setExpanded(!expanded)}
           title={expanded ? "Collapse drawer" : "Expand drawer"}
         >
-          {expanded ? "Show Compact ▲" : "Expand All ▼"}
+          {expanded ? "Show Compact ▲" : "Expand Full Audit ▼"}
         </button>
       </div>
 
       <div className={`drawer-content ${expanded ? "expanded" : ""}`}>
         {tab === "evidence" && (
           <div className="evidence-list">
-            {evidenceItems.slice(0, expanded ? 25 : 6).map((item) => (
+            {evidenceItems.slice(0, expanded ? 120 : 6).map((item) => (
               <div key={item.id} className="evidence-row">
                 <span className={`source-mark ${item.provenance?.toLowerCase()}`}>
                   {item.kind === "model_signal" ? "◆" : "●"}
@@ -1600,7 +1967,7 @@ function AuditLedgerDrawer({ evidence, events }) {
 
         {tab === "events" && (
           <div className="event-list">
-            {eventItems.slice(0, expanded ? 30 : 8).map((event) => (
+            {eventItems.slice(0, expanded ? 150 : 8).map((event) => (
               <div key={event.id}>
                 <i className={tone(event.event_type)} />
                 <span>
@@ -1643,19 +2010,34 @@ function CopyId({ value, short = false }) {
     : value;
 
   return (
-    <code
-      className={`copy-id-badge ${copied ? "copied" : ""}`}
-      title={copied ? "Copied to clipboard!" : `Click to copy ID: ${value}`}
-      onClick={handleCopy}
-    >
-      {copied ? (
-        <span className="copied-feedback">
-          <CheckCircleIcon size={10} color="var(--green)" /> Copied!
-        </span>
-      ) : (
-        displayText
-      )}
-    </code>
+    <span className="copy-id-group">
+      <code
+        className={`copy-id-badge ${copied ? "copied" : ""}`}
+        title={copied ? "Copied to clipboard!" : `Click to copy ID: ${value}`}
+        onClick={handleCopy}
+      >
+        {displayText}
+      </code>
+      <button
+        type="button"
+        className={`copy-id-btn ${short ? "compact" : ""} ${copied ? "copied" : ""}`}
+        title={copied ? "Copied to clipboard!" : `Copy ID: ${value}`}
+        onClick={handleCopy}
+        aria-label="Copy ID"
+      >
+        {copied ? (
+          <>
+            <CheckCircleIcon size={10} color="var(--green)" />
+            {!short && <span>Copied!</span>}
+          </>
+        ) : (
+          <>
+            <CopyIcon size={10} />
+            {!short && <span>Copy</span>}
+          </>
+        )}
+      </button>
+    </span>
   );
 }
 function Verdict({ item }) { return <div className={`verdict ${tone(item.decision)}`}><b>{item.decision === "ACCEPT" ? "✓ Critic + application validation passed" : item.decision}</b>{(item.blocking_issues || []).length > 0 && <p>{item.blocking_issues.join(" · ")}</p>}<small>{item.validation_policy_version || "validation policy"}</small></div>; }

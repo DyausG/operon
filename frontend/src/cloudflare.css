@@ -1000,13 +1000,25 @@ pre, code, kbd, samp {
   border-color: var(--obsidian-border-strong) !important;
 }
 
-/* Interactive Copy Badge with Feedback */
-.copy-id-badge {
+/* Interactive Copy Badge & Button with Feedback */
+.copy-id-group {
   display: inline-flex !important;
   align-items: center !important;
   gap: 4px !important;
+  vertical-align: middle !important;
+}
+
+.copy-id-badge {
+  display: inline-flex !important;
+  align-items: center !important;
   user-select: none !important;
   cursor: pointer !important;
+  transition: all 0.15s ease !important;
+}
+
+.copy-id-badge:hover {
+  background: var(--obsidian-surface-hover) !important;
+  border-color: var(--obsidian-border-strong) !important;
 }
 
 .copy-id-badge.copied {
@@ -1015,12 +1027,583 @@ pre, code, kbd, samp {
   color: var(--signal-nominal-text) !important;
 }
 
-.copy-id-badge .copied-feedback {
+.copy-id-btn {
   display: inline-flex !important;
   align-items: center !important;
-  gap: 3px !important;
+  justify-content: center !important;
+  gap: 3.5px !important;
+  height: 18px !important;
+  padding: 0 6px !important;
+  font-family: var(--font-sans) !important;
+  font-size: 10px !important;
+  font-weight: 500 !important;
+  color: var(--text-muted) !important;
+  background: var(--obsidian-surface-soft) !important;
+  border: 1px solid var(--obsidian-border) !important;
+  border-radius: 4px !important;
+  cursor: pointer !important;
+  line-height: 1 !important;
+  user-select: none !important;
+  transition: all 0.15s ease !important;
+}
+
+.copy-id-btn.compact {
+  padding: 0 4px !important;
+  min-width: 18px !important;
+}
+
+.copy-id-btn:hover {
+  color: var(--text-primary) !important;
+  background: var(--obsidian-surface-hover) !important;
+  border-color: var(--obsidian-border-strong) !important;
+}
+
+.copy-id-btn.copied {
+  background: rgba(16, 185, 129, 0.12) !important;
+  border-color: rgba(16, 185, 129, 0.35) !important;
+  color: var(--signal-nominal-text) !important;
+}
+
+/* ==========================================================================
+   Clean & Modern 5-Stage Authoritative Lifecycle & Governance Gate
+   ========================================================================== */
+
+.lifecycle-pipeline-card {
+  background: var(--obsidian-surface) !important;
+  border: 1px solid var(--obsidian-border) !important;
+  border-radius: var(--radius-md) !important;
+  padding: 12px 16px !important;
+  margin-bottom: 14px !important;
+  position: relative !important;
+  backdrop-filter: blur(12px) !important;
+}
+
+.pipeline-header {
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: center !important;
+  margin-bottom: 12px !important;
+}
+
+.pipeline-title-group {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+}
+
+.pipeline-badge {
+  font-family: var(--font-sans) !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.01em !important;
+  color: var(--text-primary) !important;
+}
+
+.pipeline-rule-tag {
+  font-family: var(--font-sans) !important;
+  font-size: 10px !important;
+  color: var(--text-muted) !important;
+  font-weight: 400 !important;
+}
+
+.pipeline-phase-tag {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  background: var(--obsidian-surface-soft) !important;
+  border: 1px solid var(--obsidian-border) !important;
+  border-radius: 12px !important;
+  padding: 2px 8px !important;
+  font-family: var(--font-sans) !important;
+  font-size: 10px !important;
+  color: var(--text-secondary) !important;
+}
+
+.phase-indicator-dot {
+  width: 5px !important;
+  height: 5px !important;
+  border-radius: 50% !important;
+  background: var(--signal-nominal) !important;
+}
+
+.pipeline-track {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  position: relative !important;
+  width: 100% !important;
+  padding: 4px 0 !important;
+}
+
+.pipeline-stage {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  text-align: center !important;
+  flex: 1 !important;
+  min-width: 0 !important;
+  position: relative !important;
+  z-index: 1 !important;
+}
+
+.stage-node-container {
+  display: flex !important;
+  justify-content: center !important;
+  align-items: center !important;
+  position: relative !important;
+  width: 24px !important;
+  height: 24px !important;
+  margin-bottom: 5px !important;
+}
+
+.stage-node {
+  width: 22px !important;
+  height: 22px !important;
+  border-radius: 50% !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-size: 10px !important;
+  font-weight: 600 !important;
+  font-family: var(--font-sans) !important;
+  background: var(--obsidian-surface-soft) !important;
+  border: 1px solid var(--obsidian-border) !important;
+  color: var(--text-muted) !important;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  position: relative !important;
+}
+
+.node-icon {
+  font-style: normal !important;
+  line-height: 1 !important;
+}
+
+.node-icon.check {
+  display: inline-block !important;
+  animation: check-pop 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) !important;
+}
+
+.node-icon.fail {
+  color: #ef4444 !important;
+  font-weight: 700 !important;
+}
+
+.active-ring {
+  position: absolute !important;
+  inset: -3px !important;
+  border-radius: 50% !important;
+  border: 1.5px solid rgba(116, 143, 252, 0.5) !important;
+  animation: active-halo 2.8s ease-in-out infinite !important;
+  pointer-events: none !important;
+}
+
+.stage-meta {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  gap: 1.5px !important;
+  max-width: 100% !important;
+}
+
+.stage-title {
+  font-family: var(--font-sans) !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  color: var(--text-muted) !important;
+  white-space: nowrap !important;
+  transition: color 0.2s ease !important;
+}
+
+.stage-sub {
   font-family: var(--font-sans) !important;
   font-size: 9.5px !important;
-  font-weight: 600 !important;
+  color: var(--text-faint) !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  max-width: 105px !important;
+}
+
+/* Stage status modifiers */
+.pipeline-stage.done .stage-node {
+  background: rgba(16, 185, 129, 0.12) !important;
+  border-color: rgba(16, 185, 129, 0.35) !important;
   color: var(--signal-nominal-text) !important;
+}
+
+.pipeline-stage.done .stage-title {
+  color: var(--text-primary) !important;
+}
+
+.pipeline-stage.done .stage-sub {
+  color: var(--signal-nominal-text) !important;
+  font-weight: 500 !important;
+}
+
+.pipeline-stage.active .stage-node,
+.pipeline-stage.ready .stage-node {
+  background: var(--obsidian-surface-raised) !important;
+  border-color: #748ffc !important;
+  color: #748ffc !important;
+  box-shadow: 0 0 0 2px rgba(116, 143, 252, 0.15) !important;
+}
+
+.pipeline-stage.active .stage-title,
+.pipeline-stage.ready .stage-title {
+  color: var(--text-primary) !important;
+  font-weight: 600 !important;
+}
+
+.pipeline-stage.active .stage-sub,
+.pipeline-stage.ready .stage-sub {
+  color: #748ffc !important;
+  font-weight: 500 !important;
+}
+
+/* Pipeline rails between stages */
+.pipeline-rail {
+  flex: 1 !important;
+  height: 1.5px !important;
+  background: var(--obsidian-border) !important;
+  position: relative !important;
+  margin: 0 4px !important;
+  margin-bottom: 20px !important;
+  z-index: 0 !important;
+  min-width: 10px !important;
+  transition: background 0.3s ease !important;
+}
+
+.pipeline-rail.filled {
+  background: rgba(16, 185, 129, 0.45) !important;
+}
+
+.pipeline-rail.filled .rail-fill {
+  position: absolute !important;
+  inset: 0 !important;
+  background: linear-gradient(90deg, rgba(16, 185, 129, 0.65), rgba(16, 185, 129, 0.4)) !important;
+}
+
+/* Governance Air-Gap Gate Segment */
+.pipeline-gate-segment {
+  display: flex !important;
+  align-items: center !important;
+  position: relative !important;
+  z-index: 2 !important;
+  margin: 0 2px !important;
+  margin-bottom: 20px !important;
+}
+
+.gate-rail {
+  width: 8px !important;
+  height: 1.5px !important;
+  background: var(--obsidian-border) !important;
+  transition: background 0.3s ease !important;
+}
+
+.gate-rail.filled {
+  background: rgba(16, 185, 129, 0.45) !important;
+}
+
+.gate-capsule {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  padding: 3px 9px !important;
+  border-radius: 16px !important;
+  font-family: var(--font-sans) !important;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  position: relative !important;
+  user-select: none !important;
+  background: var(--obsidian-surface-soft) !important;
+  border: 1px solid var(--obsidian-border) !important;
+}
+
+.gate-icon-wrap {
+  display: inline-flex !important;
+  align-items: center !important;
+  line-height: 1 !important;
+}
+
+.gate-text-wrap {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: flex-start !important;
+  line-height: 1.15 !important;
+}
+
+.gate-headline {
+  font-size: 10px !important;
+  font-weight: 600 !important;
+  white-space: nowrap !important;
+}
+
+.gate-tagline {
+  font-size: 8.5px !important;
+  white-space: nowrap !important;
+}
+
+/* Gate states */
+.gate-capsule.standby {
+  color: var(--text-muted) !important;
+  background: var(--obsidian-surface-soft) !important;
+  border: 1px dashed var(--obsidian-border) !important;
+}
+.gate-capsule.standby .gate-headline { color: var(--text-muted) !important; }
+.gate-capsule.standby .gate-tagline { color: var(--text-faint) !important; }
+
+.gate-capsule.armed {
+  background: rgba(245, 158, 11, 0.12) !important;
+  border: 1px solid rgba(245, 158, 11, 0.45) !important;
+  color: #f59e0b !important;
+  animation: gate-beacon 2.4s ease-in-out infinite !important;
+}
+.gate-capsule.armed .gate-headline { color: #f59e0b !important; }
+.gate-capsule.armed .gate-tagline { color: rgba(245, 158, 11, 0.85) !important; }
+
+.gate-capsule.passed {
+  background: rgba(16, 185, 129, 0.1) !important;
+  border: 1px solid rgba(16, 185, 129, 0.35) !important;
+  color: var(--signal-nominal-text) !important;
+}
+.gate-capsule.passed .gate-headline { color: var(--signal-nominal-text) !important; }
+.gate-capsule.passed .gate-tagline { color: rgba(16, 185, 129, 0.8) !important; }
+
+.gate-capsule.refused {
+  background: rgba(239, 68, 68, 0.1) !important;
+  border: 1px solid rgba(239, 68, 68, 0.35) !important;
+  color: #ef4444 !important;
+}
+.gate-capsule.refused .gate-headline { color: #ef4444 !important; }
+.gate-capsule.refused .gate-tagline { color: rgba(239, 68, 68, 0.8) !important; }
+
+/* Micro-animations */
+@keyframes gate-beacon {
+  0% {
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 7px rgba(245, 158, 11, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0);
+  }
+}
+
+@keyframes active-halo {
+  0% {
+    transform: scale(0.96);
+    opacity: 0.8;
+  }
+  50% {
+    transform: scale(1.15);
+    opacity: 0.2;
+  }
+  100% {
+    transform: scale(0.96);
+    opacity: 0.8;
+  }
+}
+
+@keyframes check-pop {
+  0% {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(1.15);
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* ==========================================================================
+   Approval Card & Work Package Inspector Additions
+   ========================================================================== */
+
+.btn-inspect-plan {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 3.5px !important;
+  height: 18px !important;
+  padding: 0 6px !important;
+  font-family: var(--font-sans) !important;
+  font-size: 10px !important;
+  font-weight: 500 !important;
+  color: var(--text-muted) !important;
+  background: var(--obsidian-surface-soft) !important;
+  border: 1px solid var(--obsidian-border) !important;
+  border-radius: 4px !important;
+  cursor: pointer !important;
+  margin-left: auto !important;
+  transition: all 0.15s ease !important;
+}
+
+.btn-inspect-plan:hover {
+  color: var(--text-primary) !important;
+  background: var(--obsidian-surface-hover) !important;
+  border-color: var(--obsidian-border-strong) !important;
+}
+
+.work-package-inspector {
+  background: var(--obsidian-surface-soft) !important;
+  border: 1px solid var(--obsidian-border) !important;
+  border-radius: var(--radius-sm) !important;
+  padding: 8px 10px !important;
+  margin-top: 8px !important;
+}
+
+.inspector-header {
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: center !important;
+  margin-bottom: 6px !important;
+}
+
+.inspector-header b {
+  font-size: 10.5px !important;
+  color: var(--text-primary) !important;
+}
+
+.inspector-header small {
+  font-size: 9px !important;
+  color: var(--signal-nominal-text) !important;
+}
+
+.inspector-details {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 4px !important;
+}
+
+.inspector-params {
+  margin-top: 4px !important;
+  border-top: 1px solid var(--obsidian-border) !important;
+  padding-top: 4px !important;
+}
+
+.inspector-params small {
+  display: block !important;
+  font-size: 9px !important;
+  color: var(--text-muted) !important;
+  margin-bottom: 3px !important;
+}
+
+.inspector-params code {
+  display: block !important;
+  font-size: 9.5px !important;
+  font-family: var(--font-mono) !important;
+  color: var(--text-secondary) !important;
+  background: rgba(0, 0, 0, 0.3) !important;
+  padding: 4px 6px !important;
+  border-radius: 4px !important;
+  white-space: pre-wrap !important;
+  word-break: break-all !important;
+  max-height: 90px !important;
+  overflow-y: auto !important;
+}
+
+.approver-identity-strip {
+  display: flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  font-family: var(--font-sans) !important;
+  font-size: 9.5px !important;
+  color: var(--text-muted) !important;
+  margin-top: 6px !important;
+  padding: 3px 6px !important;
+  background: var(--obsidian-surface-soft) !important;
+  border-radius: 4px !important;
+}
+
+.identity-dot {
+  width: 5px !important;
+  height: 5px !important;
+  border-radius: 50% !important;
+  background: var(--signal-nominal) !important;
+}
+
+.inline-action-error {
+  background: rgba(239, 68, 68, 0.08) !important;
+  border: 1px solid rgba(239, 68, 68, 0.3) !important;
+  border-radius: var(--radius-sm) !important;
+  padding: 8px 10px !important;
+  margin-bottom: 10px !important;
+}
+
+.inline-action-error .error-header {
+  display: flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  font-size: 10.5px !important;
+  color: #ef4444 !important;
+  font-weight: 600 !important;
+  margin-bottom: 3px !important;
+}
+
+.inline-action-error p {
+  font-size: 10px !important;
+  color: var(--text-secondary) !important;
+  margin: 0 0 6px 0 !important;
+}
+
+.btn-refresh-state {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  height: 20px !important;
+  padding: 0 7px !important;
+  font-size: 10px !important;
+  font-weight: 500 !important;
+  color: var(--text-primary) !important;
+  background: var(--obsidian-surface-medium) !important;
+  border: 1px solid var(--obsidian-border-strong) !important;
+  border-radius: 4px !important;
+  cursor: pointer !important;
+}
+
+.btn-refresh-state:hover {
+  background: var(--obsidian-surface-hover) !important;
+}
+
+/* ==========================================================================
+   Outcome Card Verification Button Additions
+   ========================================================================== */
+
+.observing-station {
+  margin-top: 8px !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 8px !important;
+}
+
+.btn-verify-outcome {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 5px !important;
+  width: 100% !important;
+  height: 28px !important;
+  padding: 0 10px !important;
+  font-family: var(--font-sans) !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  color: #fff !important;
+  background: linear-gradient(180deg, #2563eb, #1d4ed8) !important;
+  border: 1px solid #3b82f6 !important;
+  border-radius: var(--radius-sm) !important;
+  cursor: pointer !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3) !important;
+  transition: all 0.15s ease !important;
+}
+
+.btn-verify-outcome:hover:not(:disabled) {
+  background: linear-gradient(180deg, #1d4ed8, #1e40af) !important;
+  border-color: #60a5fa !important;
+}
+
+.btn-verify-outcome:disabled {
+  opacity: 0.5 !important;
+  cursor: not-allowed !important;
 }

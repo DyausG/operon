@@ -106,12 +106,20 @@ export function useEngine() {
   } : undefined;
   const approve = useCallback((a) => post(`/api/approve/${a?.equipment_id ?? a}`, intent(a)), [post]);
   const reject = useCallback((a) => post(`/api/reject/${a?.equipment_id ?? a}`, intent(a)), [post]);
+  const verifyOutcome = useCallback((incidentId) => post(`/api/incidents/${incidentId}/outcome`), [post]);
   const reset = useCallback(() => post("/api/reset"), [post]);
   const stop = useCallback(() => post("/api/stop"), [post]);
   const resume = useCallback(() => post("/api/start"), [post]);
   const startDemo = useCallback((equipmentId) => post("/api/demo/scenario", { equipment_id: equipmentId }), [post]);
+  const refreshState = useCallback(() => {
+    fetch("/api/state")
+      .then((r) => r.json())
+      .then(applySnapshot)
+      .catch((e) => console.error("Refresh state error:", e));
+  }, [applySnapshot]);
+  const clearError = useCallback(() => setState((p) => ({ ...p, action: { ...p.action, error: null } })), []);
 
-  return { state, approve, reject, reset, stop, resume, startDemo };
+  return { state, approve, reject, verifyOutcome, reset, stop, resume, startDemo, refreshState, clearError };
 }
 
 function reduce(prev, msg) {
