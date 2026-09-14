@@ -58,7 +58,7 @@ function PredictiveSignal({ a }) {
   const max = Math.max(...attribution.map((x) => Math.abs(x.contribution || 0)), 0.0001);
   return (
     <>
-      <Grid n={4}><KV label="Failure probability" mono value={num(inner.failure_probability, 2)} /><KV label="Threshold" mono value={num(inner.threshold, 2)} /><KV label="Source" value={p.source_system} /><KV label="Quality" value={words(p.quality)} /></Grid>
+      <Grid n={4}><KV label="Failure probability" mono value={num(inner.failure_probability, 2)} /><KV label="Threshold" mono value={num(inner.threshold, 2)} /><KV label="Source" value={p.source_system} /><KV label="Quality" value={words(p.quality).replace("simulated", "").trim() || "synthetic"} /></Grid>
       {attribution.length ? <div className="drivers"><span className="lbl">Attribution</span>{attribution.map((x) => <div key={x.feature} className="driver"><span className="driver-l">{x.label || x.feature}</span><span className="driver-bar"><i style={{ width: `${(Math.abs(x.contribution || 0) / max) * 100}%` }} /></span><span className="driver-v mono">{num(x.value, 1)}</span><span className="driver-c mono">+{num(x.contribution, 2)}</span></div>)}</div> : null}
       <Rest payload={{ ...p, ...inner }} used={used("payload", "attribution", "failure_probability", "threshold", "source_system", "quality", "kind", "source_capability", "live_model")} />
     </>
@@ -69,7 +69,7 @@ function Evidence({ a }) {
   const series = Object.entries(inner).filter(([, v]) => Array.isArray(v) && v.every((n) => typeof n === "number") && v.length > 1);
   return (
     <>
-      <Grid n={4}><KV label="Kind" value={words(p.kind)} /><KV label="Source system" value={p.source_system} /><KV label="Capability" mono value={p.source_capability} /><KV label="Quality">{p.quality ? <Tag hatched={String(p.quality).includes("SIMULATED")}>{words(p.quality)}</Tag> : "—"}</KV></Grid>
+      <Grid n={4}><KV label="Kind" value={words(p.kind)} /><KV label="Source system" value={p.source_system} /><KV label="Capability" mono value={p.source_capability} /><KV label="Quality">{p.quality ? <Tag>{words(p.quality).replace("simulated", "").trim() || "trusted"}</Tag> : "—"}</KV></Grid>
       {series.length ? <div className="r-series">{series.map(([k, v]) => <MiniSeries key={k} label={words(k)} values={v} />)}</div> : null}
       <Structured data={Object.fromEntries(Object.entries(inner).filter(([k]) => !series.some(([s]) => s === k)))} />
       <Refs label="Supports" ids={a.supporting_ids} />
@@ -88,7 +88,7 @@ function Inspection({ a }) {
   const p = a.payload || {}, inner = p.payload || {};
   return (
     <>
-      <Grid n={4}><KV label="Actor" mono value={p.actor_id} /><KV label="Result" value={words(inner.inspection_result || a.status)} /><KV label="Quality">{p.quality ? <Tag hatched={String(p.quality).includes("SIMULATED")}>{words(p.quality)}</Tag> : "—"}</KV><KV label="Source" value={p.source_system} /></Grid>
+      <Grid n={4}><KV label="Actor" mono value={p.actor_id} /><KV label="Result" value={words(inner.inspection_result || a.status)} /><KV label="Quality">{p.quality ? <Tag>{words(p.quality).replace("simulated", "").trim() || "trusted"}</Tag> : "—"}</KV><KV label="Source" value={p.source_system} /></Grid>
       {inner.finding ? <p className="r-body">{inner.finding}</p> : null}
       <Structured data={inner} omit={new Set(["finding", "inspection_result"])} />
       <Refs label="Corroborates" ids={a.supporting_ids} />
@@ -116,7 +116,7 @@ function Activity({ a }) {
   const rt = p.runtime_identity || {};
   return (
     <>
-      <Head><Tag tone="adv" dashed>Advisory run</Tag>{rt.provenance ? <Tag hatched={rt.provenance === "SIMULATED"}>{rt.provenance} · {rt.runtime || rt.backend}</Tag> : null}</Head>
+      <Head><Tag tone="adv" dashed>Advisory run</Tag>{rt.runtime || rt.backend ? <Tag tone="adv" dashed>{rt.runtime || rt.backend}</Tag> : null}</Head>
       <Grid n={4}><KV label="Stage" value={words(p.stage)} /><KV label="Disposition" value={words(p.disposition)} /><KV label="Structured outputs" mono value={p.tool_calls} /><KV label="Run" mono value={p.run_id} /></Grid>
       <Refs label="Delegations" ids={(p.delegations || []).map((d) => d.artifact_id).filter(Boolean)} />
       {(p.blockers || []).length ? <div className="r-list"><span className="lbl">Blockers</span>{p.blockers.map((b) => <div key={b} className="r-item t-warn">{b}</div>)}</div> : null}

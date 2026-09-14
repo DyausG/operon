@@ -64,10 +64,10 @@
 
   --row-h: 30px;
   --header-h: 56px;
+  --kpi-h: 46px;
   --fleet-h: 112px;
   --proc-h: 64px;
-  --footer-h: 36px;
-  --stage-top: calc(var(--header-h) + var(--fleet-h) + var(--proc-h));
+  --stage-top: calc(var(--header-h) + var(--kpi-h) + var(--fleet-h) + var(--proc-h));
   --col-signal: 480px;
   --col-record: 420px;
   --tray-w: 720px;

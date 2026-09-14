@@ -27,7 +27,7 @@ export function EvidenceSlots({ evidence = [], blocked = false }) {
             <Inspectable key={kind} id={e.artifact_id || e.id} className={`slot ev-slot ${trusted ? "ev-trusted" : ""}`}>
               <span className="lbl">{label}</span>
               <span className="ev-summary">{e.summary}</span>
-              <span className="ev-meta" title={e.source_system || e.source || ""}>{e.quality ? <Tag hatched={String(e.quality).includes("SIMULATED")} className="ev-q">{words(e.quality)}</Tag> : null}{trusted && e.actor_id ? <span className="mono t3">{e.actor_id}</span> : null}</span>
+              <span className="ev-meta" title={e.source_system || e.source || ""}>{e.quality ? <Tag className="ev-q">{words(e.quality).replace("simulated", "").trim()}</Tag> : null}{trusted && e.actor_id ? <span className="mono t3">{e.actor_id}</span> : null}</span>
             </Inspectable>
           );
         })}

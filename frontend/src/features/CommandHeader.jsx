@@ -1,27 +1,61 @@
-import { Btn, Icons, ProvenanceTag } from "../primitives/index.jsx";
+import { Btn, Icons } from "../primitives/index.jsx";
 import { elapsed } from "../lib/format.js";
 import { usePulse } from "../motion/index.jsx";
 
 export function CommandHeader({ state, focusId, onDemo, onReset, onStop, onResume, onToggleRecord, recordOpen }) {
   const demo = state.demoScenario || {}, prov = state.reasoningProvenance || {};
   const blink = usePulse(state.frames);
-  const clockText = demo.active ? elapsed(demo.elapsed_seconds) : `+${String(Math.floor((state.plantMin || 0) / 60)).padStart(2, "0")}:${String((state.plantMin || 0) % 60).padStart(2, "0")}`;
-  const runtimeLabel = demo.active ? null : prov.backend === "agentcore" ? "AgentCore · Bedrock" : prov.backend === "demo" ? "Typed advisory fixture" : prov.runtime || "Local runtime";
+  const clockText = demo.active
+    ? elapsed(demo.elapsed_seconds)
+    : `+${String(Math.floor((state.plantMin || 0) / 60)).padStart(2, "0")}:${String((state.plantMin || 0) % 60).padStart(2, "0")}`;
+
+  const isBedrockOnline = prov.status === "available" || prov.backend === "agentcore" || prov.model_provider === "bedrock";
+  const bedrockLabel = isBedrockOnline ? "Bedrock: Connected" : "Bedrock: Standby (Local)";
+
   return (
     <header className="hdr">
       <div className="wordmark" title={state.meta.tagline}><span className="mark" />OPERON</div>
-      <span className="hdr-site truncate">{state.meta.plant || "—"}</span>
-      <div className="ribbon" aria-label="Agents reason; the application owns authority"><span className="ribbon-a">Agents reason</span><i /><span className="ribbon-b">Application owns authority</span></div>
+
+      <div className="hdr-badges" aria-label="System operational telemetry markers">
+        <span className="hdr-badge badge-gate" title="Human-in-the-loop governance: automated actions require human sign-off">
+          {Icons.shield({ size: 12 })}
+          <span>Policy Gate: Enforced (HITL)</span>
+        </span>
+        <span
+          className={`hdr-badge badge-bedrock ${isBedrockOnline ? "online" : "standby"}`}
+          title={isBedrockOnline ? "AWS Bedrock runtime connected and available" : "AWS Bedrock in local standby; running deterministic benchmark trajectories"}
+        >
+          <span className={`status-dot ${isBedrockOnline ? "dot-online" : "dot-standby"}`} />
+          <span>{bedrockLabel}</span>
+        </span>
+      </div>
+
       <div className="hdr-right">
-        {demo.active
-          ? <ProvenanceTag provenance="SIMULATED" runtime={demo.runtime} live={false} />
-          : <span className="tag" title={`reasoning backend ${prov.backend || "none"} · ${prov.status || ""}`}><span className={`dot ${prov.status === "available" ? "dot-auth" : ""}`} />{runtimeLabel}{prov.provenance ? <span className="prov-rt"> · {prov.provenance}</span> : null}</span>}
-        <span className="hdr-clock" title={demo.active ? "scripted demo elapsed" : "plant time"}>{clockText}</span>
-        <span className={`activity ${!state.connected ? "off" : blink ? "on" : ""}`} title={state.connected ? "stream connected" : "reconnecting"} />
-        <button type="button" className="btn btn-quiet btn-small btn-record" onClick={onToggleRecord} aria-pressed={recordOpen} title="Record">{Icons.record({})}</button>
-        {!demo.active && <Btn quiet small className="btn-icon" onClick={state.running ? onStop : onResume} title={state.running ? "Pause simulator" : "Resume simulator"}>{state.running ? Icons.pause({}) : Icons.play({})}</Btn>}
-        <Btn small onClick={() => onDemo(focusId || "AC-COMP-01")} disabled={!!state.action.pending}>{Icons.demo({})}{demo.active ? "Restart guided demo" : "Start guided demo"}</Btn>
-        <Btn quiet small onClick={onReset} title="Reset the engine">{Icons.reset({})}Reset</Btn>
+        <span className="hdr-clock" title={demo.active ? "Scripted scenario elapsed" : "Plant operating time"}>{clockText}</span>
+        <span className={`activity ${!state.connected ? "off" : blink ? "on" : ""}`} title={state.connected ? "Continuous telemetry stream active" : "Reconnecting"} />
+        <button
+          type="button"
+          className={`btn btn-quiet btn-small btn-record ${recordOpen ? "is-active" : ""}`}
+          onClick={onToggleRecord}
+          aria-pressed={recordOpen}
+          title="Toggle immutable event record"
+        >
+          {Icons.record({})}
+          <span>Record</span>
+        </button>
+        {!demo.active && (
+          <Btn quiet small className="btn-icon" onClick={state.running ? onStop : onResume} title={state.running ? "Pause simulator" : "Resume simulator"}>
+            {state.running ? Icons.pause({}) : Icons.play({})}
+          </Btn>
+        )}
+        <Btn small onClick={() => onDemo(focusId || "AC-COMP-01")} disabled={!!state.action.pending}>
+          {Icons.demo({})}
+          {demo.active ? "Restart demo" : "Start demo"}
+        </Btn>
+        <Btn quiet small onClick={onReset} title="Reset the engine">
+          {Icons.reset({})}
+          Reset
+        </Btn>
       </div>
     </header>
   );

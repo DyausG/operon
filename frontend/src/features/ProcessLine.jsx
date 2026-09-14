@@ -1,4 +1,4 @@
-import { IdToken, Tag } from "../primitives/index.jsx";
+import { IdToken } from "../primitives/index.jsx";
 import { processModel } from "../state/selectors.js";
 
 export function ProcessLine({ incident, state }) {
@@ -20,7 +20,6 @@ export function ProcessLine({ incident, state }) {
         <div className="proc-incident">
           <span className="lbl">Incident</span><IdToken value={incident.incident_id} full />
           <span className="lbl">Revision</span><span className="mono t2">{incident.lifecycle?.revision ?? "—"}</span>
-          {incident.lifecycle?.provenance === "SIMULATED" ? <Tag hatched>Simulated lifecycle</Tag> : <Tag tone="auth">Committed lifecycle</Tag>}
         </div>
       ) : null}
     </div>

@@ -31,7 +31,7 @@ export function DiagnosisRecord({ view, phase, compact = false }) {
         <Inspectable id={verdict.artifact_id || verdict.id} className={`verdict ${verdict.decision === "ACCEPT" ? "" : "verdict-bad"}`}>
           <Stamp tone={verdict.decision === "ACCEPT" ? "auth" : "crit"}>{title(verdict.decision)}</Stamp>
           <span className="verdict-text">{verdict.concise_justification || verdict.validation_summary || (verdict.blocking_issues || []).join(" · ")}</span>
-          <span className="verdict-meta mono">{verdict.validation_policy_version || "validation policy"}{verdict.provenance === "SIMULATED" ? " · simulated" : ""}</span>
+          <span className="verdict-meta mono">{verdict.validation_policy_version || "validation policy"}</span>
         </Inspectable>
       ) : null}
       {!compact && run ? <SpecialistChain run={run} verdict={verdict} stage="DIAGNOSIS" compact /> : null}

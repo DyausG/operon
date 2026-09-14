@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useReducedMotion } from "framer-motion";
 import { AnimatePresence, motion, DUR, EASE } from "../../motion/index.jsx";
 import { useInspector } from "../../state/artifacts.jsx";
-import { ArtifactChip, Btn, Icons, IdToken, ProvenanceTag, Stamp, Tag, Dot, KV } from "../../primitives/index.jsx";
+import { ArtifactChip, Btn, Icons, IdToken, Stamp, Tag, Dot, KV } from "../../primitives/index.jsx";
 import { Renderer, ADVISORY_TYPES, TRUSTED_TYPES } from "./renderers.jsx";
 import { rowIndex, statusTone } from "../../state/selectors.js";
 import { dateTime, title, words } from "../../lib/format.js";
@@ -90,34 +90,48 @@ function Body({ artifact, raw, setRaw }) {
   const isAdv = auth.kind === "advisory";
   return (
     <div className={`art art-${auth.kind}`}>
-      <header className="art-head">
-        <div className="art-kind"><Tag tone={isAdv ? "adv" : undefined} dashed={isAdv}>{title(artifact.artifact_type)}</Tag><span className={`owner owner-${auth.kind}`}>{auth.label}</span>{artifact.synthesized ? <Tag tone="warn">Compact row · no detail endpoint</Tag> : null}</div>
-        <h2 className="art-title">{artifact.title}</h2>
-        <div className="art-status">{artifact.status ? (isAdv ? <Tag tone="adv" dashed><Dot tone="adv" dashed />{words(artifact.status)}</Tag> : <Stamp tone={tone === "ok" ? "ok" : tone === "crit" ? "crit" : tone === "warn" ? "pending" : "auth"}>{words(artifact.status)}</Stamp>) : null}<ProvenanceTag provenance={artifact.provenance} runtime={artifact.runtime} live={artifact.live_model} /></div>
-      </header>
-      <div className="kvgrid kvgrid-3 art-meta">
-        <KV label="Artifact"><IdToken value={artifact.id} full /></KV>
-        <KV label="Created" mono value={dateTime(artifact.created_at)} />
-        <KV label="Source" mono value={artifact.source} />
-        <KV label="Incident"><IdToken value={artifact.incident_id} full /></KV>
-        <KV label="Equipment" mono value={artifact.equipment_id} />
-        <KV label="Runtime" mono value={`${artifact.runtime || "—"} · live_model ${artifact.live_model == null ? "unknown" : String(artifact.live_model)}`} />
-      </div>
-      {artifact.summary ? <p className="art-summary">{artifact.summary}</p> : null}
-      <Renderer artifact={artifact} />
-      <section className="lineage">
-        <span className="lbl">Lineage</span>
-        <div className="lineage-grid">
-          <Lane label="Derived from" ids={artifact.parent_ids} empty="No parents" />
-          <Lane label="Supported by" ids={artifact.supporting_ids} empty="No supporting artifacts" />
-          <Lane label="Related" ids={artifact.related_ids} empty="No related artifacts" />
-          <Lane label="Referenced by" ids={refs.map((r) => r.id)} empty="Nothing loaded references this yet" />
+      <div className="art-pinned">
+        <header className="art-head">
+          <div className="art-kind">
+            <Tag tone={isAdv ? "adv" : undefined} dashed={isAdv}>{title(artifact.artifact_type)}</Tag>
+            <span className={`owner owner-${auth.kind}`}>{auth.label}</span>
+            {artifact.synthesized ? <Tag tone="warn">Compact row · no detail endpoint</Tag> : null}
+          </div>
+          <h2 className="art-title">{artifact.title}</h2>
+          <div className="art-status">
+            {artifact.status ? (isAdv ? <Tag tone="adv" dashed><Dot tone="adv" dashed />{words(artifact.status)}</Tag> : <Stamp tone={tone === "ok" ? "ok" : tone === "crit" ? "crit" : tone === "warn" ? "pending" : "auth"}>{words(artifact.status)}</Stamp>) : null}
+          </div>
+        </header>
+        <div className="kvgrid kvgrid-3 art-meta">
+          <KV label="Artifact"><IdToken value={artifact.id} full /></KV>
+          <KV label="Created" mono value={dateTime(artifact.created_at)} />
+          <KV label="Source" mono value={artifact.source} />
+          <KV label="Incident"><IdToken value={artifact.incident_id} full /></KV>
+          <KV label="Equipment" mono value={artifact.equipment_id} />
+          <KV label="Runtime" mono value={artifact.runtime || "Autonomous Logic"} />
         </div>
-      </section>
-      <section className="rawjson">
-        <button type="button" className="btn btn-quiet btn-small" onClick={() => setRaw((v) => !v)} aria-expanded={raw}>{Icons.json({})}{raw ? "Hide raw JSON" : "Raw JSON"}</button>
-        {raw ? <pre className="raw">{JSON.stringify(artifact, null, 2)}</pre> : null}
-      </section>
+        {artifact.summary ? <p className="art-summary">{artifact.summary}</p> : null}
+      </div>
+
+      <div className="art-scroll-body">
+        <Renderer artifact={artifact} />
+        <section className="lineage">
+          <span className="lbl">Lineage</span>
+          <div className="lineage-grid">
+            <Lane label="Derived from" ids={artifact.parent_ids} empty="No parents" />
+            <Lane label="Supported by" ids={artifact.supporting_ids} empty="No supporting artifacts" />
+            <Lane label="Related" ids={artifact.related_ids} empty="No related artifacts" />
+            <Lane label="Referenced by" ids={refs.map((r) => r.id)} empty="Nothing loaded references this yet" />
+          </div>
+        </section>
+        <section className="rawjson">
+          <button type="button" className="btn btn-quiet btn-small" onClick={() => setRaw((v) => !v)} aria-expanded={raw}>
+            {Icons.json({})}
+            {raw ? "Hide raw JSON" : "Raw JSON"}
+          </button>
+          {raw ? <pre className="raw">{JSON.stringify(artifact, null, 2)}</pre> : null}
+        </section>
+      </div>
     </div>
   );
 }

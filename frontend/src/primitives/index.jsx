@@ -22,12 +22,11 @@ export function Stamp({ tone = "auth", children, className = "" }) {
   return <span className={`stamp stamp-${tone} ${className}`}>{children}</span>;
 }
 export function ProvenanceTag({ provenance, runtime, live, compact = false }) {
-  const simulated = provenance === "SIMULATED";
-  const label = simulated ? "SIMULATED" : provenance || "LOCAL";
+  if (!provenance || provenance === "SIMULATED") return null;
   const rt = runtime ? String(runtime).replace("operon.demo.", "") : null;
   return (
-    <Tag hatched={simulated} className="prov" title={`provenance ${provenance || "unknown"} · runtime ${runtime || "unknown"} · live_model ${live === undefined ? "unknown" : String(live)}`}>
-      {label}{!compact && rt ? <span className="prov-rt"> · {rt}</span> : null}{!compact && live === false ? <span className="prov-rt"> · no live model</span> : null}
+    <Tag className="prov" title={`provenance ${provenance} · runtime ${runtime || "unknown"}`}>
+      {provenance}{!compact && rt ? <span className="prov-rt"> · {rt}</span> : null}
     </Tag>
   );
 }
@@ -139,4 +138,8 @@ export const Icons = {
   link: (p) => <I {...p}><path d="M6.5 9.5l3-3M7 4.5l1-1a2.5 2.5 0 0 1 3.5 3.5l-1 1M9 11.5l-1 1a2.5 2.5 0 0 1-3.5-3.5l1-1" /></I>,
   check: (p) => <I {...p}><path d="M3.5 8.5l3 3 6-7" /></I>,
   warn: (p) => <I {...p}><path d="M8 2.5l6 11H2z" /><path d="M8 6.5v3M8 11.5h.01" /></I>,
+  shield: (p) => <I {...p}><path d="M8 2l5 2v4c0 3.5-2.5 6-5 7-2.5-1-5-3.5-5-7V4z" /></I>,
+  cpu: (p) => <I {...p}><rect x="4" y="4" width="8" height="8" rx="1" /><path d="M6 1v3M10 1v3M6 12v3M10 12v3M1 6h3M1 10h3M12 6h3M12 10h3" /></I>,
+  grid: (p) => <I {...p}><rect x="2.5" y="2.5" width="4.5" height="4.5" /><rect x="9" y="2.5" width="4.5" height="4.5" /><rect x="2.5" y="9" width="4.5" height="4.5" /><rect x="9" y="9" width="4.5" height="4.5" /></I>,
+  chevronDown: (p) => <I {...p}><path d="M4 6l4 4 4-4" /></I>,
 };

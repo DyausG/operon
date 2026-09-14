@@ -124,6 +124,7 @@
 .gate-actions { display: flex; align-items: center; gap: 10px; padding: 14px 0 10px; border-top: 1px solid var(--hair-d); box-shadow: 0 1px 0 var(--hair-l) inset; flex-wrap: wrap; position: sticky; bottom: -24px; background: var(--surface-1); z-index: 2; }
 @media (max-width: 1440px) { .gate-adv .chips { display: none; } .gate { gap: 10px; } }
 .gate-approve { flex: 1; min-width: 260px; padding: 13px 18px; font-size: 13.5px; }
+.gate-reject { padding: 13px 20px; font-size: 13.5px; }
 .gate-note { font-size: 11.5px; margin-left: auto; }
 
 /* execution / recovery / outcome */
