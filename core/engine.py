@@ -21,11 +21,15 @@ explicitly simulated demo provenance and is never read by verification.
 """
 from __future__ import annotations
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timezone
+import json
 import logging
+import time
 
 from . import config, agent, services
 from .db import get_conn, reset_transactional
+from .demo import DemoScenarioRunner
 from .model import load_or_train
 from .simulator import PlantSimulator
 from .seed_data import CLASS_DEFAULT_MODE, SENSOR_FEATURES
@@ -46,9 +50,10 @@ from .reliability.repository import IncidentRepository, InvalidReference, StaleR
 from .reliability.signals import from_prediction, model_version
 
 HISTORY_CAP = 90
-# Bounded automatic supervisor attempts per incident revision; further reasoning
-# requires an explicit trusted command (evidence, confirmation, retry).
-MAX_AUTOMATIC_RUNS = 3
+# Per-incident automatic retry cadence. The capped monotonic deadline permits
+# eventual recovery without retrying on every telemetry tick.
+REASONING_RETRY_BASE_SECONDS = 5.0
+REASONING_RETRY_MAX_SECONDS = 300.0
 LIFECYCLE_STATUS = {
     IncidentPhase.OPEN: "ANALYZING", IncidentPhase.INVESTIGATING: "ANALYZING",
     IncidentPhase.AWAITING_EVIDENCE: "ANALYZING", IncidentPhase.DIAGNOSIS_VALIDATED: "ANALYZING",
@@ -62,6 +67,13 @@ LIFECYCLE_ERRORS = (LifecycleRefused, ApprovalRefused, GovernanceBlocked, Execut
                     ExecutionBusy, PromotionRefused, StaleRevision, InvalidReference, LookupError, KeyError, TypeError,
                     ValueError)
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ReasoningRetryState:
+    failures: int = 0
+    next_retry_at: float = 0.0
+    last_error_key: str | None = None
 
 
 def status_for(prob: float) -> str:
@@ -88,6 +100,11 @@ class DemoEngine:
         self._task: asyncio.Task | None = None
         self._analyzing: set[str] = set()
         self.meta = self._load_meta()
+        self.demo_runner = DemoScenarioRunner([
+            {"equipment_id": eid, "name": item.get("equipment_name"),
+             "equipment_class": item.get("equipment_class"), "criticality": item.get("criticality")}
+            for eid, item in self.meta.items()
+        ], publish=self._broadcast_demo_snapshot)
         self.coordinator = IncidentCoordinator(IncidentRepository())
         self.lifecycle = LifecycleService(self.coordinator.repository)
         self.evidence_service = EvidenceService(self.coordinator.repository)
@@ -100,11 +117,17 @@ class DemoEngine:
         self.specialist_runtime = specialist_runtime
         self._guided_demo: dict | None = None
         self._guided_task: asyncio.Task | None = None
+        self._guided_owner: str | None = None
+        self._guided_claim: object | None = None
+        self._guided_incident_id: str | None = None
+        self._guided_backend = None
         self.demo_step_delay = 5.0
         self.incidents = {}
         self._resume: set[str] = set()
         self._lifecycle_tasks: dict[str, asyncio.Task] = {}
-        self._attempts: dict[str, tuple[int | None, int]] = {}
+        self._reasoning_retries: dict[str, ReasoningRetryState] = {}
+        self._reasoning_diagnostics: list[dict] = []
+        self._monotonic = time.monotonic
         # Outcome messages produced by the synchronous tick progression, flushed by the tick.
         self._pending_broadcasts: list[dict] = []
         # Supervisor runs are serialized: 13A's source checkpoint treats another
@@ -195,6 +218,8 @@ class DemoEngine:
 
     # -- lifecycle ---------------------------------------------------------
     async def start(self):
+        if self.demo_runner.active:
+            return
         if self._task and not self._task.done():
             return
         self.running = True
@@ -213,13 +238,22 @@ class DemoEngine:
         self.running = False
         await self.broadcast({"type": "control", "running": False})
 
-    async def reset(self):
+    async def reset(self, *, restore_factory: bool = True, restart: bool = True):
+        # The presentation store is disposable and never shares persistence with
+        # the production lifecycle. A dashboard reset while it is active cancels
+        # the old script and replays from its healthy frame without touching
+        # authoritative application data.
+        if self.demo_runner.active:
+            equipment_id = self._demo_projection()["equipment_id"]
+            await self.demo_runner.start(equipment_id)
+            return
         guided = self._guided_task
         if guided and guided is not asyncio.current_task() and not guided.done():
             guided.cancel()
+        if guided and guided is not asyncio.current_task():
+            await asyncio.gather(guided, return_exceptions=True)
         self._guided_task = None
         self._guided_demo = None
-        self.runtime = self._base_runtime
         if self._task:
             self._task.cancel()
             try:
@@ -227,9 +261,18 @@ class DemoEngine:
             except asyncio.CancelledError:
                 pass
             self._task = None
-        for task in self._lifecycle_tasks.values():
+        lifecycle_tasks = list(self._lifecycle_tasks.values())
+        for task in lifecycle_tasks:
             task.cancel()
-        await self.drain()
+        if lifecycle_tasks:
+            results = await asyncio.gather(*lifecycle_tasks, return_exceptions=True)
+            for task, result in zip(lifecycle_tasks, results):
+                self._trace_reasoning(
+                    "task_cancelled_for_reset",
+                    cancellation_result=type(result).__name__ if isinstance(result, BaseException) else "completed",
+                    task=task,
+                )
+        self._release_guided_ownership(reason="reset")
         reset_transactional()
         self.sim = PlantSimulator()
         self.tick_i = 0
@@ -241,79 +284,88 @@ class DemoEngine:
         self.incidents = {}
         self._resume = set()
         self._lifecycle_tasks = {}
-        self._attempts = {}
+        self._reasoning_retries = {}
+        self._reasoning_diagnostics = []
         self._pending_broadcasts = []
         await self.broadcast({"type": "reset"})
-        await self.start()
+        if restore_factory:
+            # Reconstruct a complete normal-factory projection before a public
+            # reset returns. This is a real simulator tick (and persisted
+            # telemetry), not a UI-only placeholder.
+            await self._advance()
+        if restart:
+            await self.start()
+        if restore_factory and restart:
+            await self.broadcast(self.snapshot())
 
     def _demo_projection(self) -> dict:
-        if self._guided_demo is None:
-            return {"active": False}
-        value = dict(self._guided_demo)
-        eid = value.get("equipment_id")
-        incident = self.incidents.get(eid)
-        if incident is not None:
-            current = self.coordinator.repository.fetch_incident(incident.id)
-            value.update({"incident_id": current.id, "phase": current.phase.value})
-            if current.phase == IncidentPhase.AWAITING_APPROVAL:
-                value["status"] = "awaiting_human_approval"
-            elif current.phase == IncidentPhase.OBSERVING:
-                value["status"] = "observing"
-            elif current.phase == IncidentPhase.CLOSED:
-                value["status"] = "complete"
-        return {"active": True, **value}
+        state = self.demo_runner.snapshot()
+        return state["demo_scenario"] if state else {"active": False}
+
+    def demo_artifact(self, artifact_id: str) -> dict:
+        """Resolve only the active disposable demo generation's read model."""
+        artifact = self.demo_runner.artifact(artifact_id)
+        if artifact is None:
+            raise LookupError(artifact_id)
+        return artifact
+
+    async def _broadcast_demo_snapshot(self):
+        """Publish the isolated read model through the existing websocket shape."""
+        await self.broadcast(self.snapshot())
 
     async def _broadcast_demo(self):
         await self.broadcast({"type": "demo", "demo_scenario": self._demo_projection()})
 
     async def start_guided_demo(self, equipment_id: str) -> dict:
-        """Prepare one explicit simulator-backed recording flow.
-
-        This controls only simulator inputs and trusted typed submissions.  Every
-        authoritative transition remains inside LifecycleService.
-        """
-        if equipment_id not in self.sim.assets:
+        """Enter the disposable scripted read model only by explicit action."""
+        if equipment_id not in self.meta:
             return {"ok": False, "error": "unknown demo equipment"}
-        await self.reset()
+        # Quiesce normal ticks while their state remains untouched. No repository,
+        # simulator, model, or reasoning object is handed to the demo runner.
         await self.stop()
-        from .demo_scenario import DemoReasoningBackend
-        self.runtime = DemoReasoningBackend()
-        for eid, state in self.sim.assets.items():
-            state.mode, state.prog = "healthy", 0.0
-        selected = self.sim.assets[equipment_id]
-        mode_id = CLASS_DEFAULT_MODE[selected.profile.equipment_class]
-        selected.profile.scenario = mode_id.removeprefix("FM-")
-        selected.profile.start_tick, selected.profile.ramp_ticks = 1, 6
-        selected.profile.intervention_response = "RECOVERS"
-        selected.mode, selected.prog = "degrading", 0.05
-        self._guided_demo = {"equipment_id": equipment_id, "status": "degrading",
-                             "reasoning_provenance": "SIMULATED_TYPED_ADVISORY",
-                             "physical_provenance": "SIMULATED"}
-        await self.start()
-        self._guided_task = asyncio.create_task(self._guide_to_approval(equipment_id))
-        await self._broadcast_demo()
-        return {"ok": True, "demo_scenario": self._demo_projection()}
+        return await self.demo_runner.start(equipment_id)
 
-    async def _wait_demo_phase(self, equipment_id: str, phases: set[IncidentPhase], timeout=45):
+    async def _wait_demo_phase(self, equipment_id: str, phases: set[IncidentPhase], timeout=45,
+                               *, accept_progressed=False):
+        phase_order = {
+            IncidentPhase.OPEN: 0, IncidentPhase.INVESTIGATING: 1,
+            IncidentPhase.AWAITING_EVIDENCE: 2, IncidentPhase.DIAGNOSIS_VALIDATED: 3,
+            IncidentPhase.PLANNING: 4, IncidentPhase.INTERVENTION_VALIDATED: 5,
+            IncidentPhase.AWAITING_APPROVAL: 6, IncidentPhase.READY: 7,
+            IncidentPhase.EXECUTING: 8, IncidentPhase.OBSERVING: 9,
+            IncidentPhase.CLOSED: 10,
+        }
+        minimum_progress = min((phase_order[p] for p in phases if p in phase_order), default=None)
         deadline = asyncio.get_running_loop().time() + timeout
         while asyncio.get_running_loop().time() < deadline:
             incident = self.incidents.get(equipment_id)
             if incident is not None:
                 current = self.coordinator.repository.fetch_incident(incident.id)
-                if current.phase in phases:
+                progressed = (accept_progressed and minimum_progress is not None
+                              and phase_order.get(current.phase, -1) >= minimum_progress)
+                if current.phase in phases or progressed:
                     return current
                 if current.phase in {IncidentPhase.ESCALATED, IncidentPhase.EXECUTION_FAILED, IncidentPhase.CANCELLED}:
                     raise RuntimeError(f"guided demo reached {current.phase.value}")
             await asyncio.sleep(0.1)
         raise TimeoutError("guided demo timed out waiting for authoritative lifecycle")
 
-    async def _guide_to_approval(self, equipment_id: str):
+    async def _guide_to_approval(self, equipment_id: str, claim: object, backend):
         from .demo_scenario import binding_fields, resource_confirmation, technical_confirmation
+        preparation_complete = False
         try:
             await asyncio.sleep(self.demo_step_delay)
             # Accelerate only the simulator degradation; incident admission still
             # depends on the real persisted model prediction crossing its threshold.
             self.sim.assets[equipment_id].prog = 1.0
+            incident = await self._wait_demo_phase(
+                equipment_id, {IncidentPhase.INVESTIGATING}, accept_progressed=True)
+            if incident.phase == IncidentPhase.INVESTIGATING:
+                outcome = await self._diagnose_guided(equipment_id, incident.id, backend, claim)
+                if outcome.disposition != "NEEDS_EVIDENCE":
+                    raise RuntimeError(f"guided diagnosis expected missing evidence, got {outcome.disposition}")
+            elif incident.phase != IncidentPhase.AWAITING_EVIDENCE:
+                raise RuntimeError(f"guided demo advanced unexpectedly to {incident.phase.value}")
             await self._wait_demo_phase(equipment_id, {IncidentPhase.AWAITING_EVIDENCE})
             self._guided_demo["status"] = "trusted_inspection"
             await self._broadcast_demo()
@@ -325,14 +377,22 @@ class DemoEngine:
                                           reason="explicit SIMULATED trusted inspection submitted")
             if not response["ok"]:
                 raise RuntimeError("technical confirmation was refused")
+            incident = await self._wait_demo_phase(
+                equipment_id, {IncidentPhase.INVESTIGATING}, accept_progressed=True)
+            if incident.phase == IncidentPhase.INVESTIGATING:
+                outcome = await self._diagnose_guided(equipment_id, incident.id, backend, claim)
+                if outcome.disposition != "PROMOTED":
+                    raise RuntimeError(f"guided diagnosis was not promoted: {outcome.disposition}")
+            elif incident.phase != IncidentPhase.DIAGNOSIS_VALIDATED:
+                raise RuntimeError(f"guided demo advanced unexpectedly to {incident.phase.value}")
             await self._wait_demo_phase(equipment_id, {IncidentPhase.DIAGNOSIS_VALIDATED})
             self._guided_demo["status"] = "planning"
             await self._broadcast_demo()
-            await asyncio.sleep(self.demo_step_delay)
             # Freeze the simulated source briefly while the trusted application
             # binds and reviews the exact work package. This satisfies the same
             # dependency-freshness checks as a live caller; it grants no authority.
             await self.stop()
+            await asyncio.sleep(self.demo_step_delay)
             resource = resource_confirmation(self, equipment_id)
             response = self.submit_resource_confirmation(
                 resource, expected_revision=self.coordinator.repository.fetch_incident(resource.incident_id).revision)
@@ -340,13 +400,17 @@ class DemoEngine:
             await self._refresh_lifecycle(equipment_id, "demo_resource_confirmation",
                                           reason="explicit SIMULATED resource attestation submitted")
             incident = self.coordinator.repository.fetch_incident(resource.incident_id)
-            result = await self.plan(incident.id, expected_revision=incident.revision,
-                                     **binding_fields(self, equipment_id, resource_evidence))
+            result = await self._plan_with_runtime(
+                incident.id, expected_revision=incident.revision, runtime=backend,
+                specialist_runtime=None, guided_claim=claim,
+                **binding_fields(self, equipment_id, resource_evidence),
+            )
             if not result["ok"]:
                 raise RuntimeError(result.get("outcome", {}).get("reason", "demo plan was refused"))
             self._guided_demo["status"] = "awaiting_human_approval"
             await self.start()
             await self._broadcast_demo()
+            preparation_complete = True
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -355,6 +419,12 @@ class DemoEngine:
                 self._guided_demo.update({"status": "failed", "error": str(exc)})
                 await self.start()
                 await self._broadcast_demo()
+        finally:
+            # A successfully prepared guided incident remains exclusively guided
+            # through manual approval and outcome verification. Failure/cancellation
+            # releases immediately; terminal outcome/reset releases below.
+            if not preparation_complete:
+                self._release_guided_ownership(equipment_id, claim=claim, reason="preparation_incomplete")
 
     async def _run(self):
         try:
@@ -376,7 +446,12 @@ class DemoEngine:
             mode = self.model.predict_mode(f)
             meta = self.meta.get(eid, {})
             base_status = status_for(pred["failure_prob"])
-            status = self.status_override.get(eid, base_status)
+            override = self.status_override.get(eid)
+            if override is not None and eid not in self.incidents:
+                # An override is meaningful only while backed by lifecycle state.
+                self.status_override.pop(eid, None)
+                override = None
+            status = override or base_status
             self.assets[eid] = {**f, **pred, "predicted_mode": mode, "equipment_id": eid,
                                 "name": meta.get("equipment_name"),
                                 "equipment_class": meta.get("equipment_class"),
@@ -393,7 +468,7 @@ class DemoEngine:
                 readings.append((f"{eid}-{sensor_type}", now,
                                  float(f[feature_key]), "GOOD"))
             healths.append((eid, now, pred["health_score"], pred["failure_prob"], mode["mode"]))
-        self._persist(readings, healths)
+        persistence = self._persist(readings, healths)
 
         await self.broadcast({"type": "tick", "tick": self.tick_i,
                               "plant_time_min": self.tick_i * config.MINUTES_PER_TICK,
@@ -403,12 +478,55 @@ class DemoEngine:
         # detect NEW alerts (assets crossing the threshold while still degrading)
         for eid, a in self.assets.items():
             st = self.sim.assets[eid]
-            if (eid in self._resume or
-                    (a["failure_prob"] >= config.TRIGGER_THRESHOLD and eid not in self.alerts
-                     and eid not in self._analyzing and st.mode == "degrading")):
+            resume_requested = eid in self._resume
+            threshold_met = a["failure_prob"] >= config.TRIGGER_THRESHOLD
+            signal_condition = (threshold_met and eid not in self.alerts
+                                and eid not in self._analyzing and st.mode == "degrading")
+            should_admit = resume_requested or signal_condition
+            if self._guided_owner == eid and self._guided_incident_id is None:
+                if resume_requested:
+                    skip_reason = None
+                elif not threshold_met:
+                    skip_reason = "failure_probability_below_trigger"
+                elif eid in self.alerts:
+                    skip_reason = "active_alert_exists"
+                elif eid in self._analyzing:
+                    skip_reason = "admission_already_in_progress"
+                elif st.mode != "degrading":
+                    skip_reason = f"simulator_mode_{st.mode}"
+                else:
+                    skip_reason = None
+                self._trace_reasoning(
+                    "guided_admission_tick", equipment_id=eid, backend=self._guided_backend,
+                    task_kind="guided", task_creation_location="core.engine.DemoEngine._advance",
+                    simulator_running=self.running,
+                    simulator_state={"mode": st.mode, "scenario": st.profile.scenario,
+                                     "progress": st.prog, "asset_tick": st.tick,
+                                     "start_tick": st.profile.start_tick,
+                                     "ramp_ticks": st.profile.ramp_ticks},
+                    raw_telemetry={key: float(a[key]) for key in
+                                   ("air_temp", "process_temp", "rot_speed", "torque", "tool_wear")},
+                    model_failure_prob=float(a["failure_prob"]),
+                    predicted_failure_mode=a["predicted_mode"]["mode"],
+                    incident_trigger_threshold=float(config.TRIGGER_THRESHOLD),
+                    signal_condition_met=signal_condition,
+                    telemetry_persisted=persistence["telemetry"],
+                    health_score_persisted=persistence["health_scores"],
+                    predictive_signal_persisted=False,
+                    admission_decision="attempt" if should_admit else "skipped",
+                    admission_skip_reason=skip_reason,
+                )
+            if should_admit:
                 try:
                     await self._fire_agent(eid)
-                except Exception:
+                except Exception as exc:
+                    if self._guided_owner == eid:
+                        self._trace_reasoning(
+                            "guided_admission_rejected", equipment_id=eid, backend=self._guided_backend,
+                            task_kind="guided", admission_decision="rejected",
+                            admission_skip_reason=f"{type(exc).__name__}: {exc}",
+                            predictive_signal_persisted=False,
+                        )
                     logger.exception("Incident admission/planning persistence failed for %s", eid)
                     await self.broadcast({"type": "error", "equipment_id": eid,
                                           "error": "incident admission or legacy planning failed; retrying"})
@@ -425,8 +543,14 @@ class DemoEngine:
 
     def _asset_summary(self, eid: str) -> dict:
         a = self.assets[eid]
+        incident = self.incidents.get(eid)
+        override = self.status_override.get(eid)
+        status_source = "active_incident" if override is not None and incident is not None else "model_risk"
         return {"equipment_id": eid, "name": a["name"], "equipment_class": a["equipment_class"],
                 "criticality": a["criticality"], "status": a["status"],
+                "status_source": status_source,
+                "status_reason": (f"Active incident {incident.phase.value}" if status_source == "active_incident"
+                                  else "Current model risk thresholds"),
                 "health_score": round(a["health_score"], 3),
                 "failure_prob": round(a["failure_prob"], 3),
                 "predicted_mode": a["predicted_mode"]["mode"],
@@ -504,10 +628,27 @@ class DemoEngine:
 
     async def _admit_lifecycle(self, eid: str):
         ctx = self._build_ctx(eid)
+        signal = self._signal(eid, ctx)
         incident, created = self.lifecycle.admit(
-            self._signal(eid, ctx), severity="CRITICAL" if ctx["criticality"] == "HIGH" else "HIGH",
+            signal, severity="CRITICAL" if ctx["criticality"] == "HIGH" else "HIGH",
             triage_score=agent.triage_score(ctx))
         self.incidents[eid] = incident
+        if self._guided_owner == eid:
+            if self._guided_incident_id not in {None, incident.id}:
+                raise RuntimeError("guided ownership incident changed without reset")
+            self._guided_incident_id = incident.id
+            self._trace_reasoning(
+                "guided_incident_admitted_and_ownership_bound",
+                equipment_id=eid,
+                incident_id=incident.id,
+                backend=self._guided_backend,
+                task_kind="guided",
+                ownership_revalidation_result="matched_equipment_and_incident",
+                predictive_signal_id=signal.id,
+                predictive_signal_persisted=True,
+                admission_decision="created" if created else "adopted_existing",
+                admission_skip_reason=None,
+            )
         self._analyzing.add(eid)
         self.sim.set_mode(eid, "arrested")
         self.status_override[eid] = "CRITICAL"
@@ -525,6 +666,18 @@ class DemoEngine:
         if incident.phase == IncidentPhase.OPEN:
             # Deterministic baseline evidence only; the classifier is never a diagnosis.
             self.incidents[eid] = self.lifecycle.investigate(incident.id).incident
+        if self._guided_owner == eid:
+            self._trace_reasoning(
+                "guided_incident_investigating", equipment_id=eid, incident_id=incident.id,
+                backend=self._guided_backend, task_kind="guided",
+                ownership_revalidation_result=(
+                    "matched_equipment_and_incident"
+                    if self._guided_incident_id == incident.id else "incident_mismatch"),
+                predictive_signal_id=signal.id, predictive_signal_persisted=True,
+                admission_decision="investigated",
+                phase_transition_result={"from": incident.phase.value,
+                                         "phase": self.incidents[eid].phase.value},
+            )
         self._resume.discard(eid)
         self.alerts[eid] = self._lifecycle_alert(eid, ctx)
         self._retriage()
@@ -532,36 +685,269 @@ class DemoEngine:
                               "triage": self._triage_msg()})
         self._schedule_diagnosis(eid)
 
+    def _guided_claim_is_current(self, eid: str, incident_id: str, claim: object) -> bool:
+        return (
+            self._guided_owner == eid
+            and self._guided_claim is claim
+            and self._guided_incident_id == incident_id
+            and self.incidents.get(eid) is not None
+            and self.incidents[eid].id == incident_id
+        )
+
+    @staticmethod
+    def _backend_identity(backend) -> dict | None:
+        if backend is None:
+            return None
+        try:
+            return backend.identity()
+        except Exception as exc:  # diagnostics must never alter scheduling
+            return {"implementation": f"{type(backend).__module__}.{type(backend).__qualname__}",
+                    "identity_error": type(exc).__name__}
+
+    def _trace_reasoning(self, event: str, *, equipment_id: str | None = None,
+                         incident_id: str | None = None, backend=None, task=None, **values):
+        """Bounded structured scheduling trace; contains no model prompts or reasoning."""
+        equipment_id = equipment_id or self._guided_owner
+        incident = self.incidents.get(equipment_id) if equipment_id else None
+        incident_id = incident_id or (incident.id if incident is not None else None)
+        phase = None
+        if incident_id is not None:
+            try:
+                phase = self.coordinator.repository.fetch_incident(incident_id).phase.value
+            except Exception:
+                phase = None
+        task = task or asyncio.current_task()
+        record = {
+            "event": event,
+            "incident_id": incident_id,
+            "equipment_id": equipment_id,
+            "current_phase": phase,
+            "guided_ownership_claim": (f"claim:{id(self._guided_claim):x}" if self._guided_claim is not None else None),
+            "ownership_exists": self._guided_owner == equipment_id if equipment_id else False,
+            "task_identity": ({"id": f"task:{id(task):x}", "name": task.get_name()} if task else None),
+            "task_creation_location": None,
+            "backend_identity_captured": self._backend_identity(backend),
+            "task_kind": None,
+            "reasoning_backend_invoked": None,
+            "runtime_identity_invoked": None,
+            "diagnosis_scheduling_decision": None,
+            "ownership_revalidation_result": None,
+            "cancellation_result": None,
+            "lifecycle_diagnose_entry": False,
+            "lifecycle_diagnose_exit": False,
+            "phase_transition_result": None,
+            **values,
+        }
+        self._reasoning_diagnostics.append(record)
+        self._reasoning_diagnostics = self._reasoning_diagnostics[-200:]
+        # run.py intentionally serves at warning level. Guided ownership traces are
+        # therefore visible in the real launcher; ordinary scheduler traces stay quiet.
+        level = logging.WARNING if record["ownership_exists"] or record["task_kind"] == "guided" else logging.INFO
+        logger.log(level, "reasoning_diagnostic=%s", json.dumps(record, sort_keys=True, default=str))
+
+    def _release_guided_ownership(self, equipment_id: str | None = None, *, claim: object | None = None,
+                                  reason: str) -> bool:
+        if equipment_id is not None and self._guided_owner != equipment_id:
+            return False
+        if claim is not None and self._guided_claim is not claim:
+            return False
+        if self._guided_owner is None:
+            return False
+        self._trace_reasoning(
+            "guided_ownership_released",
+            equipment_id=self._guided_owner,
+            incident_id=self._guided_incident_id,
+            backend=self._guided_backend,
+            task_kind="guided",
+            cancellation_result=reason,
+        )
+        self._guided_owner = None
+        self._guided_claim = None
+        self._guided_incident_id = None
+        self._guided_backend = None
+        return True
+
     def _schedule_diagnosis(self, eid: str):
         incident = self.incidents.get(eid)
-        if self.runtime is None or incident is None or incident.phase != IncidentPhase.INVESTIGATING:
+        if incident is not None and incident.phase == IncidentPhase.INVESTIGATING and self._guided_owner == eid:
+            self._trace_reasoning(
+                "normal_diagnosis_suppressed",
+                equipment_id=eid,
+                incident_id=incident.id,
+                backend=self._base_runtime,
+                task_kind="normal",
+                task_creation_location="core.engine.DemoEngine._schedule_diagnosis",
+                diagnosis_scheduling_decision="suppressed_guided_owner",
+                ownership_revalidation_result="guided_claim_present",
+            )
+            return
+        runtime, specialist_runtime = self._base_runtime, self.specialist_runtime
+        if runtime is None or incident is None or incident.phase != IncidentPhase.INVESTIGATING:
             return
         task = self._lifecycle_tasks.get(eid)
         if task is not None and not task.done():
             return
-        last_revision, attempts = self._attempts.get(eid, (None, 0))
-        if last_revision == incident.revision or attempts >= MAX_AUTOMATIC_RUNS:
+        retry = self._reasoning_retries.setdefault(eid, ReasoningRetryState())
+        if self._monotonic() < retry.next_retry_at:
             return
-        self._attempts[eid] = (incident.revision, attempts + 1)
-        self._lifecycle_tasks[eid] = asyncio.create_task(self._diagnose(eid))
+        created = asyncio.create_task(
+            self._diagnose(eid, incident.id, runtime, specialist_runtime),
+            name=f"normal-diagnosis:{eid}:{incident.id}",
+        )
+        self._lifecycle_tasks[eid] = created
+        self._trace_reasoning(
+            "normal_diagnosis_scheduled",
+            equipment_id=eid,
+            incident_id=incident.id,
+            backend=runtime,
+            task=created,
+            task_kind="normal",
+            task_creation_location="core.engine.DemoEngine._schedule_diagnosis",
+            diagnosis_scheduling_decision="scheduled_normal",
+            ownership_revalidation_result="no_guided_claim",
+        )
 
-    async def _diagnose(self, eid: str):
-        incident = self.incidents[eid]
+    def _record_reasoning_failure(self, eid: str, exc: Exception) -> float:
+        retry = self._reasoning_retries.setdefault(eid, ReasoningRetryState())
+        retry.failures = min(retry.failures + 1, 7)
+        delay = min(REASONING_RETRY_BASE_SECONDS * (2 ** (retry.failures - 1)), REASONING_RETRY_MAX_SECONDS)
+        retry.next_retry_at = self._monotonic() + delay
+        key = f"{type(exc).__module__}.{type(exc).__qualname__}:{exc}"
+        if retry.last_error_key != key:
+            logger.error("Durable supervisor diagnosis failed for %s; retry deferred %.1fs", eid, delay,
+                         exc_info=(type(exc), exc, exc.__traceback__))
+        else:
+            logger.warning("Durable supervisor diagnosis still unavailable for %s; retry deferred %.1fs: %s",
+                           eid, delay, exc)
+        retry.last_error_key = key
+        return delay
+
+    async def _diagnose(self, eid: str, incident_id: str, runtime, specialist_runtime):
         outcome = None
         try:
             async with self._reasoning_lock:
-                current = self.coordinator.repository.fetch_incident(incident.id)
+                # The normal backend is captured when scheduled, then ownership and
+                # incident identity are revalidated immediately before lifecycle authority.
+                current = self.incidents.get(eid)
+                if self._guided_owner == eid or current is None or current.id != incident_id:
+                    self._trace_reasoning(
+                        "normal_diagnosis_revalidation_refused",
+                        equipment_id=eid,
+                        incident_id=incident_id,
+                        backend=runtime,
+                        task_kind="normal",
+                        ownership_revalidation_result=(
+                            "guided_claim_present" if self._guided_owner == eid else "incident_mismatch"),
+                        diagnosis_scheduling_decision="refused_before_lifecycle",
+                    )
+                    return
+                current = self.coordinator.repository.fetch_incident(incident_id)
                 if current.phase != IncidentPhase.INVESTIGATING:
                     return
+                identity = self._backend_identity(runtime)
+                self._trace_reasoning(
+                    "lifecycle_diagnose_entered",
+                    equipment_id=eid,
+                    incident_id=incident_id,
+                    backend=runtime,
+                    task_kind="normal",
+                    reasoning_backend_invoked=identity,
+                    runtime_identity_invoked=identity,
+                    ownership_revalidation_result="no_guided_claim",
+                    lifecycle_diagnose_entry=True,
+                )
                 outcome = await self.lifecycle.diagnose(
-                    incident.id, asset_id=eid, runtime=self.runtime, evidence_service=self.evidence_service,
-                    specialist_runtime=self.specialist_runtime)
+                    incident_id, asset_id=eid, runtime=runtime, evidence_service=self.evidence_service,
+                    specialist_runtime=specialist_runtime)
         except asyncio.CancelledError:
+            self._trace_reasoning(
+                "normal_diagnosis_cancelled",
+                equipment_id=eid,
+                incident_id=incident_id,
+                backend=runtime,
+                task_kind="normal",
+                cancellation_result="cancelled_and_propagated",
+            )
             raise
-        except Exception:
-            logger.exception("Durable supervisor diagnosis failed for %s; incident remains %s", eid, incident.phase.value)
+        except Exception as exc:
+            self._record_reasoning_failure(eid, exc)
+        else:
+            if outcome is not None and outcome.disposition != "RETRY":
+                self._reasoning_retries.pop(eid, None)
+            elif outcome is not None:
+                self._record_reasoning_failure(eid, RuntimeError(outcome.reason))
+        if outcome is not None:
+            current = self.coordinator.repository.fetch_incident(incident_id)
+            self._trace_reasoning(
+                "lifecycle_diagnose_exited",
+                equipment_id=eid,
+                incident_id=incident_id,
+                backend=runtime,
+                task_kind="normal",
+                lifecycle_diagnose_exit=True,
+                phase_transition_result={"phase": current.phase.value, "disposition": outcome.disposition},
+            )
         await self._refresh_lifecycle(eid, outcome.disposition.lower() if outcome else "error",
                                       reason=outcome.reason if outcome else None)
+
+    async def _diagnose_guided(self, eid: str, incident_id: str, backend, claim: object):
+        """The sole guided diagnosis actor; its backend and claim are immutable inputs."""
+        async with self._reasoning_lock:
+            claim_valid = self._guided_claim_is_current(eid, incident_id, claim)
+            self._trace_reasoning(
+                "guided_diagnosis_revalidated",
+                equipment_id=eid,
+                incident_id=incident_id,
+                backend=backend,
+                task_kind="guided",
+                task_creation_location="core.engine.DemoEngine.start_guided_demo",
+                diagnosis_scheduling_decision="guided_controller_invokes",
+                ownership_revalidation_result="matched" if claim_valid else "refused",
+            )
+            if not claim_valid:
+                raise RuntimeError("guided diagnosis ownership is no longer current")
+            current = self.coordinator.repository.fetch_incident(incident_id)
+            if current.phase != IncidentPhase.INVESTIGATING:
+                raise RuntimeError(f"guided diagnosis requires INVESTIGATING, got {current.phase.value}")
+            identity = self._backend_identity(backend)
+            self._trace_reasoning(
+                "lifecycle_diagnose_entered",
+                equipment_id=eid,
+                incident_id=incident_id,
+                backend=backend,
+                task_kind="guided",
+                reasoning_backend_invoked=identity,
+                runtime_identity_invoked=identity,
+                ownership_revalidation_result="matched",
+                lifecycle_diagnose_entry=True,
+            )
+            try:
+                outcome = await self.lifecycle.diagnose(
+                    incident_id, asset_id=eid, runtime=backend,
+                    evidence_service=self.evidence_service, specialist_runtime=None,
+                )
+            except asyncio.CancelledError:
+                self._trace_reasoning(
+                    "guided_diagnosis_cancelled",
+                    equipment_id=eid,
+                    incident_id=incident_id,
+                    backend=backend,
+                    task_kind="guided",
+                    cancellation_result="cancelled_and_awaited_by_owner",
+                )
+                raise
+        current = self.coordinator.repository.fetch_incident(incident_id)
+        self._trace_reasoning(
+            "lifecycle_diagnose_exited",
+            equipment_id=eid,
+            incident_id=incident_id,
+            backend=backend,
+            task_kind="guided",
+            lifecycle_diagnose_exit=True,
+            phase_transition_result={"phase": current.phase.value, "disposition": outcome.disposition},
+        )
+        await self._refresh_lifecycle(eid, outcome.disposition.lower(), reason=outcome.reason)
+        return outcome
 
     async def drain(self):
         """Await pending lifecycle tasks (tests/reset); model runs are never awaited under a lock."""
@@ -627,6 +1013,8 @@ class DemoEngine:
                                          "business": self._business_summary(), "triage": self._triage_msg()})
         if self._guided_demo and self._guided_demo.get("equipment_id") == eid:
             self._guided_demo["status"] = "complete" if verification.disposition == "CLOSED" else verification.disposition.lower()
+            if verification.disposition in {"CLOSED", "ESCALATED"}:
+                self._release_guided_ownership(eid, reason=f"outcome_{verification.disposition.lower()}")
 
     async def verify_outcome(self, incident_id: str) -> dict:
         """Explicit deterministic verification attempt (API); the same authority as the tick path."""
@@ -895,6 +1283,8 @@ class DemoEngine:
         return al, incident, None
 
     async def approve(self, eid: str, command: dict | None = None) -> dict:
+        if self.demo_runner.active:
+            return await self.demo_runner.approve(eid, command)
         if self.legacy_demo:
             return await self._approve_legacy(eid)
         al, incident, error = self._lifecycle_target(eid, command)
@@ -921,6 +1311,7 @@ class DemoEngine:
         except (ExecutionFailed, ExecutionAmbiguous) as exc:
             if eid:
                 await self._refresh_lifecycle(eid, "execution_failed", reason=str(exc))
+                self._release_guided_ownership(eid, reason="execution_failed")
             return {"ok": False, "error": str(exc), "phase": exc.report.phase.value,
                     "receipt_ids": list(exc.report.receipt_ids), "incident": self.lifecycle.projection(incident_id)}
         except LIFECYCLE_ERRORS as exc:
@@ -955,6 +1346,8 @@ class DemoEngine:
         return next((eid for eid, incident in self.incidents.items() if incident.id == incident_id), None)
 
     async def reject(self, eid: str, command: dict | None = None) -> dict:
+        if self.demo_runner.active:
+            return await self.demo_runner.reject(eid, command)
         if self.legacy_demo:
             return await self._reject_legacy(eid)
         al, incident, error = self._lifecycle_target(eid, command)
@@ -973,6 +1366,7 @@ class DemoEngine:
         self.sim.set_mode(eid, "failing")   # demo run-to-failure scenario after human rejection
         self.status_override[eid] = "CRITICAL"
         await self._refresh_lifecycle(eid, "rejected", message_type="rejected")
+        self._release_guided_ownership(eid, reason="approval_rejected")
         return {"ok": True, "phase": self.incidents[eid].phase.value}
 
     # -- trusted application submissions (caller authenticates the actor) ----
@@ -987,13 +1381,30 @@ class DemoEngine:
         return {"ok": True, "evidence_id": evidence.id, "incident": self.lifecycle.projection(incident.id)}
 
     async def plan(self, incident_id: str, *, expected_revision: int, **binding_fields) -> dict:
-        if self.runtime is None:
+        eid = self._eid_for(incident_id)
+        if eid is not None and self._guided_owner == eid:
+            return {"ok": False, "error": "guided controller owns reasoning for this incident"}
+        return await self._plan_with_runtime(
+            incident_id, expected_revision=expected_revision,
+            runtime=self._base_runtime, specialist_runtime=self.specialist_runtime,
+            **binding_fields,
+        )
+
+    async def _plan_with_runtime(self, incident_id: str, *, expected_revision: int, runtime,
+                                 specialist_runtime, guided_claim: object | None = None,
+                                 **binding_fields) -> dict:
+        eid = self._eid_for(incident_id)
+        if runtime is None:
             return {"ok": False, "error": "no supervisor runtime configured; exact-draft review cannot run"}
         async with self._reasoning_lock:
-            outcome = await self.lifecycle.plan(incident_id, runtime=self.runtime, evidence_service=self.evidence_service,
-                                                specialist_runtime=self.specialist_runtime,
+            if guided_claim is not None:
+                if eid is None or not self._guided_claim_is_current(eid, incident_id, guided_claim):
+                    return {"ok": False, "error": "guided planning ownership is no longer current"}
+            elif eid is not None and self._guided_owner == eid:
+                return {"ok": False, "error": "guided controller owns reasoning for this incident"}
+            outcome = await self.lifecycle.plan(incident_id, runtime=runtime, evidence_service=self.evidence_service,
+                                                specialist_runtime=specialist_runtime,
                                                 expected_revision=expected_revision, **binding_fields)
-        eid = self._eid_for(incident_id)
         if eid:
             await self._refresh_lifecycle(eid, outcome.disposition.lower(), reason=outcome.reason)
         return {"ok": outcome.disposition == "APPROVAL_REQUESTED", "outcome": outcome.model_dump(mode="json"),
@@ -1108,6 +1519,9 @@ class DemoEngine:
                 "recovered_per_event": round(config.recovered_value(), 0)}
 
     def snapshot(self) -> dict:
+        demo = self.demo_runner.snapshot()
+        if demo is not None:
+            return demo
         backend = getattr(self.runtime, "name", None) or config.reasoning_backend()
         return {"type": "snapshot", "tick": self.tick_i, "running": self.running,
                 "agent_mode": config.agent_mode(), "app_name": config.APP_NAME,
@@ -1133,6 +1547,11 @@ class DemoEngine:
 
     async def broadcast(self, msg: dict):
         import json
+        # Detached production reasoning may finish after the simulator is
+        # quiesced. Its state remains production state, but it must not leak into
+        # the isolated demo projection consumed by the dashboard.
+        if self.demo_runner.active and msg.get("type") != "snapshot":
+            return
         dead, data = [], json.dumps(msg, default=str)
         for ws in list(self.clients):
             try:

@@ -76,7 +76,7 @@ class DraftSubmission(BaseModel):
 
 
 class DemoScenarioCommand(BaseModel):
-    """Explicit local simulator scenario; never accepted as lifecycle authority."""
+    """Explicit entry into the isolated, disposable recording scenario."""
     model_config = ConfigDict(extra="forbid")
     equipment_id: str = "AC-COMP-01"
 
@@ -108,6 +108,15 @@ async def health():
 @app.get("/api/state")
 async def state():
     return JSONResponse(engine.snapshot())
+
+
+@app.get("/api/demo/artifacts/{artifact_id}")
+async def demo_artifact(artifact_id: str):
+    """Read one artifact from the active disposable scripted-demo index."""
+    try:
+        return JSONResponse(engine.demo_artifact(artifact_id))
+    except LookupError:
+        return JSONResponse({"ok": False, "error": "unknown demo artifact"}, status_code=404)
 
 
 @app.post("/api/start")
@@ -218,12 +227,12 @@ async def draft(incident_id: str, submission: DraftSubmission):
 @app.post("/api/reset")
 async def reset():
     await engine.reset()
-    return {"ok": True}
+    return {"ok": True, "state": engine.snapshot()}
 
 
 @app.post("/api/demo/scenario")
 async def guided_demo(command: DemoScenarioCommand):
-    """Start the typed offline recording flow and stop at exact human approval."""
+    """Start DemoScenarioRunner; production persistence/reasoning is not used."""
     return _status(await engine.start_guided_demo(command.equipment_id), refused=400)
 
 

@@ -42,6 +42,7 @@ export function useEngine() {
       connected: true,
       running: s.running ?? prev.running,
       tick: s.tick,
+      plantMin: s.plant_time_min ?? s.tick ?? prev.plantMin,
       agentMode: s.agent_mode,
       meta: { appName: s.app_name, tagline: s.tagline, plant: s.plant_name },
       triggerThreshold: s.trigger_threshold,
@@ -106,7 +107,11 @@ export function useEngine() {
   } : undefined;
   const approve = useCallback((a) => post(`/api/approve/${a?.equipment_id ?? a}`, intent(a)), [post]);
   const reject = useCallback((a) => post(`/api/reject/${a?.equipment_id ?? a}`, intent(a)), [post]);
-  const reset = useCallback(() => post("/api/reset"), [post]);
+  const reset = useCallback(async () => {
+    const result = await post("/api/reset");
+    if (result.ok && result.state) applySnapshot(result.state);
+    return result;
+  }, [applySnapshot, post]);
   const stop = useCallback(() => post("/api/stop"), [post]);
   const resume = useCallback(() => post("/api/start"), [post]);
   const startDemo = useCallback((equipmentId) => post("/api/demo/scenario", { equipment_id: equipmentId }), [post]);

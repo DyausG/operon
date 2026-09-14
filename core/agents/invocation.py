@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import TypeVar, cast
 
 from botocore.exceptions import BotoCoreError, ClientError
@@ -14,6 +15,8 @@ from .runtime import StrandsRuntime
 from .tools import EvidenceRequester, specialist_tools
 
 Report = TypeVar("Report", bound=SpecialistAssessment)
+
+logger = logging.getLogger(__name__)
 
 GROUNDING_PROMPT = """All output is advisory. Operon application owns durable state,
 validation, promotion, policy, approval, execution, and lifecycle transitions.
@@ -78,6 +81,7 @@ async def invoke_specialist(runtime: StrandsRuntime, service: EvidenceService,
             ), timeout=runtime.settings.invocation_timeout_seconds,
         )
     except (BotoCoreError, ClientError) as exc:
+        logger.exception("specialist Bedrock invocation failed")
         raise SpecialistInvocationError(
             "Bedrock invocation failed; check credentials, region, and model access. No fallback was used."
         ) from exc
