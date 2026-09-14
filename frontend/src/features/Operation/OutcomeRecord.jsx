@@ -38,7 +38,7 @@ export function OutcomeRecord({ view, state }) {
         </div>
       </Inspectable>
       <div className="rec rec-quiet">
-        <div className="rec-head"><span className="lbl">Business impact</span>{biz.provenance === "SIMULATED" || state.demoScenario?.active ? <Tag hatched>Simulated economics</Tag> : <Tag>Configured economics</Tag>}</div>
+        <div className="rec-head"><span className="lbl">Business impact</span></div>
         <div className="kvgrid kvgrid-4">
           <KV label="Recovered value" mono value={money0(biz.recovered_value)} />
           <KV label="Net impact" mono value={money0(biz.net_value)} />

@@ -23,7 +23,6 @@ export function Record({ view, incident, state, className = "" }) {
           <div className="lg-empty">
             <span className="lbl">No incident record</span>
             <p className="t3">Monitoring {state.fleet.length || "—"} assets. A predictive signal at or above {Number(state.triggerThreshold ?? 0.8).toFixed(2)} opens a durable incident; every entry after that is evidence-bound.</p>
-            {state.demoScenario?.active ? <Tag hatched>Simulated plant</Tag> : null}
           </div>
         ) : null}
         <AnimatePresence initial={false}>

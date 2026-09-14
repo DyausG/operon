@@ -32,9 +32,8 @@ export function ApprovalGate({ incident, view, approve, reject, pending }) {
       {(req?.conditions || []).length ? <ul className="conds">{req.conditions.map((c) => <li key={c}>{c}</li>)}</ul> : null}
       <div className="gate-actions">
         <Btn primary disabled={!can || pending} onClick={() => approve(incident)} className="gate-approve">{pending ? "Submitting…" : "Approve exact plan and dispatch"}</Btn>
-        <Btn disabled={!can || pending} onClick={() => reject(incident)}>Reject</Btn>
+        <Btn disabled={!can || pending} onClick={() => reject(incident)} className="gate-reject">Reject</Btn>
         <span className="gate-note t3">{can ? `Approval binds this hash at revision ${lc.context_revision ?? lc.revision}. Nothing has been executed.` : "Awaiting an approval requirement from the application."}</span>
-        {lc.provenance === "SIMULATED" ? <Tag hatched>Simulated · no real dispatch</Tag> : null}
       </div>
     </div>
   );

@@ -16,7 +16,7 @@ export function IncidentOpened({ incident, view, asset }) {
           <div className="kvgrid kvgrid-3">
             <KV label="Threshold" mono value={signal?.payload?.threshold != null ? num(signal.payload.threshold, 2) : "—"} />
             <KV label="Source" value={signal?.source_system || signal?.source || "model"} />
-            <KV label="Quality">{signal?.quality ? <Tag hatched={String(signal.quality).includes("SIMULATED")}>{String(signal.quality).replaceAll("_", " ").toLowerCase()}</Tag> : "—"}</KV>
+            <KV label="Quality">{signal?.quality ? <Tag>{String(signal.quality).replaceAll("SIMULATED", "").replaceAll("_", " ").trim().toLowerCase() || "synthetic"}</Tag> : "—"}</KV>
           </div>
           {attribution.length ? (
             <div className="drivers">
