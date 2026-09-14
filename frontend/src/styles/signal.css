@@ -1,0 +1,19 @@
+.sig-readout { display: flex; align-items: flex-end; gap: 14px; padding: 14px 14px 8px; }
+.sig-readout-l { display: flex; flex-direction: column; gap: 5px; padding-bottom: 6px; font-size: 12px; min-width: 0; }
+.sig-band { padding: 8px 10px 4px; margin: 0 0 4px; cursor: crosshair; }
+.sig-band svg { display: block; }
+.sig-t { font: 400 9.5px var(--font-mono); fill: var(--text-3); }
+.sig-a { font: 400 9.5px var(--font-mono); fill: var(--text-2); }
+.sig-brand { fill: var(--brand); }
+.sig-n { font: 500 9px var(--font-mono); fill: var(--ok); }
+.sig-pt.clickable { cursor: pointer; }
+.sig-pt.clickable:hover rect { stroke-width: 2.5; }
+.sig-ba { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 8px 14px; border-top: 1px solid var(--hair-d); box-shadow: 0 1px 0 var(--hair-l) inset; font-size: 12px; }
+.sig-ba-row { display: inline-flex; gap: 6px; align-items: baseline; }
+.sig-strips { display: flex; flex-direction: column; }
+.strip { display: grid; grid-template-columns: 76px 1fr 78px; align-items: center; gap: 10px; padding: 6px 14px; border-top: 1px solid var(--hair-d); box-shadow: 0 1px 0 var(--hair-l) inset; min-height: 30px; }
+.strip-n { font-size: 11.5px; color: var(--text-3); }
+.strip-svg { display: block; width: 100%; height: 18px; }
+.strip-v { font-size: 12.5px; font-weight: 500; color: var(--text-2); text-align: right; white-space: nowrap; }
+.strip-v small { color: var(--text-4); font-weight: 400; font-size: 10.5px; margin-left: 3px; }
+.sig-empty { padding: 12px 14px; font-size: 12px; }

@@ -1,0 +1,38 @@
+*, *::before, *::after { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body {
+  background: var(--surface-0);
+  color: var(--text-1);
+  font: 400 var(--size-ui)/1.4 var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  color-scheme: dark;
+}
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+button:focus-visible, [tabindex]:focus-visible { outline: 1px solid var(--brand); outline-offset: 1px; }
+h1, h2, h3, h4, p { margin: 0; }
+ul, ol { margin: 0; padding: 0; list-style: none; }
+code { font-family: var(--font-mono); }
+::selection { background: var(--brand-tint); }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: var(--edge); border-radius: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.cond { font-family: var(--font-cond); }
+.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.t1 { color: var(--text-1); } .t2 { color: var(--text-2); } .t3 { color: var(--text-3); } .t4 { color: var(--text-4); }
+.lbl { font: 500 var(--size-label)/1 var(--font-ui); letter-spacing: .08em; text-transform: uppercase; color: var(--text-3); }
+.hair { border-top: 1px solid var(--hair-d); box-shadow: 0 1px 0 var(--hair-l) inset; }
+.well { background: var(--well); border-top: 1px solid var(--hair-d); box-shadow: 0 1px 0 rgba(255,255,255,.03) inset; }
+.raised { background: var(--surface-2); border: 1px solid var(--edge); box-shadow: 0 1px 0 var(--hair-l) inset; border-radius: var(--r-1); }
+.hatched { background-image: var(--hatch); }
+.truncate { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}
+@media (max-width: 1200px) {
+  body { overflow: auto; }
+}
