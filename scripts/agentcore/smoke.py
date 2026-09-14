@@ -58,7 +58,7 @@ async def run(args) -> dict:
         incident = repo.transition(incident.id, m.IncidentPhase.INVESTIGATING,
                                    expected_revision=incident.revision, reason="isolated smoke fixture")
         history = evidence.request_and_collect(
-            incident.id, requested_by="smoke-fixture", equipment_ids=("AC-COMP-01",),
+            incident.id, requested_by="application", equipment_ids=("AC-COMP-01",),
             question="Read fixture service history", capability="get_maintenance_history",
             required_for="diagnosis")
         settings = AgentCoreSettings(
