@@ -1122,6 +1122,25 @@ function AssetNominalCommand({ asset, state, onSimulate }) {
   );
 }
 
+function formatDetectionTime(ts) {
+  if (!ts) return null;
+  try {
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return null;
+    const now = Date.now();
+    const diffSec = Math.max(0, Math.floor((now - d.getTime()) / 1000));
+    const timeStr = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    if (diffSec < 45) return { label: "Detected just now", full: timeStr };
+    const diffMin = Math.floor(diffSec / 60);
+    if (diffMin < 60) return { label: `Detected ${diffMin}m ago`, full: timeStr };
+    const diffHours = Math.floor(diffMin / 60);
+    if (diffHours < 24) return { label: `Detected ${diffHours}h ${diffMin % 60}m ago`, full: timeStr };
+    return { label: `Detected on ${d.toLocaleDateString([], { month: "short", day: "numeric" })} at ${timeStr}`, full: timeStr };
+  } catch {
+    return null;
+  }
+}
+
 function IncidentCommand({ incident, state, approve, reject, isResolved }) {
   const lifecycle = incident.lifecycle || {}, view = lifecycle.read_model || {}, phase = lifecycle.phase || "OPEN";
   const isResolvedIncident = isResolved || ["CLOSED", "FAILED", "CANCELLED"].includes(phase || incident.status);
@@ -1135,13 +1154,27 @@ function IncidentCommand({ incident, state, approve, reject, isResolved }) {
     ? "Recovered · In Spec"
     : assetContextMode(asset);
   const riskTone = tone(asset.status || (failureProb > 0.8 ? "CRITICAL" : failureProb > 0.4 ? "WARNING" : "HEALTHY"));
+  const detectionTimestamp =
+    view.incident?.created_at ||
+    view.events?.[0]?.created_at ||
+    view.events?.[0]?.timestamp ||
+    incident.created_at;
+  const detected = formatDetectionTime(detectionTimestamp);
 
   return (
     <motion.div key={incident.incident_id} className="incident-command" initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }}>
       <div className="incident-hero">
         <div>
           <h1>{incident.equipment_name || asset.name} <span className="hero-eid">({incident.equipment_id})</span></h1>
-          <p><CopyId value={incident.incident_id} /> · {incident.equipment_id} · revision {lifecycle.revision}</p>
+          <p className="incident-hero-subline">
+            <span>Incident <CopyId value={incident.incident_id} /></span>
+            {detected && (
+              <>
+                <span className="meta-sep">·</span>
+                <span title={`Exact detection timestamp: ${detected.full}`}>{detected.label}</span>
+              </>
+            )}
+          </p>
         </div>
         <div className="hero-risk">
           <small>24h Failure Risk</small>
@@ -1590,7 +1623,41 @@ function Card({ title, icon, meta, accent = "", children }) { return <section cl
 function Status({ value, children }) { return <span className={`status ${tone(value)}`}>{children}</span>; }
 function KV({ label, value }) { return <div className="kv"><small>{label}</small><b>{value || "Not recorded"}</b></div>; }
 function EmptyLine({ text }) { return <div className="empty-line"><i />{text}</div>; }
-function CopyId({ value, short = false }) { if (!value) return <span>—</span>; return <code title={value}>{short ? `${value.slice(0, 7)}…` : value.length > 22 ? `${value.slice(0, 12)}…${value.slice(-5)}` : value}</code>; }
+function CopyId({ value, short = false }) {
+  const [copied, setCopied] = useState(false);
+  if (!value) return <span>—</span>;
+
+  const handleCopy = (e) => {
+    e.stopPropagation();
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(value);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    }
+  };
+
+  const displayText = short
+    ? `${value.slice(0, 7)}…`
+    : value.length > 22
+    ? `${value.slice(0, 12)}…${value.slice(-5)}`
+    : value;
+
+  return (
+    <code
+      className={`copy-id-badge ${copied ? "copied" : ""}`}
+      title={copied ? "Copied to clipboard!" : `Click to copy ID: ${value}`}
+      onClick={handleCopy}
+    >
+      {copied ? (
+        <span className="copied-feedback">
+          <CheckCircleIcon size={10} color="var(--green)" /> Copied!
+        </span>
+      ) : (
+        displayText
+      )}
+    </code>
+  );
+}
 function Verdict({ item }) { return <div className={`verdict ${tone(item.decision)}`}><b>{item.decision === "ACCEPT" ? "✓ Critic + application validation passed" : item.decision}</b>{(item.blocking_issues || []).length > 0 && <p>{item.blocking_issues.join(" · ")}</p>}<small>{item.validation_policy_version || "validation policy"}</small></div>; }
 function tone(value = "") { const v = String(value).toUpperCase(); if (["HEALTHY", "CLOSED", "CONFIRMED", "ACCEPT", "APPROVE", "APPROVED", "SUCCEEDED", "VERIFIED_RECOVERY", "READY"].includes(v)) return "good"; if (["WARNING", "AWAITING_APPROVAL", "AWAITING_EVIDENCE", "OBSERVING", "PENDING", "CONDITIONS", "SIGNAL"].includes(v)) return "warn"; if (["CRITICAL", "ESCALATED", "EXECUTION_FAILED", "FAILED", "REJECT", "REJECTED", "REGRESSED", "NOT_RECOVERED", "ERROR"].includes(v)) return "bad"; if (v.includes("CLOSED") || v.includes("OUTCOME_RECORDED")) return "good"; if (v.includes("EXECUTION") || v.includes("APPROVAL")) return "warn"; return "info"; }
 function roleName(role) { return ({ diagnostic: "Diagnostic Specialist", engineering: "Engineering Specialist", operations: "Operations Specialist", critic: "Critic / Validator", planner: "Maintenance Planner", supervisor: "Reliability Supervisor" })[role] || "Specialist"; }

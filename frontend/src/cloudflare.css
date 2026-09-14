@@ -965,3 +965,62 @@ pre, code, kbd, samp {
   font-size: 10px !important;
   font-weight: 500 !important;
 }
+
+/* Incident Hero Operational Subline */
+.incident-hero-subline {
+  margin: 4px 0 0 !important;
+  font-family: var(--font-sans) !important;
+  font-size: 11px !important;
+  color: var(--text-secondary) !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  flex-wrap: wrap !important;
+}
+
+.incident-hero-subline .meta-sep {
+  color: var(--text-faint) !important;
+  font-size: 9px !important;
+}
+
+.incident-hero-subline code {
+  font-family: var(--font-mono) !important;
+  font-size: 10px !important;
+  padding: 1px 6px !important;
+  background: var(--obsidian-surface-raised) !important;
+  border: 1px solid var(--obsidian-border) !important;
+  border-radius: var(--radius-xs) !important;
+  color: var(--text-primary) !important;
+  cursor: pointer !important;
+  transition: all 0.12s ease !important;
+}
+
+.incident-hero-subline code:hover {
+  background: var(--obsidian-surface-hover) !important;
+  border-color: var(--obsidian-border-strong) !important;
+}
+
+/* Interactive Copy Badge with Feedback */
+.copy-id-badge {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  user-select: none !important;
+  cursor: pointer !important;
+}
+
+.copy-id-badge.copied {
+  background: rgba(16, 185, 129, 0.12) !important;
+  border-color: rgba(16, 185, 129, 0.35) !important;
+  color: var(--signal-nominal-text) !important;
+}
+
+.copy-id-badge .copied-feedback {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 3px !important;
+  font-family: var(--font-sans) !important;
+  font-size: 9.5px !important;
+  font-weight: 600 !important;
+  color: var(--signal-nominal-text) !important;
+}
