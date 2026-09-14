@@ -92,6 +92,23 @@ async def test_eight_machine_tick_persists_telemetry_and_health_scores(
     assert score_count == 8
 
 
+@pytest.mark.asyncio
+async def test_fresh_projection_cannot_keep_unbacked_critical_status_at_zero_risk(
+    seeded_db, monkeypatch,
+):
+    engine = make_engine(monkeypatch, failure_prob=0.0)
+    engine.status_override["AC-COMP-01"] = "CRITICAL"
+
+    await engine._advance()
+
+    compressor = next(item for item in engine.snapshot()["fleet"]
+                      if item["equipment_id"] == "AC-COMP-01")
+    assert compressor["failure_prob"] == 0.0
+    assert compressor["status"] == "HEALTHY"
+    assert compressor["status_source"] == "model_risk"
+    assert "AC-COMP-01" not in engine.status_override
+
+
 def test_bad_telemetry_is_logged_without_rolling_back_health_score(
     seeded_db, monkeypatch, caplog,
 ):
@@ -169,9 +186,10 @@ async def test_explicit_reset_clears_demo_state_but_keeps_master_data(
     try:
         await engine.reset()
         assert engine.running is True
-        assert engine.tick_i == 0
-        assert engine.assets == {}
-        assert engine.histories == {}
+        assert engine.tick_i == 1
+        assert len(engine.assets) == 8
+        assert set(engine.assets) == {profile.equipment_id for profile in FLEET}
+        assert all(len(points) == 1 for points in engine.histories.values())
         assert engine.alerts == {}
         with get_conn() as conn:
             assert conn.execute(
@@ -179,10 +197,10 @@ async def test_explicit_reset_clears_demo_state_but_keeps_master_data(
             ).fetchone()["n"] == 8
             assert conn.execute(
                 "SELECT COUNT(*) AS n FROM sensor_reading"
-            ).fetchone()["n"] == 0
+            ).fetchone()["n"] == 8 * len(SENSOR_FEATURES)
             assert conn.execute(
                 "SELECT COUNT(*) AS n FROM health_score"
-            ).fetchone()["n"] == 0
+            ).fetchone()["n"] == 8
     finally:
         await engine.stop()
 

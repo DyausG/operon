@@ -29,7 +29,10 @@ class InvestigationResult(BaseModel):
 # investigation and by lifecycle refreshes of stale baseline evidence before a run.
 BASELINE_CAPABILITIES = (
     ("get_asset_context", "Collect persisted asset and sensor context.", {}),
-    ("get_telemetry_window", "Collect the bounded recent telemetry window.", {"sample_limit": 60}),
+    # Twelve samples per registered sensor retain a useful trend while keeping
+    # the complete five-sensor evidence record comfortably inside the existing
+    # 64 KB SpecialistContext contract.
+    ("get_telemetry_window", "Collect the bounded recent telemetry window.", {"sample_limit": 12}),
     ("get_maintenance_history", "Collect persisted maintenance history.", {"limit": 20}),
     ("get_related_incidents", "Collect other persisted incidents for this asset.", {"limit": 20}),
     ("get_operating_context", "Collect the persisted operating context.", {}),
@@ -67,7 +70,7 @@ class DeterministicInvestigator:
         self.repository = repository
         self.evidence_service = evidence_service or EvidenceService(repository)
 
-    def investigate(self, incident_id: str, *, telemetry_sample_limit: int = 60) -> InvestigationResult:
+    def investigate(self, incident_id: str, *, telemetry_sample_limit: int = 12) -> InvestigationResult:
         incident = self.repository.fetch_incident(incident_id)
         if incident.phase != m.IncidentPhase.OPEN:
             raise InvestigationStateError(

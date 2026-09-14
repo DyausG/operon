@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Callable
 
 from strands import Agent, ToolContext, tool
@@ -21,6 +22,8 @@ from .contracts import (
 )
 from .invocation import GROUNDING_PROMPT, trace_attributes
 from .runtime import StrandsRuntime
+
+logger = logging.getLogger(__name__)
 
 SUPERVISOR_TOOL_NAMES = frozenset({
     "delegate_diagnostic", "delegate_engineering", "delegate_operations",
@@ -148,6 +151,7 @@ async def supervise_reliability(runtime: StrandsRuntime, service: EvidenceServic
             cancellation_result_handler(run.finish(None, "CANCELLED"))
         raise
     except Exception:
+        logger.exception("supervisor model invocation failed")
         reason = "INVALID_OUTPUT" if run.invalid_output else "MODEL_FAILED"
     finally:
         run.closed = True

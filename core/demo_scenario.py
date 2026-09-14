@@ -15,7 +15,6 @@ from core.reliability import models as m
 from core.reliability.governance import artifact_hash
 from core.reliability.promotion import PromotionService
 from core.reliability.repository import utcnow
-from core.seed_data import CLASS_DEFAULT_MODE
 
 
 class DemoReasoningBackend(ReasoningBackend):
@@ -139,9 +138,9 @@ def technical_confirmation(engine, equipment_id: str) -> m.TrustedTechnicalConfi
     history = [item for item in artifacts if isinstance(item, m.Evidence)
                and item.kind == "maintenance_history" and item.id not in superseded][-1]
     with db.get_conn(engine.coordinator.repository.path) as conn:
-        equipment = conn.execute("SELECT equipment_class FROM equipment WHERE equipment_id=?", (equipment_id,)).fetchone()
+        guided_mode_id = f"FM-{engine.sim.assets[equipment_id].profile.scenario}"
         mode = conn.execute("SELECT * FROM failure_mode WHERE failure_mode_id=?",
-                            (CLASS_DEFAULT_MODE[equipment["equipment_class"]],)).fetchone()
+                            (guided_mode_id,)).fetchone()
     return m.TrustedTechnicalConfirmation(
         incident_id=incident.id, asset_id=equipment_id,
         confirmed_mechanism=f"Guided-demo inspection confirmed: {mode['failure_mode_name']}", failure_mode_code=mode["mode_code"],

@@ -26,6 +26,7 @@ POLICY_VERSION = "operon-promotion-1"
 VALIDATOR = "operon.application.promotion"
 CONFIRM_MECHANISM = "operon.confirm_mechanism"
 CONFIRM_RESOURCES = "operon.confirm_resources"
+MAX_REASONING_EVIDENCE_CONTEXT_BYTES = 32_000
 
 
 class PromotionRefused(ValueError):
@@ -132,6 +133,54 @@ class PromotionService:
             return closure(item.source_dependencies for item in evidence.values())
         except ValueError as exc:
             raise PromotionRefused(f"inconsistent evidence dependency closure: {exc}") from exc
+
+    @staticmethod
+    def _bounded_diagnostic_evidence(evidence, build_context):
+        """Select whole current evidence records for one bounded reasoning turn.
+
+        Durable history is never removed. Records are selected with their complete
+        provenance-parent closure, and the exact selected set becomes the snapshot
+        manifest. Oversized lower-priority records are omitted as whole records;
+        JSON is never truncated.
+        """
+        parents = {parent for item in evidence.values() for parent in item.derived_from_ids}
+        roots = [item for item in evidence.values() if item.id not in parents]
+        priority = {
+            CONFIRM_MECHANISM: 0, "model_signal": 1, "inspection": 2,
+            "maintenance_history": 3, "telemetry": 4, "asset_context": 5,
+            "operational_context": 6, "related_incidents": 7,
+        }
+        roots.sort(key=lambda item: (
+            priority.get(item.source_capability, priority.get(item.kind, 20)),
+            -item.created_at.timestamp(), item.id))
+
+        def group(item, found):
+            if item.id in found:
+                return
+            for parent_id in item.derived_from_ids:
+                group(evidence[parent_id], found)
+            found[item.id] = item
+
+        selected = {}
+        for item in roots:
+            addition = {}
+            group(item, addition)
+            trial = {**selected, **addition}
+            if len(trial) > 20:
+                continue
+            try:
+                context = build_context(trial)
+            except ValueError as exc:
+                if "diagnostic context exceeds 64000 bytes" in str(exc):
+                    continue
+                raise
+            if len(context.model_dump_json().encode()) > MAX_REASONING_EVIDENCE_CONTEXT_BYTES:
+                continue
+            selected = trial
+        _require(selected, "no evidence fits the bounded diagnostic context", evidence=True)
+        _require(any(item.kind == "model_signal" for item in selected.values()),
+                 "bounded diagnostic context requires the admitted model signal", evidence=True)
+        return selected
 
     def _manifest(self, values):
         return {key: _hash(value) for key, value in sorted(values.items())}
@@ -276,17 +325,22 @@ class PromotionService:
                 question = f"Review exact draft {draft.id} with artifact hash {_hash(draft)}. Preserve its executable content."
             else:
                 raise PromotionRefused("unsupported run stage")
+            run_id = new_id()
+            def context_for(values):
+                return SpecialistContext(
+                    incident_id=incident_id, asset_id=asset_id, run_id=run_id,
+                    input_revision=incident.revision + 1, evidence=tuple(values.values()),
+                    artifacts=tuple(artifacts), lifecycle_state=incident.phase,
+                    run_purpose=stage, evidence_purpose="diagnosis" if stage == "DIAGNOSIS" else "intervention",
+                    question=question, review_target_id=draft.id if stage == "INTERVENTION_REVIEW" else None,
+                    review_target_hash=_hash(draft) if stage == "INTERVENTION_REVIEW" else None)
             evidence = self._evidence(conn, incident, asset_id, evidence_ids)
+            if stage == "DIAGNOSIS":
+                evidence = self._bounded_diagnostic_evidence(evidence, context_for)
+            context = context_for(evidence)
             # Application-generated before any model reasoning; the model can neither
             # define nor modify what the frozen packet depends on.
             dependencies = self._closure(evidence)
-            run_id = new_id()
-            context = SpecialistContext(
-                incident_id=incident_id, asset_id=asset_id, run_id=run_id, input_revision=incident.revision + 1,
-                evidence=tuple(evidence.values()), artifacts=tuple(artifacts), lifecycle_state=incident.phase,
-                run_purpose=stage, evidence_purpose="diagnosis" if stage == "DIAGNOSIS" else "intervention", question=question,
-                review_target_id=draft.id if stage == "INTERVENTION_REVIEW" else None,
-                review_target_hash=_hash(draft) if stage == "INTERVENTION_REVIEW" else None)
             snapshot = m.SupervisorRunSnapshot(
                 **_identity(incident_id), asset_id=asset_id, run_id=run_id, stage=stage,
                 input_revision=context.input_revision, evidence_manifest=self._manifest(evidence),
