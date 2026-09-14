@@ -1,0 +1,967 @@
+/* ==========================================================================
+   LINEAR / VERCEL OBSIDIAN DESIGN SYSTEM — COMPONENT OVERRIDES
+   Pure Neutral Zinc (#09090b) | Crisp White CTAs | Zero Color Cast
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   1. GLOBAL CANVAS & RESET
+   -------------------------------------------------------------------------- */
+body {
+  background-color: var(--obsidian-canvas) !important;
+  color: var(--text-primary) !important;
+  font-family: var(--font-sans) !important;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.app-shell {
+  max-width: 1720px;
+  margin: 0 auto;
+  padding: 12px 20px 48px;
+}
+
+/* --------------------------------------------------------------------------
+   2. CONTAINERS, CARDS & PANELS (FLAT NEUTRAL ZINC, 1PX #222227)
+   -------------------------------------------------------------------------- */
+.panel,
+.incident-command,
+.detail-card,
+.kpi-card,
+.command-stack > section,
+.command-grid,
+.triage-rail-industrial,
+.session-pipeline-bar,
+.empty-command {
+  background: var(--obsidian-surface) !important;
+  border: 1px solid var(--obsidian-border) !important;
+  border-radius: var(--radius-md) !important;
+  box-shadow: none !important;
+}
+
+.panel-title h2,
+.card-title h2,
+.section-title h2 {
+  font-family: var(--font-sans) !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  color: var(--text-primary) !important;
+  letter-spacing: 0.04em !important;
+  text-transform: uppercase !important;
+}
+
+/* --------------------------------------------------------------------------
+   3. TOPBAR OBSIDIAN CONSOLE
+   -------------------------------------------------------------------------- */
+.topbar {
+  height: 54px !important;
+  background: var(--obsidian-canvas) !important;
+  border-bottom: 1px solid var(--obsidian-border) !important;
+  margin-bottom: 16px !important;
+  padding: 0 4px !important;
+}
+
+.brand-mark {
+  width: 32px !important;
+  height: 32px !important;
+  background: var(--obsidian-surface-raised) !important;
+  border: 1px solid var(--obsidian-border-strong) !important;
+  border-radius: var(--radius-sm) !important;
+  box-shadow: none !important;
+  display: grid !important;
+  place-items: center !important;
+  color: #ffffff !important;
+}
+
+.brand-text b {
+  font-family: var(--font-sans) !important;
+  font-size: 15px !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.01em !important;
+  color: #ffffff !important;
+}
+
+.brand-text small {
+  font-family: var(--font-sans) !important;
+  font-size: 9px !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.05em !important;
+  text-transform: uppercase !important;
+  color: var(--text-muted) !important;
+}
+
+/* Guardrail Badge: Unified 28px / 6px Obsidian Chip */
+.guardrail-badge {
+  height: 28px !important;
+  background: var(--obsidian-surface-raised) !important;
+  border: 1px solid var(--obsidian-border) !important;
+  border-radius: var(--radius-md) !important;
+  color: var(--text-secondary) !important;
+  box-shadow: none !important;
+  font-family: var(--font-sans) !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  padding: 0 10px !important;
+  gap: 6px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  box-sizing: border-box !important;
+}
+
+.guardrail-badge b {
+  color: var(--signal-nominal-text) !important;
+  font-weight: 600 !important;
+}
+
+.guardrail-badge span {
+  color: var(--text-secondary) !important;
+}
+
+/* Status Chips: Unified 28px / 6px Obsidian Geometry */
+.status-pill {
+  height: 28px !important;
+  background: var(--obsidian-surface-raised) !important;
+  border: 1px solid var(--obsidian-border) !important;
+  border-radius: var(--radius-md) !important;
+  color: var(--text-secondary) !important;
+  box-shadow: none !important;
+  font-family: var(--font-sans) !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  padding: 0 10px !important;
+  gap: 6px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  box-sizing: border-box !important;
+}
+
+.status-pill .pill-dot {
+  width: 6px !important;
+  height: 6px !important;
+  border-radius: 50% !important;
+  box-shadow: none !important;
+}
+
+.status-pill.runtime.online {
+  border-color: var(--obsidian-border-strong) !important;
+  background: var(--obsidian-surface-raised) !important;
+  color: var(--text-primary) !important;
+}
+
+.status-pill.runtime.online .pill-dot {
+  background: var(--signal-nominal) !important;
+}
+
+.status-pill.runtime.standby .pill-dot {
+  background: var(--text-muted) !important;
+}
+
+.status-pill.env.demo {
+  border-color: var(--signal-warning-border) !important;
+  background: var(--signal-warning-subtle) !important;
+  color: var(--signal-warning-text) !important;
+}
+
+.status-pill.env.demo .pill-dot {
+  background: var(--signal-warning) !important;
+}
+
+.status-pill.env:not(.demo) .pill-dot {
+  background: var(--text-muted) !important;
+}
+
+/* Telemetry Cluster (Right Deck: Stream Indicator + Clock in a Single Unified 28px / 6px Box) */
+.telemetry-cluster {
+  height: 28px !important;
+  background: var(--obsidian-surface-raised) !important;
+  border: 1px solid var(--obsidian-border) !important;
+  border-radius: var(--radius-md) !important;
+  box-shadow: none !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  padding: 0 10px !important;
+  gap: 8px !important;
+  box-sizing: border-box !important;
+}
+
+.telemetry-cluster .stream-indicator {
+  height: auto !important;
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  color: var(--text-secondary) !important;
+  font-family: var(--font-sans) !important;
+  font-weight: 500 !important;
+  font-size: 11px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+}
+
+.telemetry-cluster .stream-indicator .pulse-dot {
+  width: 6px !important;
+  height: 6px !important;
+  border-radius: 50% !important;
+  box-shadow: none !important;
+  animation: none !important;
+}
+
+.telemetry-cluster .stream-indicator.online .pulse-dot {
+  background: var(--signal-nominal) !important;
+}
+
+.telemetry-cluster .stream-indicator.paused .pulse-dot {
+  background: var(--signal-warning) !important;
+}
+
+.telemetry-cluster .stream-indicator.offline .pulse-dot {
+  background: var(--signal-critical) !important;
+}
+
+.telemetry-cluster .telemetry-divider {
+  width: 1px !important;
+  height: 12px !important;
+  background: var(--obsidian-border-strong) !important;
+  margin: 0 2px !important;
+}
+
+.telemetry-cluster .digital-timer {
+  font-family: var(--font-mono) !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  font-variant-numeric: tabular-nums !important;
+  color: var(--text-primary) !important;
+  letter-spacing: 0.02em !important;
+}
+
+/* Plant Clock (if rendered standalone) */
+.plant-clock {
+  height: 28px !important;
+  background: var(--obsidian-surface-raised) !important;
+  border: 1px solid var(--obsidian-border) !important;
+  border-radius: var(--radius-md) !important;
+  font-family: var(--font-mono) !important;
+  font-size: 11px !important;
+  color: var(--text-primary) !important;
+  box-sizing: border-box !important;
+}
+
+/* Segmented Controls Toolbar: Unified 28px / 6px Obsidian Geometry */
+.segmented-toolbar {
+  height: 28px !important;
+  background: var(--obsidian-surface-raised) !important;
+  border: 1px solid var(--obsidian-border) !important;
+  border-radius: var(--radius-md) !important;
+  padding: 2px !important;
+  gap: 2px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  box-sizing: border-box !important;
+}
+
+.segmented-toolbar .toolbar-btn {
+  height: 22px !important;
+  border-radius: var(--radius-sm) !important;
+  border: 1px solid transparent !important;
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  font-family: var(--font-sans) !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  padding: 0 8px !important;
+  box-shadow: none !important;
+  transition: all 0.12s ease !important;
+  cursor: pointer !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 5px !important;
+}
+
+.segmented-toolbar .toolbar-btn.icon-only {
+  width: 22px !important;
+  padding: 0 !important;
+}
+
+.segmented-toolbar .toolbar-btn:hover:not(:disabled) {
+  background: var(--obsidian-surface-hover) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--obsidian-border) !important;
+}
+
+.segmented-toolbar .toolbar-btn.demo-btn {
+  background: var(--obsidian-surface) !important;
+  border-color: var(--obsidian-border-strong) !important;
+  color: var(--text-primary) !important;
+}
+
+.segmented-toolbar .toolbar-btn.demo-btn:hover:not(:disabled) {
+  background: #ffffff !important;
+  color: #09090b !important;
+  border-color: #ffffff !important;
+}
+
+.segmented-toolbar .toolbar-btn.demo-btn svg {
+  color: inherit !important;
+}
+
+.segmented-toolbar .toolbar-btn.reset-btn:hover:not(:disabled) {
+  background: var(--signal-critical-subtle) !important;
+  color: var(--signal-critical-text) !important;
+  border-color: var(--signal-critical-border) !important;
+}
+
+/* Buttons: Linear High-Contrast Crisp White Primary Action */
+.topbar-btn {
+  height: 28px !important;
+  background: var(--obsidian-surface-raised) !important;
+  border: 1px solid var(--obsidian-border) !important;
+  border-radius: var(--radius-sm) !important;
+  color: var(--text-primary) !important;
+  font-family: var(--font-sans) !important;
+  font-size: 11.5px !important;
+  font-weight: 500 !important;
+  box-shadow: none !important;
+  transition: all 0.12s ease !important;
+}
+
+.topbar-btn:hover {
+  background: var(--obsidian-surface-hover) !important;
+  border-color: var(--obsidian-border-strong) !important;
+}
+
+.topbar-btn.demo {
+  background: #ffffff !important;
+  border: 1px solid #ffffff !important;
+  color: #09090b !important;
+  font-weight: 600 !important;
+}
+
+.topbar-btn.demo:hover {
+  background: #e4e4e7 !important;
+  border-color: #e4e4e7 !important;
+}
+
+/* --------------------------------------------------------------------------
+   4. KPI RIBBON (IMPACTBAR) MONOCHROME SLATE
+   -------------------------------------------------------------------------- */
+.kpi-card {
+  background: var(--obsidian-surface) !important;
+  border: 1px solid var(--obsidian-border) !important;
+  border-radius: var(--radius-md) !important;
+  box-shadow: none !important;
+}
+
+.kpi-card:hover {
+  border-color: var(--obsidian-border-strong) !important;
+}
+
+.kpi-card.has-alert,
+.kpi-card.has-warning,
+.kpi-card.has-investigation {
+  background: var(--obsidian-surface) !important;
+  border-color: var(--obsidian-border) !important;
+}
+
+.kpi-title {
+  color: var(--text-muted) !important;
+  font-family: var(--font-sans) !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.04em !important;
+  text-transform: uppercase !important;
+}
+
+.kpi-subhead {
+  color: var(--text-secondary) !important;
+  font-family: var(--font-sans) !important;
+  font-size: 10.5px !important;
+}
+
+.kpi-metric {
+  color: var(--text-primary) !important;
+  font-family: var(--font-mono) !important;
+  font-variant-numeric: tabular-nums !important;
+  font-size: 19px !important;
+  font-weight: 600 !important;
+}
+
+.kpi-metric.positive {
+  color: var(--signal-nominal-text) !important;
+}
+
+.kpi-metric.warn {
+  color: var(--signal-warning-text) !important;
+}
+
+.kpi-metric.negative {
+  color: var(--signal-critical-text) !important;
+}
+
+.kpi-subtext {
+  font-family: var(--font-sans) !important;
+  font-size: 11px !important;
+}
+
+.kpi-subtext.critical {
+  color: var(--signal-critical-text) !important;
+}
+
+.kpi-subtext.warn {
+  color: var(--signal-warning-text) !important;
+}
+
+.kpi-subtext.nominal {
+  color: var(--signal-nominal-text) !important;
+}
+
+.kpi-divider {
+  background: var(--obsidian-border) !important;
+}
+
+/* --------------------------------------------------------------------------
+   5. SESSION PIPELINE & ACTIVE TABS
+   -------------------------------------------------------------------------- */
+.session-pipeline-bar {
+  background: var(--obsidian-surface) !important;
+  border: 1px solid var(--obsidian-border) !important;
+  box-shadow: none !important;
+}
+
+.session-tab {
+  background: var(--obsidian-surface-subtle) !important;
+  border: 1px solid var(--obsidian-border) !important;
+  border-radius: var(--radius-sm) !important;
+  color: var(--text-secondary) !important;
+  box-shadow: none !important;
+  font-family: var(--font-sans) !important;
+}
+
+.session-tab:hover {
+  background: var(--obsidian-surface-hover) !important;
+  border-color: var(--obsidian-border-strong) !important;
+  color: var(--text-primary) !important;
+}
+
+.session-tab.active {
+  background: var(--obsidian-surface-active) !important;
+  border-color: #ffffff !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+}
+
+.session-tab.awaiting-approval.active {
+  border-color: #ffffff !important;
+  background: var(--obsidian-surface-active) !important;
+  box-shadow: none !important;
+}
+
+.session-pulse-dot {
+  width: 6px !important;
+  height: 6px !important;
+  border-radius: 50% !important;
+  box-shadow: none !important;
+  animation: none !important;
+}
+
+.session-pulse-dot.pulse-amber {
+  background: var(--signal-warning) !important;
+}
+
+.session-pulse-dot.pulse-cyan {
+  background: var(--signal-nominal) !important;
+}
+
+.session-tab-id {
+  font-family: var(--font-mono) !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+}
+
+.session-tab-asset {
+  font-family: var(--font-mono) !important;
+  font-size: 11px !important;
+}
+
+.session-tab-phase {
+  font-family: var(--font-sans) !important;
+  font-size: 10.5px !important;
+}
+
+.session-tab-risk {
+  font-family: var(--font-mono) !important;
+  font-variant-numeric: tabular-nums !important;
+  font-size: 11px !important;
+}
+
+.session-tab {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  padding: 3px 10px !important;
+  height: 28px !important;
+}
+
+.session-tab-sep {
+  color: var(--text-faint) !important;
+  font-size: 10px !important;
+  user-select: none !important;
+}
+
+.session-tab.active .session-tab-sep {
+  color: var(--text-muted) !important;
+}
+
+/* --------------------------------------------------------------------------
+   6. TRIAGE EXCEPTION RAIL (LINEAR OBSIDIAN HIGH-DENSITY ROWS)
+   -------------------------------------------------------------------------- */
+.triage-rail-industrial {
+  background: var(--obsidian-surface) !important;
+  border: 1px solid var(--obsidian-border) !important;
+  border-radius: var(--radius-md) !important;
+  box-shadow: none !important;
+}
+
+.triage-rail-header {
+  background: var(--obsidian-surface) !important;
+  border-bottom: 1px solid var(--obsidian-border) !important;
+}
+
+.triage-rail-title {
+  font-family: var(--font-sans) !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.04em !important;
+  color: var(--text-primary) !important;
+  text-transform: uppercase !important;
+}
+
+.triage-total-badge {
+  background: var(--obsidian-surface-subtle) !important;
+  border: 1px solid var(--obsidian-border) !important;
+  color: var(--text-secondary) !important;
+  font-family: var(--font-sans) !important;
+  font-size: 10px !important;
+  font-weight: 600 !important;
+  font-variant-numeric: tabular-nums !important;
+  letter-spacing: 0.03em !important;
+  text-transform: uppercase !important;
+}
+
+.triage-filter-tab {
+  font-family: var(--font-sans) !important;
+  color: var(--text-secondary) !important;
+  font-size: 10.5px !important;
+}
+
+.triage-filter-tab.active {
+  background: var(--obsidian-surface-active) !important;
+  border-color: var(--obsidian-border-strong) !important;
+  color: var(--text-primary) !important;
+}
+
+.exception-item {
+  background: var(--obsidian-surface) !important;
+  border: 1px solid var(--obsidian-border) !important;
+  border-radius: var(--radius-sm) !important;
+  box-shadow: none !important;
+}
+
+.exception-item:hover {
+  background: var(--obsidian-surface-hover) !important;
+  border-color: var(--obsidian-border-strong) !important;
+}
+
+.exception-item.critical {
+  border-left: 3px solid var(--signal-critical) !important;
+  background: var(--obsidian-surface) !important;
+}
+
+.exception-item.critical.selected {
+  border-color: var(--signal-critical) !important;
+  background: var(--obsidian-surface-active) !important;
+}
+
+.exception-item.warning {
+  border-left: 3px solid var(--signal-warning) !important;
+  background: var(--obsidian-surface) !important;
+}
+
+.exception-item.warning.selected {
+  border-color: var(--signal-warning) !important;
+  background: var(--obsidian-surface-active) !important;
+}
+
+.status-pill-badge.critical {
+  background: var(--signal-critical-subtle) !important;
+  color: var(--signal-critical-text) !important;
+  border: 1px solid var(--signal-critical-border) !important;
+  font-family: var(--font-sans) !important;
+  font-weight: 600 !important;
+}
+
+.status-pill-badge.warning {
+  background: var(--signal-warning-subtle) !important;
+  color: var(--signal-warning-text) !important;
+  border: 1px solid var(--signal-warning-border) !important;
+  font-family: var(--font-sans) !important;
+  font-weight: 600 !important;
+}
+
+.asset-id-text {
+  font-family: var(--font-mono) !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+}
+
+.risk-metric {
+  font-family: var(--font-mono) !important;
+  font-variant-numeric: tabular-nums !important;
+}
+
+.nominal-item {
+  background: var(--obsidian-surface) !important;
+  border: 1px solid var(--obsidian-border-subtle) !important;
+}
+
+.nominal-item:hover {
+  background: var(--obsidian-surface-hover) !important;
+  border-color: var(--obsidian-border) !important;
+}
+
+.nominal-item.selected {
+  background: var(--obsidian-surface-active) !important;
+  border-color: #ffffff !important;
+}
+
+/* --------------------------------------------------------------------------
+   7. INCIDENT COMMAND & DETAIL CARDS
+   -------------------------------------------------------------------------- */
+.incident-hero {
+  background: var(--obsidian-surface) !important;
+  border-bottom: 1px solid var(--obsidian-border) !important;
+}
+
+.incident-hero h1 {
+  font-family: var(--font-sans) !important;
+  font-size: 18px !important;
+  font-weight: 600 !important;
+  color: var(--text-primary) !important;
+}
+
+.hero-risk b {
+  font-family: var(--font-mono) !important;
+  font-variant-numeric: tabular-nums !important;
+}
+
+.signal-box, .plan-head, .governance-result, .receipt {
+  background: var(--obsidian-surface-subtle) !important;
+  border: 1px solid var(--obsidian-border) !important;
+  box-shadow: none !important;
+}
+
+.approval-actions button:not(.reject) {
+  background: #ffffff !important;
+  border: 1px solid #ffffff !important;
+  color: #09090b !important;
+  font-weight: 600 !important;
+}
+
+.approval-actions button:not(.reject):hover {
+  background: #e4e4e7 !important;
+}
+
+.approval-actions .reject {
+  background: var(--signal-critical-subtle) !important;
+  border-color: var(--signal-critical-border) !important;
+  color: var(--signal-critical-text) !important;
+}
+
+.approval-actions .reject:hover {
+  background: rgba(239, 68, 68, 0.16) !important;
+}
+
+/* Dropdown styling */
+.pipeline-select-filter {
+  background: var(--obsidian-surface-raised) !important;
+  border: 1px solid var(--obsidian-border) !important;
+  color: var(--text-primary) !important;
+  font-family: var(--font-sans) !important;
+  font-size: 11.5px !important;
+  font-weight: 500 !important;
+}
+
+.pipeline-select-filter:hover {
+  background: var(--obsidian-surface-hover) !important;
+  border-color: var(--obsidian-border-strong) !important;
+}
+
+.pipeline-select-filter:focus {
+  border-color: #ffffff !important;
+  outline: 1px solid #ffffff !important;
+}
+
+.pipeline-select-filter option {
+  background-color: var(--obsidian-surface-raised) !important;
+  color: var(--text-primary) !important;
+  font-family: var(--font-sans) !important;
+  font-size: 11.5px !important;
+  font-weight: 500 !important;
+}
+
+/* --------------------------------------------------------------------------
+   8. COMPREHENSIVE TYPOGRAPHY CONSISTENCY ENFORCEMENT
+   - Sans (Inter): Structural UI, headings, titles, labels, badges, pills, buttons
+   - Mono (JetBrains Mono): Machine IDs, incident IDs, telemetry metrics, clocks
+   -------------------------------------------------------------------------- */
+
+/* Global form inputs & controls default to crisp Inter sans */
+button, input, select, textarea {
+  font-family: var(--font-sans) !important;
+}
+
+/* Code & technical hashes strictly reserved to JetBrains Mono */
+pre, code, kbd, samp {
+  font-family: var(--font-mono) !important;
+}
+
+/* Top bar elements */
+.guardrail-badge {
+  font-family: var(--font-sans) !important;
+  font-size: 10px !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.02em !important;
+}
+
+.facility-chip {
+  font-family: var(--font-sans) !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+}
+
+.facility-label {
+  font-family: var(--font-sans) !important;
+  font-size: 9.5px !important;
+  font-weight: 600 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.04em !important;
+}
+
+.facility-value {
+  font-family: var(--font-sans) !important;
+  font-size: 10.5px !important;
+  font-weight: 500 !important;
+}
+
+.toolbar-btn, .demo-trigger {
+  font-family: var(--font-sans) !important;
+}
+
+/* Incidents Pipeline Bar - Tier 1 Title */
+.pipeline-title {
+  font-family: var(--font-sans) !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.04em !important;
+  text-transform: uppercase !important;
+  color: var(--text-secondary) !important;
+}
+
+.pipeline-empty-text {
+  font-family: var(--font-sans) !important;
+  font-size: 11.5px !important;
+  font-weight: 400 !important;
+  color: var(--text-muted) !important;
+}
+
+/* Left Supervisory Rail - Tier 2 Group Labels */
+.triage-group-label {
+  font-family: var(--font-sans) !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.04em !important;
+  text-transform: uppercase !important;
+  color: var(--text-secondary) !important;
+}
+
+/* Left Supervisory Rail - Tier 3 Auxiliary Tags & Actions */
+.group-subtext {
+  font-family: var(--font-sans) !important;
+  font-size: 10px !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.03em !important;
+  text-transform: uppercase !important;
+  color: var(--text-muted) !important;
+}
+
+.group-toggle-btn {
+  font-family: var(--font-sans) !important;
+  font-size: 10px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.03em !important;
+  text-transform: uppercase !important;
+  color: var(--text-secondary) !important;
+  cursor: pointer !important;
+  transition: color 0.12s ease !important;
+}
+
+.group-toggle-btn:hover {
+  color: #ffffff !important;
+}
+
+.triage-empty-exceptions {
+  font-family: var(--font-sans) !important;
+  font-size: 11px !important;
+  font-weight: 400 !important;
+}
+
+.risk-label {
+  font-family: var(--font-sans) !important;
+  font-size: 10px !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.03em !important;
+  text-transform: uppercase !important;
+  color: var(--text-muted) !important;
+}
+
+/* Status Badges & Lifecycle Pills */
+.status {
+  font-family: var(--font-sans) !important;
+  font-size: 10px !important;
+  font-weight: 600 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.03em !important;
+}
+
+/* Structural lifecycle & invariant banners */
+.invariant {
+  font-family: var(--font-sans) !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.02em !important;
+}
+
+.eyebrow {
+  font-family: var(--font-sans) !important;
+  font-size: 10px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.05em !important;
+  text-transform: uppercase !important;
+}
+
+/* Tier 1: Major Card & Panel titles */
+.panel-title h2, .card-title h2 {
+  font-family: var(--font-sans) !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.04em !important;
+  text-transform: uppercase !important;
+}
+
+/* Tier 2: Sub-section headers inside cards */
+.section-title span {
+  font-family: var(--font-sans) !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.04em !important;
+  text-transform: uppercase !important;
+  color: var(--text-secondary) !important;
+}
+
+/* Tier 3: Card metadata tags & accessory info */
+.panel-title span, .card-title small, .section-title small {
+  font-family: var(--font-sans) !important;
+  font-size: 10px !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.03em !important;
+  color: var(--text-muted) !important;
+}
+
+/* Card Sub-labels & Key-Value pairs */
+.signal-box small, 
+.diagnosis small, 
+.plan-head small, 
+.run-strip small, 
+.kv small, 
+.parts small, 
+.governance-result small, 
+.receipt small, 
+.verdict small, 
+.evidence-row small {
+  font-family: var(--font-sans) !important;
+  font-size: 9.5px !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.04em !important;
+  text-transform: uppercase !important;
+  color: var(--text-muted) !important;
+}
+
+.kv b, .signal-box b, .verdict b {
+  font-family: var(--font-sans) !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+}
+
+.agent-boundary {
+  font-family: var(--font-sans) !important;
+  font-size: 9.5px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.04em !important;
+  text-transform: uppercase !important;
+}
+
+.agent-avatar {
+  font-family: var(--font-sans) !important;
+  font-weight: 600 !important;
+}
+
+/* Nominal Sensor Cards */
+.sensor-name {
+  font-family: var(--font-sans) !important;
+  font-size: 10px !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.03em !important;
+  text-transform: uppercase !important;
+  color: var(--text-secondary) !important;
+}
+
+.sensor-tag {
+  font-family: var(--font-sans) !important;
+  font-size: 8.5px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.03em !important;
+}
+
+.sensor-val {
+  font-family: var(--font-mono) !important;
+  font-variant-numeric: tabular-nums !important;
+  font-size: 15px !important;
+  font-weight: 600 !important;
+}
+
+.sensor-envelope {
+  font-family: var(--font-sans) !important;
+  font-size: 9.5px !important;
+  color: var(--text-muted) !important;
+}
+
+/* Bottom Audit Drawer */
+.drawer-tab-btn {
+  font-family: var(--font-sans) !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+}
+
+.drawer-tab-btn small {
+  font-family: var(--font-sans) !important;
+  font-variant-numeric: tabular-nums !important;
+  font-size: 9px !important;
+  font-weight: 600 !important;
+}
+
+.drawer-expand-toggle {
+  font-family: var(--font-sans) !important;
+  font-size: 10px !important;
+  font-weight: 500 !important;
+}

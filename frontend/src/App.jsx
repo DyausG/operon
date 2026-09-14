@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Area, AreaChart, CartesianGrid, Line, LineChart, ReferenceArea, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useEngine } from "./useEngine.js";
+import { TriageExceptionRail } from "./components/TriageExceptionRail.jsx";
 import {
   ClassIcon,
   ShieldMark,
@@ -57,26 +58,33 @@ export default function App() {
     failure_prob: 0.01,
   };
 
-  // Resolve incident based on active view and selection
+  // Machine-scoped active and resolved incidents (only for the selected machine)
+  const assetActiveIncidents = useMemo(
+    () => activeAlerts.filter((a) => a.equipment_id === focusEquipmentId),
+    [activeAlerts, focusEquipmentId]
+  );
+
+  const assetResolvedIncidents = useMemo(
+    () => resolvedAlerts.filter((a) => a.equipment_id === focusEquipmentId),
+    [resolvedAlerts, focusEquipmentId]
+  );
+
+  // Resolve incident based on active view and selection (strictly scoped to focused asset)
   const currentActiveIncident = useMemo(() => {
     if (selectedIncidentId) {
-      const inc = activeAlerts.find((a) => a.incident_id === selectedIncidentId);
+      const inc = assetActiveIncidents.find((a) => a.incident_id === selectedIncidentId);
       if (inc) return inc;
     }
-    const forAsset = activeAlerts.find((a) => a.equipment_id === focusEquipmentId);
-    if (forAsset) return forAsset;
-    return null;
-  }, [selectedIncidentId, activeAlerts, focusEquipmentId]);
+    return assetActiveIncidents[0] || null;
+  }, [selectedIncidentId, assetActiveIncidents]);
 
   const currentPastIncident = useMemo(() => {
     if (selectedIncidentId) {
-      const inc = resolvedAlerts.find((a) => a.incident_id === selectedIncidentId);
+      const inc = assetResolvedIncidents.find((a) => a.incident_id === selectedIncidentId);
       if (inc) return inc;
     }
-    const forAsset = resolvedAlerts.find((a) => a.equipment_id === focusEquipmentId);
-    if (forAsset) return forAsset;
-    return resolvedAlerts[0] || null;
-  }, [selectedIncidentId, resolvedAlerts, focusEquipmentId]);
+    return assetResolvedIncidents[0] || null;
+  }, [selectedIncidentId, assetResolvedIncidents]);
 
   const handleSelectAsset = (equipmentId) => {
     setSelectedEquipmentId(equipmentId);
@@ -104,18 +112,16 @@ export default function App() {
   const handleFilterChange = (newFilter) => {
     setSessionFilter(newFilter);
     if (newFilter === "ACTIVE") {
-      const matchingActive = activeAlerts.find((a) => a.equipment_id === focusEquipmentId) || activeAlerts[0];
+      const matchingActive = activeAlerts.find((a) => a.equipment_id === focusEquipmentId);
       if (matchingActive) {
         setSelectedIncidentId(matchingActive.incident_id);
-        setSelectedEquipmentId(matchingActive.equipment_id);
       } else {
         setSelectedIncidentId(null);
       }
     } else if (newFilter === "PAST") {
-      const matchingPast = resolvedAlerts.find((a) => a.equipment_id === focusEquipmentId) || resolvedAlerts[0];
+      const matchingPast = resolvedAlerts.find((a) => a.equipment_id === focusEquipmentId);
       if (matchingPast) {
         setSelectedIncidentId(matchingPast.incident_id);
-        setSelectedEquipmentId(matchingPast.equipment_id);
       } else {
         setSelectedIncidentId(null);
       }
@@ -147,12 +153,12 @@ export default function App() {
       {state.action.error && <div className="action-error">Action refused: {state.action.error}</div>}
       <main className="workspace">
         <aside className="overview-stack">
-          <FleetPanel fleet={state.fleet} selected={focusEquipmentId} onSelect={handleSelectAsset} />
+          <TriageExceptionRail fleet={state.fleet} selected={focusEquipmentId} onSelect={handleSelectAsset} />
         </aside>
         <section className="command-stack">
           <SessionPipeline
-            activeAlerts={activeAlerts}
-            resolvedAlerts={resolvedAlerts}
+            activeAlerts={assetActiveIncidents}
+            resolvedAlerts={assetResolvedIncidents}
             currentIncidentId={
               sessionFilter === "ACTIVE"
                 ? currentActiveIncident?.incident_id
@@ -240,7 +246,6 @@ function Header({ state, onReset, onStop, onResume, onDemo }) {
           <span className="brand-mark"><ShieldMark /></span>
           <div className="brand-text">
             <b>{state.meta.appName || "Operon"}</b>
-            <small>Industrial Reliability Command</small>
           </div>
         </div>
         <div className="guardrail-badge" title="Deterministic application gate enforces human sign-off on all machine interventions">
@@ -859,7 +864,7 @@ function SessionPipeline({
   return (
     <div className="session-pipeline-bar">
       <div className="pipeline-lead">
-        <span className="pipeline-title">Incident Sessions</span>
+        <span className="pipeline-title">Incidents</span>
         <div className="pipeline-dropdown-wrapper">
           <select
             className="pipeline-select-filter"
@@ -871,6 +876,11 @@ function SessionPipeline({
             <option value="PAST">Past Incidents ({resolvedAlerts.length})</option>
             <option value="NOMINAL">Nominal Status ({focusedAsset?.equipment_id})</option>
           </select>
+          <span className="dropdown-chevron-icon" aria-hidden="true">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </span>
         </div>
       </div>
 
@@ -887,19 +897,18 @@ function SessionPipeline({
                 key={item.incident_id}
                 className={`session-tab ${isSelected ? "active" : ""} ${isApproval ? "awaiting-approval" : ""}`}
                 onClick={() => onSelect(item)}
-                title={`Active Run ${item.incident_id} · ${item.equipment_name || item.equipment_id}`}
+                title={`Incident ${item.incident_id} · ${formatPhaseName(phase)}`}
               >
                 <span className={`session-pulse-dot ${isApproval ? "pulse-amber" : "pulse-cyan"}`} />
                 <span className="session-tab-id">{formatShortId(item.incident_id)}</span>
-                <span className="session-tab-asset">{item.equipment_id}</span>
+                <span className="session-tab-sep">·</span>
                 <span className="session-tab-phase">{formatPhaseName(phase)}</span>
-                <span className={`session-tab-risk ${riskTone}`}>{pct(item.failure_prob)}</span>
               </button>
             );
           })}
 
           {activeAlerts.length === 0 && (
-            <span className="pipeline-empty-text">Continuous surveillance · Zero active incident runs</span>
+            <span className="pipeline-empty-text">Continuous surveillance · Zero active incidents for {focusedAsset?.equipment_id || "selected machine"}</span>
           )}
         </div>
       )}
@@ -914,19 +923,18 @@ function SessionPipeline({
                 key={item.incident_id}
                 className={`session-tab resolved ${isSelected ? "active" : ""}`}
                 onClick={() => onSelect(item)}
-                title={`Resolved Incident ${item.incident_id} · ${item.equipment_name || item.equipment_id}`}
+                title={`Resolved Incident ${item.incident_id} · Closed`}
               >
                 <span className="status-indicator-dot good" />
                 <span className="session-tab-id">{formatShortId(item.incident_id)}</span>
-                <span className="session-tab-asset">{item.equipment_id}</span>
-                <span className="session-tab-phase">Recovered</span>
-                <span className="session-tab-risk good">✓ Verified</span>
+                <span className="session-tab-sep">·</span>
+                <span className="session-tab-phase">Closed</span>
               </button>
             );
           })}
 
           {resolvedAlerts.length === 0 && (
-            <span className="pipeline-empty-text">No archived incident resolutions in session database</span>
+            <span className="pipeline-empty-text">No archived incidents for {focusedAsset?.equipment_id || "selected machine"}</span>
           )}
         </div>
       )}
@@ -1034,7 +1042,6 @@ function AssetNominalCommand({ asset, state, onSimulate }) {
         <div className="hero-risk">
           <small>24h Failure Risk</small>
           <b className={tone(asset.status)}>{pct(failureProb)}</b>
-          <span>{assetContextMode(asset)}</span>
         </div>
 
         <Status value={asset.status}>{asset.status}</Status>
@@ -1115,20 +1122,30 @@ function AssetNominalCommand({ asset, state, onSimulate }) {
   );
 }
 
-function IncidentCommand({ incident, state, approve, reject }) {
+function IncidentCommand({ incident, state, approve, reject, isResolved }) {
   const lifecycle = incident.lifecycle || {}, view = lifecycle.read_model || {}, phase = lifecycle.phase || "OPEN";
+  const isResolvedIncident = isResolved || ["CLOSED", "FAILED", "CANCELLED"].includes(phase || incident.status);
+
+  // Authoritative asset telemetry from state.fleet (same data source used in rail, ticker, and tabs)
+  const asset = (state.fleet || []).find((a) => a.equipment_id === incident.equipment_id) || incident;
+  const failureProb = isResolvedIncident
+    ? (asset.failure_prob ?? 0.01)
+    : (asset.failure_prob ?? incident.failure_prob ?? 0.01);
+  const riskLabel = isResolvedIncident
+    ? "Recovered · In Spec"
+    : assetContextMode(asset);
+  const riskTone = tone(asset.status || (failureProb > 0.8 ? "CRITICAL" : failureProb > 0.4 ? "WARNING" : "HEALTHY"));
+
   return (
     <motion.div key={incident.incident_id} className="incident-command" initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }}>
       <div className="incident-hero">
         <div>
-          <span className="eyebrow">Autonomous Incident Command</span>
-          <h1>{incident.equipment_name} <span className="hero-eid">({incident.equipment_id})</span></h1>
+          <h1>{incident.equipment_name || asset.name} <span className="hero-eid">({incident.equipment_id})</span></h1>
           <p><CopyId value={incident.incident_id} /> · {incident.equipment_id} · revision {lifecycle.revision}</p>
         </div>
         <div className="hero-risk">
           <small>24h Failure Risk</small>
-          <b>{pct(incident.failure_prob)}</b>
-          <span>{incident.predicted_mode_label || "Predictive anomaly"}</span>
+          <b className={riskTone}>{pct(failureProb)}</b>
         </div>
         <Status value={phase}>{phase.replaceAll("_", " ")}</Status>
       </div>

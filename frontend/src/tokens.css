@@ -1,0 +1,95 @@
+/* ==========================================================================
+   LINEAR / VERCEL OBSIDIAN DESIGN TOKENS (MONOCHROME NEUTRAL PRECISION)
+   ========================================================================== */
+
+:root {
+  color-scheme: dark;
+
+  /* 1. Pure Neutral Obsidian & Zinc Surfaces (0% Color Cast) */
+  --obsidian-canvas: #09090b;       /* Pure neutral black-zinc canvas */
+  --obsidian-surface: #121215;      /* Card & panel surface */
+  --obsidian-surface-raised: #18181c;/* Slightly elevated surface */
+  --obsidian-surface-hover: #1f1f25; /* Interactive hover surface */
+  --obsidian-surface-active: #272730;/* Selected / active surface */
+  --obsidian-surface-subtle: #0e0e11;/* Inset code blocks & wells */
+
+  /* Razor 1px Neutral Borders */
+  --obsidian-border: #222227;       /* Default card & divider border */
+  --obsidian-border-subtle: rgba(255, 255, 255, 0.07);
+  --obsidian-border-strong: #2e2e36;/* Emphasized borders & headers */
+  --obsidian-border-focus: #ffffff; /* Crisp monochrome focus ring */
+
+  /* Compatibility Mapping */
+  --bg-base: var(--obsidian-canvas);
+  --surface-base: var(--obsidian-surface);
+  --surface-raised: var(--obsidian-surface);
+  --surface-overlay: var(--obsidian-surface-hover);
+  --surface-hover: var(--obsidian-surface-hover);
+  --surface-active: var(--obsidian-surface-active);
+
+  --bg: var(--obsidian-canvas);
+  --surface: var(--obsidian-surface);
+  --border-default: var(--obsidian-border);
+  --border-strong: var(--obsidian-border-strong);
+  --border-focus: var(--obsidian-border-focus);
+  --line: var(--obsidian-border);
+  --line2: var(--obsidian-border-strong);
+
+  /* 2. Linear Monochrome Primary CTA (High-Contrast White Button) */
+  --cta-bg: #ffffff;
+  --cta-text: #09090b;
+  --cta-hover: #e4e4e7;
+
+  /* 3. Pure Functional Status Signals (Used ONLY for true state alerts) */
+  --signal-critical: #ef4444;
+  --signal-critical-subtle: rgba(239, 68, 68, 0.08);
+  --signal-critical-border: rgba(239, 68, 68, 0.28);
+  --signal-critical-text: #f87171;
+
+  --signal-warning: #f59e0b;
+  --signal-warning-subtle: rgba(245, 158, 11, 0.08);
+  --signal-warning-border: rgba(245, 158, 11, 0.28);
+  --signal-warning-text: #fbbf24;
+
+  --signal-nominal: #10b981;
+  --signal-nominal-subtle: rgba(16, 185, 129, 0.08);
+  --signal-nominal-border: rgba(16, 185, 129, 0.25);
+  --signal-nominal-text: #34d399;
+
+  --signal-info: #60a5fa;
+  --signal-info-subtle: rgba(96, 165, 250, 0.08);
+  --signal-info-border: rgba(96, 165, 250, 0.25);
+  --signal-info-text: #93c5fd;
+
+  --red: var(--signal-critical);
+  --amber: var(--signal-warning);
+  --green: var(--signal-nominal);
+  --cyan: #38bdf8;
+  --blue: var(--signal-info);
+
+  /* 4. Neutral Zinc Typography Hierarchy */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --font: var(--font-sans);
+  --mono: var(--font-mono);
+
+  --text-primary: #fafafa;
+  --text-secondary: #a1a1aa;
+  --text-muted: #71717a;
+  --text-faint: #52525b;
+
+  --text: var(--text-primary);
+  --muted: var(--text-secondary);
+  --faint: var(--text-muted);
+
+  /* Radii (Compact & Clean) */
+  --radius-xs: 3px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-pill: 9999px;
+
+  /* No Fuzzy Shadows */
+  --shadow-none: none;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
