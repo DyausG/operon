@@ -16,6 +16,7 @@ from core.reasoning.handler import handler_identity
 from core.reasoning.protocol import PROTOCOL_VERSION, ReasoningResponse
 from core.reasoning.trust import validate_response
 from tests.test_promotion import ASSET, Environment, result_payload, state
+from tests.test_incident_state import signal
 from tests.test_strands_agents import ScriptedModel, protected_state, settings
 
 
@@ -208,14 +209,15 @@ def test_conservative_merge_never_trusts_the_remote_disposition(env):
 def test_validated_result_cannot_be_reused_by_another_incident_or_run(env):
     snapshot = env.start()
     validated = validate(env, snapshot, envelope(env, snapshot))
-    other = env.repo.create_incident(("HYD-PUMP-03",), admission_key="other-asset")
+    other, _ = env.repo.admit_signal(signal("HYD-PUMP-03"))
+    other_signal_id = other.signal_evidence_ids[0]
     env.repo.transition(other.id, m.IncidentPhase.INVESTIGATING, expected_revision=other.revision, reason="test")
     evidence = env.evidence_service.request_and_collect(
         other.id, requested_by="diagnostic", equipment_ids=("HYD-PUMP-03",), question="Read",
         capability="get_asset_context", required_for="diagnosis").evidence
     other_snapshot = env.service.start_run(
         other.id, asset_id="HYD-PUMP-03", stage="DIAGNOSIS", expected_revision=env.repo.fetch_incident(other.id).revision,
-        evidence_ids=(evidence.id,), runtime=runtime())
+        evidence_ids=(other_signal_id, evidence.id), runtime=runtime())
     with pytest.raises(ReasoningBackendUnavailable) as failure:
         validate_response(snapshot=other_snapshot, context=SpecialistContext.model_validate(other_snapshot.context_payload),
                           response=envelope(env, snapshot), repository=env.repo, expected_identity=handler_identity(runtime()))
