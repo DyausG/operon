@@ -1,0 +1,80 @@
+/* Operon design tokens — approved direction: cool graphite, grey-is-normal, one brand color. */
+:root {
+  --surface-0: #131619;
+  --surface-1: #191D21;
+  --surface-2: #1F2428;
+  --surface-3: #262B31;
+  --well: #0F1215;
+  --hair-d: #0B0D10;
+  --hair-l: rgba(255, 255, 255, 0.06);
+  --edge: #30363D;
+  --edge-strong: #3C434B;
+
+  --text-1: #EDEFF1;
+  --text-2: #B6BDC5;
+  --text-3: #7E8791;
+  --text-4: #4F5761;
+
+  --brand: #2FA39A;
+  --brand-strong: #3BB8AE;
+  --brand-ink: #0B1513;
+  --brand-tint: rgba(47, 163, 154, 0.16);
+  --brand-text: #7FD6CE;
+
+  --advisory: #8FA3C8;
+  --advisory-tint: rgba(143, 163, 200, 0.14);
+  --authority: #EDEFF1;
+  --trusted: #9AA3AD;
+
+  --warn: #E5A23A;
+  --warn-tint: rgba(229, 162, 58, 0.12);
+  --crit: #E8543A;
+  --crit-tint: rgba(232, 84, 58, 0.12);
+  --ok: #3FB27F;
+  --ok-tint: rgba(63, 178, 127, 0.14);
+  --normal: #7E8791;
+
+  --hatch: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.10) 0 1.5px, transparent 1.5px 5px);
+  --hatch-brand: repeating-linear-gradient(135deg, var(--brand) 0 3px, transparent 3px 6px);
+  --hatch-crit: repeating-linear-gradient(135deg, rgba(232, 84, 58, .55) 0 2px, transparent 2px 6px);
+  --dotgrid: radial-gradient(rgba(255, 255, 255, 0.07) 0.6px, transparent 0.7px);
+
+  --font-ui: "IBM Plex Sans", system-ui, "Segoe UI", Roboto, sans-serif;
+  --font-cond: "IBM Plex Sans Condensed", "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --size-label: 11px;
+  --size-ui: 13px;
+  --size-body: 13.5px;
+  --size-head: 16px;
+  --size-display-s: 22px;
+  --size-display-m: 30px;
+  --size-display-l: 40px;
+  --size-readout-s: 28px;
+  --size-readout-m: 44px;
+  --size-readout-l: 64px;
+
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --sp-6: 32px; --sp-7: 48px;
+  --r-0: 0; --r-1: 2px; --r-2: 3px;
+
+  --dur-instant: 80ms; --dur-quick: 120ms; --dur-std: 200ms; --dur-deliberate: 320ms; --dur-slow: 480ms;
+  --ease: cubic-bezier(.2, .7, .2, 1);
+
+  --shadow-overlay: -24px 0 48px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--hair-d);
+
+  --row-h: 30px;
+  --header-h: 56px;
+  --fleet-h: 112px;
+  --proc-h: 64px;
+  --footer-h: 36px;
+  --stage-top: calc(var(--header-h) + var(--fleet-h) + var(--proc-h));
+  --col-signal: 480px;
+  --col-record: 420px;
+  --tray-w: 720px;
+}
+@media (max-width: 1680px) {
+  :root { --col-signal: 400px; --col-record: 360px; --tray-w: 640px; --size-readout-l: 52px; }
+}
+@media (max-width: 1440px) {
+  :root { --col-signal: 360px; --col-record: 0px; --tray-w: 600px; --fleet-h: 96px; }
+}

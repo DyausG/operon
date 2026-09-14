@@ -2,3 +2,4 @@ node_modules/
 .vite/
 *.local
 # NOTE: dist/ is intentionally committed so the app runs with `uv run` and no Node.
+test/.out/
