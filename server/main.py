@@ -120,7 +120,7 @@ async def state():
 
 @app.get("/api/demo/artifacts/{artifact_id}")
 async def demo_artifact(artifact_id: str):
-    """Read one artifact from the active disposable scripted-demo index."""
+    """Read one artifact from the active disposable Guided Demo index."""
     try:
         return JSONResponse(engine.demo_artifact(artifact_id))
     except LookupError:

@@ -1,7 +1,7 @@
 // AI provider configuration client. Talks only to /api/providers; the browser never sees a
 // credential (the API returns configured/masked status) and nothing here touches storage.
 export const PROVIDER_KINDS = [
-  { id: "none", label: "None / deterministic", hint: "Telemetry, health scoring, incidents and the guided demo keep running; model-backed reasoning is off." },
+  { id: "none", label: "None / deterministic", hint: "Telemetry, health scoring, incidents and the Guided Demo keep running; model-backed reasoning is off." },
   { id: "gemini", label: "Google Gemini", hint: "Cloud model. The API key stays on the server (environment or this session)." },
   { id: "ollama", label: "Ollama / local", hint: "Open-source models served by a local Ollama process. No credential." },
   { id: "bedrock", label: "AWS Bedrock", hint: "Cloud model. AWS credentials come from the server's AWS configuration." },

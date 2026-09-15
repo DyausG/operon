@@ -16,7 +16,7 @@ from .artifacts import DemoArtifactIndex, validate_demo_artifact_graph
 
 
 PROVENANCE = "SIMULATED"
-RUNTIME = "operon.demo.scripted-v1"
+RUNTIME = "operon.demo.guided-v1"
 BASE_TIME = datetime(2026, 1, 15, 9, 0, tzinfo=timezone.utc)
 PRE_APPROVAL_SECONDS = 42
 POST_APPROVAL_SECONDS = 33
@@ -38,7 +38,7 @@ RECOVERY = (
 
 
 class DemoScenarioRunner:
-    """Own one disposable scripted lifecycle and stop at human approval."""
+    """Own one disposable deterministic Guided Demo lifecycle and stop at human approval."""
 
     def __init__(self, fleet: list[dict], *, publish: Callable[[], Awaitable[None]] | None = None,
                  time_scale: float = 1.0):
@@ -172,7 +172,7 @@ class DemoScenarioRunner:
             view["evidence"].extend(acquired)
             for evidence in acquired:
                 self._event("EVIDENCE_ACQUIRED", {"kind": evidence["kind"]}, artifact_id=evidence["id"])
-            view["agent_actions"] = [self._record("DEMO-ACTION-01", actor="operon.demo.scripted",
+            view["agent_actions"] = [self._record("DEMO-ACTION-01", actor="operon.demo.guided",
                 status="SUCCEEDED", summary="Reviewed telemetry, operating context, and maintenance history.")]
             self._state["demo_scenario"]["status"] = "evidence_review"
             await self._emit()
@@ -337,7 +337,7 @@ class DemoScenarioRunner:
             await self._wait(2)
             self._assert_current(generation)
             observation_ids = [f"DEMO-RECOVERY-{index:02d}" for index in range(1, len(RECOVERY) + 1)]
-            outcome_reason = "Four scripted post-intervention observations show sustained risk and vibration recovery."
+            outcome_reason = "Four deterministic post-intervention observations in the Guided Demo scenario show sustained risk and vibration recovery."
             view["outcomes"] = [self._artifact("DEMO-OUTCOME-01", "outcome_verification",
                 "Verified recovery outcome", status="VERIFIED_RECOVERY", summary=outcome_reason,
                 parent_ids=["DEMO-RECEIPT-01"], supporting_ids=observation_ids,
@@ -385,20 +385,20 @@ class DemoScenarioRunner:
                           "predicted_mode_label": "Nominal signature", "point": point,
                           "provenance": PROVENANCE, "runtime": RUNTIME, "live_model": False})
             histories[eid] = [point]
-        return {"type": "snapshot", "tick": 0, "plant_time_min": 0, "running": True, "agent_mode": "scripted-demo",
+        return {"type": "snapshot", "tick": 0, "plant_time_min": 0, "running": True, "agent_mode": "guided-demo",
                 "app_name": "Operon", "tagline": "Autonomous Reliability Operations for Industrial Systems",
                 "plant_name": "Guided Demo · Simulated Plant", "authority_path": "demo-read-model-only",
                 "supervisor_available": False, "trigger_threshold": .8, "warn_threshold": .45,
                 "fleet": fleet, "histories": histories, "alerts": [],
-                "triage": {"count": 0, "rationale": "Deterministic scripted presentation", "order": []},
+                "triage": {"count": 0, "rationale": "Deterministic Guided Demo scenario", "order": []},
                 "business": {"events_prevented": 0, "events_failed": 0, "recovered_value": 0,
                              "loss_incurred": 0, "net_value": 0, "oee_baseline": .84, "oee_target": .91,
                              "estimated_downtime_avoided_minutes": 135, "planned_maintenance_minutes": 45,
                              "production_impact": "Single compressor service window · SIMULATED",
                              "incident_priority": "HIGH", "provenance": PROVENANCE,
                              "runtime": RUNTIME, "live_model": False},
-                "reasoning_provenance": {"backend": "scripted-demo", "runtime": RUNTIME,
-                    "framework": "Structured simulated specialist activity", "model_provider": None,
+                "reasoning_provenance": {"backend": "guided-demo", "runtime": RUNTIME,
+                    "framework": "Deterministic simulated specialist activity", "model_provider": None,
                     "status": "simulated", "provenance": PROVENANCE, "live_model": False},
                 "demo_scenario": {"active": True, "label": "Guided Demo · Simulated Plant",
                     "equipment_id": equipment_id, "status": "factory_healthy", "phase": "FACTORY_HEALTHY",
@@ -409,7 +409,7 @@ class DemoScenarioRunner:
     def _create_incident(self) -> None:
         eid = self._state["demo_scenario"]["equipment_id"]
         self._state["demo_scenario"]["incident_id"] = "DEMO-INCIDENT-01"
-        signal_summary = "Predictive risk rose from 0.07 to 0.86 and crossed the scripted 0.80 threshold."
+        signal_summary = "Predictive risk rose from 0.07 to 0.86 and crossed the 0.80 action threshold in the Guided Demo scenario."
         signal = self._artifact("DEMO-EVIDENCE-SIGNAL", "predictive_signal", "Predictive bearing-risk signal",
             status="THRESHOLD_CROSSED", summary=signal_summary, source="operon-guided-demo-simulator",
             kind="model_signal",
@@ -423,7 +423,7 @@ class DemoScenarioRunner:
             "diagnosis_id": None, "intervention_id": None, "intervention_hash": None,
             "requirement_id": None, "authority_valid": False, "authority_reason": "SIMULATED demo read model",
             "reconciliation_required": False, "execution_lineage_valid": False, "supervisor_available": False,
-            "last_reason": "Scripted risk threshold crossed.", "provenance": PROVENANCE,
+            "last_reason": "Guided Demo scenario: risk threshold crossed.", "provenance": PROVENANCE,
             "runtime": RUNTIME, "live_model": False, "read_model": {"phase": "OPEN",
                 "evidence": [signal], "events": [], "agent_actions": [], "agent_runs": [], "verdicts": [],
                 "diagnosis": None, "intervention": None, "binding": None, "requirements": [],
@@ -556,10 +556,10 @@ class DemoScenarioRunner:
             delegations.append(finding)
         run_id = f"DEMO-RUN-{run_number:02d}"
         return self._artifact(run_id, "specialist_activity", f"{stage.replace('_', ' ').title()} specialist activity",
-            status=status, summary="Scripted specialist outputs; no live Bedrock, AgentCore, or Strands execution.",
+            status=status, summary="Deterministic Guided Demo specialist outputs; no AI provider, Bedrock, AgentCore, or Strands execution.",
             supporting_ids=[item["id"] for item in delegations], run_id=f"DEMO-RUN-{stage}",
             stage=stage, disposition="SIMULATED_ADVISORY", tool_calls=len(specialists),
-            runtime_identity={"backend": "scripted-demo", "runtime": RUNTIME, "provenance": PROVENANCE,
+            runtime_identity={"backend": "guided-demo", "runtime": RUNTIME, "provenance": PROVENANCE,
                               "live_model": False}, blockers=[], assessments=[],
             delegations=delegations)
 
@@ -672,7 +672,7 @@ class DemoScenarioRunner:
                 "provenance": PROVENANCE, "runtime": RUNTIME, "live_model": False, **values}
 
     def _artifact(self, artifact_id: str, artifact_type: str, title: str, *, status: str,
-                  summary: str, source: str = "operon.demo.scripted",
+                  summary: str, source: str = "operon.demo.guided",
                   parent_ids: list[str] | tuple[str, ...] = (),
                   supporting_ids: list[str] | tuple[str, ...] = (),
                   related_ids: list[str] | tuple[str, ...] = (), **payload) -> dict:

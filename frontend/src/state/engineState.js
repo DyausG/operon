@@ -35,7 +35,7 @@ function logged(prev, entry) {
 export function applySnapshot(prev, s) {
   const demo = s.demo_scenario || { active: false };
   const alerts = Object.fromEntries((s.alerts || []).map((a) => [a.equipment_id, a]));
-  // A scripted demo (re)start returns to a healthy plant with no alerts: a new generation of artifact ids.
+  // A Guided Demo (re)start returns to a healthy plant with no alerts: a new generation of artifact ids.
   const restarted = demo.active && demo.status === "factory_healthy" && Object.keys(alerts).length === 0 &&
     !(prev.demoScenario.active && prev.demoScenario.status === "factory_healthy");
   const leftDemo = prev.demoScenario.active && !demo.active;

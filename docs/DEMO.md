@@ -71,7 +71,7 @@ and revision the lifecycle service demands.
 
 With nothing configured Operon still runs everything that does not need a model:
 telemetry simulation, ML health scoring, incident admission, baseline evidence, governance
-policy, human approval, governed execution, outcome verification and the guided demo.
+policy, human approval, governed execution, outcome verification and the Guided Demo.
 Model-backed reasoning (the Reliability Supervisor and specialists) reports itself as
 **unavailable**; real incidents wait in `INVESTIGATING`. Operon never substitutes a
 fabricated reasoning result. The header chip reads "No model provider · standby" and
@@ -121,11 +121,18 @@ API and never stored in the browser.
 Credentials are read only by the server through the AWS SDK; the API exposes their
 *source* (environment, profile, role, file), never a value.
 
-## Running the guided demo
+## Running the Guided Demo
 
-The **guided demo** is a scripted, clearly labelled *SIMULATED* walkthrough of the whole
-lifecycle that needs no provider. Start it from the Engine menu in the header, from
-**Settings → Plant & system → Start guided demo**, or with
+The **Guided Demo** is a clearly labelled *SIMULATED* walkthrough of the whole lifecycle.
+It uses a reproducible, deterministic telemetry and failure scenario (the Guided Demo
+Scenario) so reviewers can reliably exercise Operon's full workflow: signal, admission,
+evidence, diagnosis, planning, exact human approval, execution, observation and verified
+closure. The scenario needs no provider and never invokes one; its specialist activity is
+deterministic and labelled *SIMULATED · no live model*. When an AI provider is configured,
+model-backed reasoning operates on the live incidents the seeded simulator raises (step 6
+below); without a provider, Operon's deterministic reliability workflow remains available.
+Start it from the Engine menu in the header, from
+**Settings → Plant & system → Start Guided Demo**, or with
 `curl -X POST localhost:8000/api/demo/scenario -H 'Content-Type: application/json' -d '{"equipment_id":"AC-COMP-01"}'`.
 Approve the plan when the approval card appears and watch execution, observation and
 verified closure. **Reset engine** returns to the live simulation.
@@ -136,7 +143,7 @@ verified closure. **Reset engine** returns to the live simulation.
 2. **Settings → AI provider**: note the provider choice cards, the honest "not configured"
    states, capability chips, and Test connection. Select Ollama or Gemini if you have one.
 3. **Dashboard**: fleet risk, action gate, KPI deck.
-4. Start the **guided demo**; follow the incident on the **Incidents** and **Operon Agent**
+4. Start the **Guided Demo**; follow the incident on the **Incidents** and **Operon Agent**
    pages: evidence ledger with provenance, advisory lane vs. authoritative records.
 5. Approve the exact work package (hash and revision shown), then watch OBSERVING →
    verified recovery → CLOSED.

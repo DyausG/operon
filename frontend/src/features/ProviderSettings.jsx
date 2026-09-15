@@ -119,7 +119,7 @@ export function ProviderSettings() {
           {!data.supervisor_available && prov.unavailable_reason ? <p className="t3">{prov.unavailable_reason}</p> : null}
 
           {active === "none" ? (
-            <div className="note-box">{Icons.info({})}<span>Deterministic mode. Telemetry, ML health scoring, incident admission, baseline evidence, governance policy and the guided demo all run. Model-backed reasoning (supervisor and specialists) is disabled and reports itself as unavailable; incidents wait in INVESTIGATING. Operon never substitutes fabricated reasoning.</span></div>
+            <div className="note-box">{Icons.info({})}<span>Deterministic mode. Telemetry, ML health scoring, incident admission, baseline evidence, governance policy and the Guided Demo all run. Model-backed reasoning (supervisor and specialists) is disabled and reports itself as unavailable; incidents wait in INVESTIGATING. Operon never substitutes fabricated reasoning.</span></div>
           ) : null}
 
           {active === "gemini" ? (

@@ -1,4 +1,4 @@
-"""Disposable artifact detail index and integrity checks for the scripted demo."""
+"""Disposable artifact detail index and integrity checks for the Guided Demo."""
 from __future__ import annotations
 
 from copy import deepcopy
@@ -7,7 +7,7 @@ from typing import Iterable, Mapping
 
 
 class DemoArtifactGraphError(ValueError):
-    """The scripted read-model graph contains an invalid or stale relationship."""
+    """The Guided Demo read-model graph contains an invalid or stale relationship."""
 
 
 class DemoArtifactIndex:
@@ -67,7 +67,7 @@ def validate_demo_artifact_graph(artifacts: Mapping[str, dict] | Iterable[dict])
         artifact_id = artifact["id"]
         if artifact.get("provenance") != "SIMULATED" or artifact.get("live_model") is not False:
             raise DemoArtifactGraphError(f"{artifact_id} is not explicitly simulated")
-        if artifact.get("runtime") != "operon.demo.scripted-v1":
+        if artifact.get("runtime") != "operon.demo.guided-v1":
             raise DemoArtifactGraphError(f"{artifact_id} has an unexpected demo runtime")
         if artifact.get("incident_id") != "DEMO-INCIDENT-01" or not artifact.get("equipment_id"):
             raise DemoArtifactGraphError(f"{artifact_id} is outside the active demo incident scope")

@@ -1,4 +1,4 @@
-"""Dump every scripted-demo snapshot (and the artifact index) as frontend test fixtures.
+"""Dump every Guided Demo snapshot (and the artifact index) as frontend test fixtures.
 
 Uses only the disposable DemoScenarioRunner; touches no database, model, or reasoning code.
 Run: python3 frontend/test/make_fixtures.py

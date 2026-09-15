@@ -41,7 +41,7 @@ git clone <repository-url> operon && cd operon
 ```
 
 Then open **http://127.0.0.1:8000/**, sign in with any email (demo session, browser-only) and
-press **Start guided demo**. No cloud account, API key or AWS credentials are required: without a
+press **Start Guided Demo**. No cloud account, API key or AWS credentials are required: without a
 provider Operon runs in a deterministic, demo-safe mode and says so. To enable model-backed
 reasoning, configure **Google Gemini**, a local **Ollama** model or **AWS Bedrock** in
 **Settings → AI provider** or through `.env` — the full guide, provider setup, reviewer
@@ -93,8 +93,9 @@ uv run python run.py       # trains model on first run, serves http://127.0.0.1:
 ```
 
 The fleet simulation starts with the server and runs **fully offline** — no cloud account
-required. Press **Start guided demo** in the header to watch a scripted, clearly labelled
-**SIMULATED** walkthrough of the whole lifecycle. Without a reasoning backend configured,
+required. Press **Start Guided Demo** in the header to watch a clearly labelled **SIMULATED**
+walkthrough of the whole lifecycle on a reproducible, deterministic telemetry and failure
+scenario. Without a reasoning backend configured,
 real incidents still open and collect baseline evidence, but they wait in `INVESTIGATING`
 because no specialist can run; Operon never substitutes a silent fallback for reasoning.
 
@@ -113,7 +114,7 @@ otherwise the truthful no-provider mode:
 
 | Provider | Needs | Notes |
 |----------|-------|-------|
-| `none` | nothing | deterministic monitoring, incidents, governance, approvals and the guided demo; model reasoning reports *unavailable* |
+| `none` | nothing | deterministic monitoring, incidents, governance, approvals and the Guided Demo; model reasoning reports *unavailable* |
 | `gemini` | `GEMINI_API_KEY` (server-side) | configurable model, rate-limited free-tier friendly client |
 | `ollama` | a running Ollama + a pulled model | local open-source models; Operon never installs Ollama or pulls models |
 | `bedrock` | AWS credentials + Bedrock model access | the original Step 15 path, now optional; never required to start |
@@ -181,11 +182,16 @@ dashboard; see `.env.example`. On free tiers the service sleeps when idle and co
 
 ---
 
-## The 90-second demo script
+## The 90-second Guided Demo
 
-Press **Start guided demo** (header). The guided demo is a scripted read model, labelled
-**Guided Demo · Simulated Plant · SIMULATED · no live model**; it touches no production
-table, model or reasoning backend, and it pauses the live tick loop while it runs.
+Press **Start Guided Demo** (header). The Guided Demo Scenario is a reproducible,
+deterministic telemetry and failure scenario, labelled **Guided Demo · Simulated Plant ·
+SIMULATED · no live model**, that lets reviewers reliably exercise Operon's full incident
+workflow. It is a disposable read model: it touches no production table, model or
+reasoning backend, never invokes an AI provider, and pauses the live tick loop while it
+runs. Its specialist activity is deterministic and labelled as such; model-backed reasoning
+(when a provider is configured) runs on live incidents from the seeded simulator instead,
+and without a provider Operon's deterministic reliability workflow remains available.
 
 1. **Signal.** `AC-COMP-01` (compressor) climbs from 14 % to 86 % failure risk. Crossing the
    **80 % action gate** opens incident `DEMO-INCIDENT-01`: *prediction, not cause*.
@@ -195,16 +201,16 @@ table, model or reasoning backend, and it pauses the live tick loop while it run
 3. **Plan and validate.** A work-package binding produces a draft intervention; engineering,
    operations, critic and planner advisories review the exact draft; the application
    promotes it and issues an approval requirement bound to the intervention hash.
-4. **Human-in-the-loop.** The script stops at `AWAITING_APPROVAL` — no timer or callback can
+4. **Human-in-the-loop.** The scenario stops at `AWAITING_APPROVAL` — no timer or callback can
    approve. Click **Approve exact plan & dispatch** (about 42 s in). The call carries the
    exact `requirement_id`, `intervention_id`, `intervention_hash` and `context_revision`.
 5. **Execute, observe, verify.** A work order and execution receipt appear, the incident
    enters `OBSERVING`, recovery samples accumulate against the frozen observation plan, and
    a `VERIFIED_RECOVERY` outcome closes the incident (about 33 s). The impact bar shows the
-   scripted recovered value. **Reject** instead and the scripted incident is cancelled (on the live
+   scenario's recovered value. **Reject** instead and the demo incident is cancelled (on the live
    lifecycle a rejection escalates the incident for human follow-up).
 
-Use **Reset** (top-right) to run it again. The live simulator behind the guided demo stages
+Use **Reset** (top-right) to run it again. The live simulator behind the Guided Demo stages
 four degradations — `AC-COMP-01` (power), `CNC-MILL-07` (overstrain), then the pumps
 `HYD-PUMP-03` and `COOL-PMP-09` on the same heat-dissipation trajectory — and its response
 to a confirmed work package is profile-driven (recovers or persists), so verification can
@@ -251,7 +257,7 @@ operon/
                     governance, approval, execution claims/receipts, outcome policy
     agents/         Strands specialists + Reliability Supervisor (advisory contracts)
     reasoning/      backend seam: local | packet | agentcore, packet protocol, trust checks
-    demo/           scripted guided-demo runner + inspectable artifact read model
+    demo/           deterministic Guided Demo runner + inspectable artifact read model
     services/       swappable capability layer: 7 interfaces (5 tools + 2 peers),
                     SENTINEL_*_ADAPTER registry, adapters local/mcp/a2a/gemini_peers
     tools.py        thin facade over services/
@@ -370,11 +376,11 @@ baseline evidence, provenance and dependency-scoped freshness, promotion (failur
 concurrent retries, stale sources, legacy exclusion), governance, exact approval, execution
 claims and receipts, outcome verification (execution never closes, pre-boundary samples do
 not count, recovered / not-recovered / regressed / inconclusive), the engine tick and
-recovery, the Strands specialists and supervisor with scripted models, the reasoning packet
+recovery, the Strands specialists and supervisor with in-test model doubles, the reasoning packet
 protocol and trust checks, the provider layer (selection, no-provider mode, mocked Gemini,
 Ollama and Bedrock adapters, normalized errors, capabilities, the configuration API's secret
 non-disclosure, connection tests), the `demo.sh` launcher, the AgentCore backend and
-deployment tools with fake clients, the scripted demo, the services layer, and the peer policies. The `integration` tests exercise a
+deployment tools with fake clients, the Guided Demo, the services layer, and the peer policies. The `integration` tests exercise a
 real **MCP** round-trip (self-spawned stdio server, through governed execution) and a real
 **A2A** round-trip (peer server in-process via ASGI). Tests use a throwaway SQLite file.
 

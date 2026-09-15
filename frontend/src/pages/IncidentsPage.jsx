@@ -51,7 +51,7 @@ export function IncidentsPage() {
           <Segmented ariaLabel="Scope" value={scope} onChange={setScope} options={[{ value: "all", label: "All", count: rows.length }, { value: "active", label: "Active", count: active }, { value: "approval", label: "Needs approval", count: approvals }, { value: "closed", label: "Closed", count: rows.length - active }]} />
         </FilterBar>
         <div className="sec sec-flush"><div className="sec-body">
-          <DataTable columns={columns} rows={filtered} rowKey={(r) => r.id} onRowClick={(r) => navigate(ROUTES.incident(r.incidentId))} sort={{ key: "updatedAt", dir: "desc" }} empty={rows.length ? "No incidents match." : "No incidents. A predictive signal at or above the gate opens one; the guided demo produces a complete lifecycle."} caption="Incidents" />
+          <DataTable columns={columns} rows={filtered} rowKey={(r) => r.id} onRowClick={(r) => navigate(ROUTES.incident(r.incidentId))} sort={{ key: "updatedAt", dir: "desc" }} empty={rows.length ? "No incidents match." : "No incidents. A predictive signal at or above the gate opens one; the Guided Demo produces a complete lifecycle."} caption="Incidents" />
         </div></div>
       </div>
     </div>

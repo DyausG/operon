@@ -1,4 +1,4 @@
-"""Focused detail lookup and lineage tests for the disposable scripted demo."""
+"""Focused detail lookup and lineage tests for the disposable Guided Demo."""
 from __future__ import annotations
 
 import asyncio
@@ -58,7 +58,7 @@ async def test_major_demo_artifacts_are_detailed_indexed_and_simulated():
 
     evidence = runner.artifact("DEMO-EVIDENCE-TREND")
     assert evidence["provenance"] == "SIMULATED" and evidence["live_model"] is False
-    assert evidence["runtime"] == "operon.demo.scripted-v1"
+    assert evidence["runtime"] == "operon.demo.guided-v1"
     assert evidence["payload"]["payload"]["vibration_mm_s"][-1] == 9.2
     assert evidence["incident_id"] == "DEMO-INCIDENT-01"
     assert evidence["equipment_id"] == "AC-COMP-01"

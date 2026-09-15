@@ -49,7 +49,7 @@ export function notificationFor(entry, state) {
       return { ...base, category: "connection", tone: "normal", title: "Engine reset", body: "All incidents and telemetry cleared" };
     case "demo":
       if (!entry.status || !["factory_healthy", "awaiting_human_approval", "complete", "cancelled"].includes(entry.status)) return null;
-      return { ...base, category: "agent", tone: entry.status === "awaiting_human_approval" ? "warn" : "normal", title: entry.status === "factory_healthy" ? "Guided demo started" : title(entry.status), body: `Scripted scenario · ${entry.id || ""}` };
+      return { ...base, category: "agent", tone: entry.status === "awaiting_human_approval" ? "warn" : "normal", title: entry.status === "factory_healthy" ? "Guided demo started" : title(entry.status), body: `Guided Demo scenario · ${entry.id || ""}` };
     default:
       return null;
   }

@@ -349,7 +349,7 @@ class DemoEngine:
         await self.broadcast({"type": "demo", "demo_scenario": self._demo_projection()})
 
     async def start_guided_demo(self, equipment_id: str) -> dict:
-        """Enter the disposable scripted read model only by explicit action."""
+        """Enter the disposable Guided Demo read model only by explicit action."""
         if equipment_id not in self.meta:
             return {"ok": False, "error": "unknown demo equipment"}
         # Quiesce normal ticks while their state remains untouched. No repository,

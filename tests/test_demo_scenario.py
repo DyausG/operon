@@ -1,4 +1,4 @@
-"""Focused guarantees for the isolated scripted recording mode."""
+"""Focused guarantees for the isolated Guided Demo read-model mode."""
 from __future__ import annotations
 
 import asyncio
@@ -175,7 +175,7 @@ async def test_engine_demo_isolated_from_production_storage_model_and_reasoning(
     class ForbiddenRuntime:
         name = "forbidden"
         async def supervise(self, *_args, **_kwargs):
-            raise AssertionError("production reasoning participated in scripted demo")
+            raise AssertionError("production reasoning participated in Guided Demo")
 
     engine = DemoEngine(runtime=ForbiddenRuntime())
     engine.demo_runner.time_scale = .003
@@ -183,7 +183,7 @@ async def test_engine_demo_isolated_from_production_storage_model_and_reasoning(
         before = {table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                   for table in ("incident", "incident_artifact", "incident_event", "sensor_reading", "health_score")}
     monkeypatch.setattr(engine.model, "predict", lambda *_: (_ for _ in ()).throw(
-        AssertionError("production model participated in scripted demo")))
+        AssertionError("production model participated in Guided Demo")))
 
     assert (await engine.start_guided_demo("AC-COMP-01"))["ok"]
     awaiting = await wait_status(engine.demo_runner, "awaiting_human_approval")
@@ -193,8 +193,8 @@ async def test_engine_demo_isolated_from_production_storage_model_and_reasoning(
     assert after == before
     assert engine.snapshot()["authority_path"] == "demo-read-model-only"
     assert engine.snapshot()["reasoning_provenance"] == {
-        "backend": "scripted-demo", "runtime": RUNTIME,
-        "framework": "Structured simulated specialist activity", "model_provider": None,
+        "backend": "guided-demo", "runtime": RUNTIME,
+        "framework": "Deterministic simulated specialist activity", "model_provider": None,
         "status": "simulated", "provenance": PROVENANCE, "live_model": False,
     }
 

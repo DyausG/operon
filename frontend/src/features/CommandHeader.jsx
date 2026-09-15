@@ -31,7 +31,7 @@ export function CommandHeader({ state, focusId, onDemo, onReset, onStop, onResum
       </div>
 
       <div className="hdr-right">
-        <span className="hdr-clock" title={demo.active ? "Scripted scenario elapsed" : "Plant operating time"}>{clockText}</span>
+        <span className="hdr-clock" title={demo.active ? "Guided Demo scenario elapsed" : "Plant operating time"}>{clockText}</span>
         <span className={`activity ${!state.connected ? "off" : blink ? "on" : ""}`} title={state.connected ? "Continuous telemetry stream active" : "Reconnecting"} />
         <button
           type="button"

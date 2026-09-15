@@ -9,7 +9,7 @@ human-in-the-loop endpoints (`/api/approve`, `/api/reject`, `/api/reset`, `/api/
 npm install          # once
 npm run dev          # hot reload on :5173, proxies /api and /ws to the backend on :8000
 npm run build        # regenerates the committed dist/ bundle served by FastAPI
-npm run fixtures     # dumps every scripted-demo snapshot + artifact index into test/fixtures
+npm run fixtures     # dumps every Guided Demo snapshot + artifact index into test/fixtures
 npm run test:smoke   # server-renders every route for every fixture frame, both themes, every artifact type
 ```
 

@@ -58,7 +58,7 @@ export function SettingsPage() {
               <Toggle label="Approvals" hint="Human hold point reached, plan rejected." checked={n.approvals} onChange={(v) => set("notifications", { approvals: v })} />
               <Toggle label="Maintenance" hint="Dispatch, execution and closure." checked={n.maintenance} onChange={(v) => set("notifications", { maintenance: v })} />
               <Toggle label="Agent events" hint="Evidence requests, recovery observation, outcomes, refused actions." checked={n.agent} onChange={(v) => set("notifications", { agent: v })} />
-              <Toggle label="Engine control" hint="Pause, resume, reset and guided demo milestones." checked={n.connection} onChange={(v) => set("notifications", { connection: v })} />
+              <Toggle label="Engine control" hint="Pause, resume, reset and Guided Demo milestones." checked={n.connection} onChange={(v) => set("notifications", { connection: v })} />
               <Toggle label="Sound" hint="Not available: no audio channel is wired." checked={false} onChange={() => {}} disabled />
             </Section>
             <Section label="Agent preferences" actions={<Scope />}>
@@ -78,7 +78,7 @@ export function SettingsPage() {
               <p className="t3">Thresholds and the reasoning backend are engine configuration (see <span className="mono">core/config.py</span> and the <span className="mono">OPERON_*</span> environment). They are shown here, not edited; the model provider is configured in the AI provider section above.</p>
               <div className="row-wrap">
                 {!state.demoScenario?.active ? <Btn small onClick={state.running ? stop : resume}>{state.running ? Icons.pause({}) : Icons.play({})} {state.running ? "Pause simulator" : "Resume simulator"}</Btn> : null}
-                <Btn small onClick={() => startDemo(state.demoScenario?.equipment_id || "AC-COMP-01")}>{Icons.demo({})} {state.demoScenario?.active ? "Restart guided demo" : "Start guided demo"}</Btn>
+                <Btn small onClick={() => startDemo(state.demoScenario?.equipment_id || "AC-COMP-01")}>{Icons.demo({})} {state.demoScenario?.active ? "Restart Guided Demo" : "Start Guided Demo"}</Btn>
                 <Btn small quiet onClick={() => setConfirm("reset-engine")}>{Icons.reset({})} Reset engine…</Btn>
               </div>
               <Toggle label="Show economics on the dashboard" hint="KPI deck economic cells (recovered value, value at risk)." checked={pl.showEconomics} onChange={(v) => set("plant", { showEconomics: v })} />

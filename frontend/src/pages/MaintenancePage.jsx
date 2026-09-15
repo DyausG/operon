@@ -61,7 +61,7 @@ export function MaintenancePage() {
           <SearchInput value={q} onChange={setQ} placeholder="Search task, machine, technician, part" />
           <Segmented ariaLabel="Item kind" value={kind} onChange={setKind} options={[{ value: "all", label: "All", count: rows.length }, { value: "intervention", label: "Interventions", count: count("intervention") }, { value: "approval", label: "Approvals", count: count("approval") }, { value: "work_order", label: "Work orders", count: count("work_order") }, { value: "receipt", label: "Receipts", count: count("receipt") }]} />
         </FilterBar>
-        <MaintenanceTable rows={filtered} empty={rows.length ? "No work items match." : "No maintenance items yet. Interventions appear once an incident reaches planning; the guided demo produces a complete work package."} />
+        <MaintenanceTable rows={filtered} empty={rows.length ? "No work items match." : "No maintenance items yet. Interventions appear once an incident reaches planning; the Guided Demo produces a complete work package."} />
         <div className="grid-2">
           <Section label="Bound resources" meta={`${bindings.length} binding${bindings.length === 1 ? "" : "s"}`}>
             {bindings.length ? bindings.map(({ a, b }) => (

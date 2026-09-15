@@ -55,7 +55,7 @@ export function AgentPage() {
                     <span className="ctx-row-text"><span className="mono">{r.equipmentId}</span><small className="truncate">{r.phaseLabel} · {r.incidentId}</small></span>
                     {r.phase === "AWAITING_APPROVAL" ? <Tag tone="warn">Approve</Tag> : null}
                   </button>
-                )) : <div className="menu-empty t3">No incidents to reason about. Start the guided demo from the Engine menu.</div>}
+                )) : <div className="menu-empty t3">No incidents to reason about. Start the Guided Demo from the Engine menu.</div>}
               </div>
             </Section>
             <Section label="Selected machine">

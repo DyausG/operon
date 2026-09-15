@@ -35,7 +35,7 @@ export function NotificationsPage() {
                 <button type="button" className="btn btn-quiet btn-small" onClick={() => (n.read ? markUnread(n.id) : markRead(n.id))}>{n.read ? "Mark unread" : "Mark read"}</button>
               </div>
             </div>
-          )) : <EmptyState compact title={items.length ? "Nothing in this category" : "No notifications yet"} body={items.length ? "" : "Notifications are derived from events the engine actually streamed to this browser: incident phase changes, approvals, execution, recovery, failures and engine control. Start the guided demo to see the lifecycle."} />}
+          )) : <EmptyState compact title={items.length ? "Nothing in this category" : "No notifications yet"} body={items.length ? "" : "Notifications are derived from events the engine actually streamed to this browser: incident phase changes, approvals, execution, recovery, failures and engine control. Start the Guided Demo to see the lifecycle."} />}
         </Section>
         <p className="t4" style={{ fontSize: 11.5 }}>Read state is kept in this browser only. Notifications are not persisted server-side and disappear on reload; the Activity page holds the durable record.</p>
       </div>
