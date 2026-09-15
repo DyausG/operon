@@ -32,6 +32,11 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="explicitly reset the demo database before starting",
     )
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="do not open a browser tab (also OPERON_OPEN_BROWSER=0)",
+    )
     return parser.parse_args()
 
 
@@ -62,13 +67,18 @@ def main() -> None:
         seed(reset=True)
         print("  Demo database reset explicitly; master data re-seeded.")
     _warm_model()
-    threading.Thread(target=_open_browser, daemon=True).start()
+    open_browser = not args.no_browser and os.getenv("OPERON_OPEN_BROWSER", "1").strip().lower() not in ("0", "false", "no")
+    if open_browser:
+        threading.Thread(target=_open_browser, daemon=True).start()
     import uvicorn
+    from core.providers.status import render
+    registry = config.provider_registry()
     mode = config.agent_mode().upper()
     print("\n" + "=" * 60)
     print(f"  {config.APP_NAME} · {config.APP_TAGLINE}")
-    print(f"  Agent mode ->  {mode}"
-          + ("  (set AWS creds + BEDROCK_MODEL_ID for live Bedrock)" if mode == "DETERMINISTIC" else ""))
+    print(f"  Agent mode ->  {mode}  (provider {registry.resolve_kind()}; see docs/DEMO.md to configure one)")
+    for line in render(registry.overview())[1:]:
+        print("  " + line)
     print(f"  Dashboard  ->  http://{HOST}:{PORT}/")
     print(f"  Press CTRL+C to stop.")
     print("=" * 60 + "\n")

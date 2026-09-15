@@ -31,7 +31,7 @@ def handler_identity(runtime: StrandsRuntime, specialist_runtime: StrandsRuntime
     specialists = specialist_runtime or runtime
     return runtime_identity(supervisor_model_id=runtime.settings.model_id,
                             specialist_model_id=specialists.settings.model_id,
-                            region=runtime.settings.aws_region, build_id=build_id)
+                            region=runtime.settings.identity_locator(), build_id=build_id)
 
 
 def _correlation(payload) -> dict:

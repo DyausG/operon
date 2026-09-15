@@ -21,7 +21,8 @@ from .protocol import SESSION_PREFIX
 from .trust import validate_response
 
 __all__ = ["BACKEND_MODES", "ReasoningBackend", "ReasoningBackendUnavailable", "LocalStrandsBackend",
-           "InProcessPacketBackend", "as_backend", "backend_from_environment", "runtime_identity"]
+           "InProcessPacketBackend", "as_backend", "backend_from_environment", "runtime_identity",
+           "runtime_settings_for", "runtimes_from_registry"]
 
 BACKEND_MODES = ("none", "local", "packet", "agentcore")
 
@@ -30,7 +31,7 @@ def runtime_identity(value: StrandsRuntime) -> dict:
     """Legacy snapshot shape for one Strands runtime; injected configuration is hashed."""
     model = value._model
     return {"settings": value.settings.model_dump(mode="json"),
-            "implementation": f"{type(model).__module__}.{type(model).__qualname__}" if model else "strands.BedrockModel",
+            "implementation": value.model_implementation(),
             "injected_configuration_hash": content_hash(model.get_config()) if model else None}
 
 
@@ -125,8 +126,48 @@ def as_backend(runtime, specialist_runtime=None) -> ReasoningBackend:
     raise TypeError("runtime must be a StrandsRuntime or a ReasoningBackend")
 
 
-def backend_from_environment(mode: str | None = None) -> ReasoningBackend | None:
-    """Select by OPERON_REASONING_BACKEND; never a silent fallback, never a client at import."""
+def runtime_settings_for(provider, *, model_id: str | None = None, **overrides) -> RuntimeSettings:
+    """Explicit live settings for one provider; construction only, no credential or client."""
+    kind = provider.kind
+    if kind == "none":
+        raise RuntimeConfigurationError(provider.not_configured_reason(), code="provider_not_configured")
+    values = {"provider": kind, "model_id": model_id or provider.model_id, "live_enabled": True}
+    if kind == "bedrock":
+        values["aws_region"] = provider.settings.region
+    elif kind == "ollama":
+        values["endpoint"] = provider.settings.normalized_base_url()
+    values.update(overrides)
+    try:
+        return RuntimeSettings(**values)
+    except ValueError as exc:
+        raise RuntimeConfigurationError(f"{kind} runtime settings invalid: {exc}", code="provider_not_configured") from exc
+
+
+def runtimes_from_registry(registry=None) -> tuple[StrandsRuntime, StrandsRuntime | None]:
+    """Supervisor and (optional, when a distinct model is configured) specialist runtimes."""
+    from core.providers import get_registry
+    registry = registry or get_registry()
+    provider = registry.active()
+    if provider.kind == "none" or not provider.configured():
+        raise RuntimeConfigurationError(provider.not_configured_reason(), code="provider_not_configured")
+    supervisor = StrandsRuntime(runtime_settings_for(provider), provider=provider)
+    specialists = None
+    specialist_model = registry.config.specialist_model
+    if specialist_model and specialist_model != provider.model_id:
+        specialist_provider = type(provider)(provider.settings.model_copy(
+            update={"model_id" if provider.kind == "bedrock" else "model": specialist_model}))
+        specialists = StrandsRuntime(runtime_settings_for(specialist_provider, model_id=specialist_model),
+                                     provider=specialist_provider)
+    return supervisor, specialists
+
+
+def backend_from_environment(mode: str | None = None, *, registry=None) -> ReasoningBackend | None:
+    """Select by OPERON_REASONING_BACKEND; never a silent fallback, never a client at import.
+
+    ``local``/``packet`` build their Strands runtimes from the active model provider
+    (Gemini, Ollama or Bedrock). With no configured provider they raise instead of
+    silently degrading; the engine then reports the supervisor as awaiting a runtime.
+    """
     mode = (mode if mode is not None else config.reasoning_backend()).strip().lower()
     if mode == "none":
         return None
@@ -141,12 +182,7 @@ def backend_from_environment(mode: str | None = None) -> ReasoningBackend | None
     if mode not in {"local", "packet"}:
         raise RuntimeConfigurationError(
             f"unknown OPERON_REASONING_BACKEND {mode!r}; expected one of {', '.join(BACKEND_MODES)}")
-    supervisor = StrandsRuntime(RuntimeSettings(model_id=config.BEDROCK_SUPERVISOR_MODEL_ID,
-                                                aws_region=config.AWS_REGION, live_enabled=True))
-    specialists = None
-    if config.BEDROCK_SPECIALIST_MODEL_ID != config.BEDROCK_SUPERVISOR_MODEL_ID:
-        specialists = StrandsRuntime(RuntimeSettings(model_id=config.BEDROCK_SPECIALIST_MODEL_ID,
-                                                     aws_region=config.AWS_REGION, live_enabled=True))
+    supervisor, specialists = runtimes_from_registry(registry)
     if mode == "local":
         return LocalStrandsBackend(supervisor, specialists)
     return InProcessPacketBackend(supervisor, specialists)

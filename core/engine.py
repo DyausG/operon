@@ -112,7 +112,8 @@ class DemoEngine:
         if self.legacy_demo:
             logger.warning("OPERON_LEGACY_DEMO is enabled: the deprecated proposal shortcut is active; "
                            "its artifacts carry no application promotion lineage")
-        self.runtime = runtime if runtime is not None else self._default_runtime()
+        self._runtime_unavailable_reason: str | None = None
+        self.runtime = runtime if runtime is not None else self._build_runtime()
         self._base_runtime = self.runtime
         self.specialist_runtime = specialist_runtime
         self._guided_demo: dict | None = None
@@ -142,7 +143,8 @@ class DemoEngine:
         """Reasoning backend only when explicitly configured; never a silent fallback.
 
         Returns a ``core.reasoning.backend.ReasoningBackend`` (Step 15) selected by
-        OPERON_REASONING_BACKEND; unset keeps the legacy Bedrock selector behaviour.
+        OPERON_REASONING_BACKEND; unset resolves to ``local`` over the active model
+        provider (Gemini, Ollama or Bedrock) and to ``none`` without a provider.
         """
         if config.reasoning_backend() == "none":
             return None
@@ -152,6 +154,36 @@ class DemoEngine:
         except Exception:
             logger.exception("Supervisor reasoning backend unavailable; incidents will wait in INVESTIGATING")
             return None
+
+    def _build_runtime(self):
+        """``_default_runtime`` plus the truthful reason when no runtime is available."""
+        self._runtime_unavailable_reason = None
+        if config.reasoning_backend() == "none":
+            provider = config.provider_registry().active()
+            self._runtime_unavailable_reason = (
+                provider.not_configured_reason() if provider.kind == "none"
+                else "reasoning backend disabled (OPERON_REASONING_BACKEND=none)")
+            return None
+        try:
+            from .reasoning.backend import backend_from_environment
+            return backend_from_environment()
+        except Exception as exc:  # noqa: BLE001 - reported, never a silent fallback
+            logger.exception("Supervisor reasoning backend unavailable; incidents will wait in INVESTIGATING")
+            self._runtime_unavailable_reason = f"{type(exc).__name__}: {exc}"[:300]
+            return None
+
+    async def reconfigure_runtime(self) -> dict:
+        """Rebuild the reasoning backend after the provider configuration changed (Settings API).
+
+        Serialized with supervisor runs; an in-flight run finishes on the runtime it started with.
+        """
+        async with self._reasoning_lock:
+            self.runtime = self._build_runtime()
+            self._base_runtime = self.runtime
+        snapshot = self.snapshot()
+        await self.broadcast(snapshot)
+        return {"ok": True, "supervisor_available": self.runtime is not None,
+                "reasoning_provenance": snapshot.get("reasoning_provenance")}
 
     def _recover_incidents(self):
         for incident, checkpoint in self.coordinator.recover():
@@ -1527,16 +1559,7 @@ class DemoEngine:
                 "agent_mode": config.agent_mode(), "app_name": config.APP_NAME,
                 "authority_path": "legacy-demo" if self.legacy_demo else "lifecycle",
                 "supervisor_available": self.runtime is not None,
-                "reasoning_provenance": {
-                    "backend": backend,
-                    "status": "available" if self.runtime is not None else "awaiting_runtime",
-                    "application": "Operon",
-                    "runtime": ("AgentCore Runtime" if backend == "agentcore" else
-                                "Offline typed advisory fixture" if backend == "demo" else "Local application runtime"),
-                    "framework": "Operon typed advisory contracts" if backend == "demo" else "Strands Agents",
-                    "model_provider": "Amazon Bedrock" if backend in {"agentcore", "local", "packet"} else None,
-                    "provenance": "SIMULATED" if backend == "demo" else "LIVE" if backend == "agentcore" else "LOCAL",
-                },
+                "reasoning_provenance": self.reasoning_provenance(backend),
                 "tagline": config.APP_TAGLINE, "plant_name": config.PLANT_NAME,
                 "trigger_threshold": config.TRIGGER_THRESHOLD, "warn_threshold": config.WARN_THRESHOLD,
                 "fleet": [self._asset_summary(e) for e in self.meta if e in self.assets],
@@ -1544,6 +1567,34 @@ class DemoEngine:
                 "alerts": list(self.alerts.values()),
                 "triage": self._triage_msg(),
                 "business": self._business_summary(), "demo_scenario": self._demo_projection()}
+
+    def reasoning_provenance(self, backend: str | None = None) -> dict:
+        """Non-secret description of who reasons: backend, runtime and model provider."""
+        backend = backend or getattr(self.runtime, "name", None) or config.reasoning_backend()
+        available = self.runtime is not None
+        if backend == "agentcore":
+            settings = getattr(self.runtime, "settings", None)
+            provider = {"provider": "bedrock", "model_provider": "Amazon Bedrock", "locality": "cloud",
+                        "model": getattr(settings, "supervisor_model_id", None)}
+        elif backend == "demo":
+            provider = {"provider": None, "model_provider": None, "model": None, "locality": "none"}
+        else:
+            provider = config.provider_registry().provenance()
+        return {
+            "backend": backend,
+            "status": "available" if available else "awaiting_runtime",
+            "application": "Operon",
+            "runtime": ("AgentCore Runtime" if backend == "agentcore" else
+                        "Offline typed advisory fixture" if backend == "demo" else "Local application runtime"),
+            "framework": "Operon typed advisory contracts" if backend == "demo" else "Strands Agents",
+            "model_provider": provider["model_provider"] if available else None,
+            "provider": provider["provider"] if available else "none",
+            "model": provider["model"] if available else None,
+            "locality": provider["locality"] if available else "none",
+            "provenance": "SIMULATED" if backend == "demo" else "LIVE" if backend == "agentcore" else "LOCAL",
+            "live_model": bool(available and provider["provider"] not in (None, "none")),
+            "unavailable_reason": None if available else self._runtime_unavailable_reason,
+        }
 
     async def broadcast(self, msg: dict):
         import json

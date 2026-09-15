@@ -5,10 +5,12 @@ Hybrid design:
   * A deterministic planner ALWAYS produces a complete, grounded proposal by
     orchestrating the four tools over the semantic model. This is the bullet-proof
     path (no cloud creds required) and the safety net.
-  * When AWS credentials are present, a real **Amazon Bedrock** tool-calling loop
-    (Converse API) lets a Claude model reason over the same governed tools and author
-    the decision narrative. Any failure silently falls back to the deterministic plan,
-    so the demo can never break.
+  * When a cloud provider is configured (Gemini or Amazon Bedrock, resolved by
+    ``core.providers``), a real tool-calling loop lets the model reason over the same
+    governed tools and author the decision narrative. Any failure falls back to the
+    deterministic plan and is recorded in ``llm_error``, so the demo can never break.
+    (This legacy proposal path runs only under OPERON_LEGACY_DEMO; Ollama has no
+    legacy tool-calling loop and keeps the deterministic baseline.)
   * When several assets alert at once, `rank_alerts()` triages them by criticality ×
     failure-probability × business impact, so the agent works the highest-value risk first.
 
@@ -224,14 +226,14 @@ def _tool_text(name: str, result: dict) -> str:
 
 
 def _enhance_with_bedrock(baseline: dict, ctx: dict) -> dict:
-    import boto3
-    client = boto3.client("bedrock-runtime", region_name=config.AWS_REGION)
+    provider = config.provider_registry().build("bedrock")
+    client = provider.session().client("bedrock-runtime", config=provider.client_config())
     messages = [{"role": "user", "content": [{"text":
                 "Assess this alert and produce your recommended maintenance plan."}]}]
     trace, executed = [], {}
     for _ in range(6):
         resp = client.converse(
-            modelId=config.BEDROCK_MODEL_ID,
+            modelId=provider.model_id,
             system=[{"text": _system_prompt(ctx)}],
             messages=messages,
             toolConfig={"tools": _TOOLS_SPEC},
@@ -295,12 +297,13 @@ def _gemini_tools():
 
 def _enhance_with_gemini(baseline: dict, ctx: dict) -> dict:
     from google.genai import types
-    client = gemini.get_client()
+    provider = config.provider_registry().build("gemini")
+    client = provider.client()
     cfg = types.GenerateContentConfig(
         system_instruction=_system_prompt(ctx),
         tools=_gemini_tools(),
         temperature=0.2,
-        max_output_tokens=config.GEMINI_MAX_TOKENS,
+        max_output_tokens=provider.settings.max_output_tokens,
         # we execute the governed tools ourselves — disable the SDK's auto-calling
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
     )
@@ -308,7 +311,7 @@ def _enhance_with_gemini(baseline: dict, ctx: dict) -> dict:
         text="Assess this alert and produce your recommended maintenance plan.")])]
     trace, executed = [], {}
     for _ in range(6):
-        resp = gemini.generate(client, model=config.GEMINI_MODEL_ID, contents=contents, config=cfg)
+        resp = gemini.generate(client, model=provider.model_id, contents=contents, config=cfg)
         cand = (resp.candidates or [None])[0]
         if not cand or not cand.content:
             break
@@ -370,11 +373,16 @@ def decide(ctx: dict) -> dict:
     enhance with the active LLM provider's tool-calling loop, then consult the
     governance peer. Never raises — any provider failure keeps the baseline."""
     proposal = build_proposal(ctx)
-    enhancer = _ENHANCERS.get(config.agent_mode())
+    mode = config.agent_mode()
+    enhancer = _ENHANCERS.get(mode)
     if enhancer is not None:
         try:
             proposal = enhancer(proposal, ctx)
         except Exception as e:  # noqa: BLE001 — demo must never crash
-            proposal["llm_error"] = f"{type(e).__name__}: {e}"[:200]
+            from .providers.errors import normalize_exception
+            err = normalize_exception(e, provider=mode)
+            proposal["llm_error"] = (f"{err.code}: {err}" if err else f"{type(e).__name__}: {e}")[:200]
+    elif mode != "deterministic":
+        proposal["llm_note"] = f"{mode} has no legacy tool-calling loop; deterministic baseline kept"
     _apply_governance(proposal)
     return proposal

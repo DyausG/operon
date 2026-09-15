@@ -22,9 +22,13 @@ os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
 # (override=False) won't repopulate GEMINI_API_KEY from a local .env.
 os.environ["GEMINI_API_KEY"] = ""
 os.environ["GOOGLE_API_KEY"] = ""
-for _k in ("AWS_ACCESS_KEY_ID", "AWS_PROFILE", "SENTINEL_LLM_PROVIDER",
+for _k in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_PROFILE", "AWS_BEARER_TOKEN_BEDROCK",
+           "SENTINEL_LLM_PROVIDER", "OPERON_AI_PROVIDER", "OPERON_OLLAMA_MODEL", "OPERON_OLLAMA_BASE_URL",
+           "OPERON_GEMINI_MODEL", "OPERON_SPECIALIST_MODEL_ID", "OPERON_TRUSTED_SUBMISSIONS",
            "POC_FORCE_DETERMINISTIC", "OPERON_REASONING_BACKEND"):
     os.environ.pop(_k, None)
+# A developer's ~/.aws/credentials must not make Bedrock look configured in tests.
+os.environ["AWS_SHARED_CREDENTIALS_FILE"] = str(pathlib.Path(_TMP_ROOT.name) / "no-aws-credentials")
 for _k in [k for k in os.environ if k.startswith("SENTINEL_") and k.endswith("_ADAPTER")]:
     os.environ.pop(_k, None)
 os.environ["POC_FORCE_DETERMINISTIC"] = "1"
@@ -70,6 +74,15 @@ def seeded_db(_isolate_database_and_network):
     init_schema()
     seed(reset=True)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _clean_provider_registry():
+    """The provider registry is process state; rebuild it from the clean environment per test."""
+    from core.providers import reset
+    reset()
+    yield
+    reset()
 
 
 @pytest.fixture(autouse=True)

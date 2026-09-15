@@ -1,25 +1,36 @@
 """
-LLM-backed peer adapters — Governance and Monitoring reasoning powered by Google
-Gemini, with an automatic **deterministic fallback**.
+LLM-backed peer adapters — Governance and Monitoring reasoning through the
+**active model provider** (Gemini, Ollama or Bedrock), with an automatic
+**deterministic fallback**.
 
-These are the DEFAULT for the governance/monitoring domains: when a Gemini key is
-present they reason with the LLM; when it isn't (offline, CI), or a call is
+These are the DEFAULT for the governance/monitoring domains: when a provider is
+configured they reason with the model; when none is (offline, CI), or a call is
 rate-limited past its retries, or the reply can't be parsed, they transparently
 fall back to the deterministic engines in ``local.py``. So selecting ``llm`` is
 always safe — it never breaks the loop, it just uses the best available brain.
 
-The Gemini client + rate limiter + backoff are shared with the main agent
-(``core/gemini.py``), so the whole app respects one free-tier budget. To pin the
-deterministic engines regardless of key, set ``SENTINEL_GOVERNANCE_ADAPTER=local``
-/ ``SENTINEL_MONITORING_ADAPTER=local``.
+No vendor SDK is imported here: ``core.providers`` owns clients, secrets and
+error normalization. To pin the deterministic engines regardless of provider,
+set ``SENTINEL_GOVERNANCE_ADAPTER=local`` / ``SENTINEL_MONITORING_ADAPTER=local``.
+(The module keeps its historical file name for import compatibility.)
 """
 from __future__ import annotations
 import json
 
-from ... import config, gemini
+from ... import config
 from ..base import GovernanceService, MonitoringService
 from ..registry import register
 from .local import LocalGovernanceAdapter, LocalMonitoringAdapter
+
+
+def model_json(system: str, user: str) -> dict | None:
+    """One JSON completion from the active provider, or ``None`` when no provider can serve it."""
+    if config.FORCE_DETERMINISTIC:
+        return None
+    provider = config.provider_registry().active()
+    if provider.kind == "none" or not provider.configured() or not provider.capabilities().structured_output:
+        return None
+    return provider.generate_json(system, user)
 
 
 _GOV_SYSTEM = (
@@ -56,8 +67,6 @@ class LLMGovernanceAdapter(GovernanceService):
         self._fallback = LocalGovernanceAdapter()
 
     def review_plan(self, proposal: dict) -> dict:
-        if not config.gemini_available():
-            return self._fallback.review_plan(proposal)
         try:
             a = proposal.get("actions", {}) or {}
             tech = a.get("technician") or None
@@ -73,7 +82,9 @@ class LLMGovernanceAdapter(GovernanceService):
                 "financial_exposure": business.get("unplanned_loss") or business.get("recovered_value"),
                 "auto_approval_authority": config.GOVERNANCE_AUTO_APPROVE_LIMIT,
             }
-            out = gemini.structured_json(_GOV_SYSTEM, json.dumps(facts))
+            out = model_json(_GOV_SYSTEM, json.dumps(facts))
+            if out is None:
+                return self._fallback.review_plan(proposal)
             decision = str(out.get("decision", "")).upper()
             if decision not in ("APPROVE", "CONDITIONS", "VETO"):
                 raise ValueError(f"bad decision {decision!r}")
@@ -95,14 +106,16 @@ class LLMMonitoringAdapter(MonitoringService):
 
     def assess(self, snapshot: dict) -> dict:
         alerts = snapshot.get("alerts", []) or []
-        # Nothing to correlate with < 2 alerts — skip the LLM (and its quota).
-        if len(alerts) < 2 or not config.gemini_available():
+        # Nothing to correlate with < 2 alerts — skip the model (and its quota).
+        if len(alerts) < 2:
             return self._fallback.assess(snapshot)
         key = frozenset(a.get("equipment_id") for a in alerts)
         if key in self._cache:              # same alert set — don't re-spend a call
             return self._cache[key]
         try:
-            out = gemini.structured_json(_MON_SYSTEM, json.dumps({"alerts": alerts}))
+            out = model_json(_MON_SYSTEM, json.dumps({"alerts": alerts}))
+            if out is None:
+                return self._fallback.assess(snapshot)
             result = {
                 "escalate": bool(out.get("escalate")),
                 "correlations": out.get("correlations") or [],

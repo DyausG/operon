@@ -208,7 +208,7 @@ async def test_disabled_live_runtime_is_reported_as_unavailable_without_fallback
     request = request_for(env, snapshot, context, incident, runtime)
     from unittest.mock import Mock
     forbidden = Mock(side_effect=AssertionError("no AWS session allowed"))
-    monkeypatch.setattr("core.agents.runtime.boto3.Session", forbidden)
+    monkeypatch.setattr("boto3.Session", forbidden)
     with Guard():
         response = await reason(json.loads(request.model_dump_json()), runtime)
     assert response.status == "FAILED" and response.failure.code == "MODEL_UNAVAILABLE"

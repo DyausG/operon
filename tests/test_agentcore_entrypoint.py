@@ -84,7 +84,7 @@ async def test_entrypoint_rejects_runtime_session_mismatch_before_model_calls(en
 
 def test_runtime_model_configuration_is_explicit_and_lazy(monkeypatch):
     forbidden = Mock(side_effect=AssertionError("runtime construction must not create an AWS session"))
-    monkeypatch.setattr("core.agents.runtime.boto3.Session", forbidden)
+    monkeypatch.setattr("boto3.Session", forbidden)
     monkeypatch.setenv("OPERON_AWS_REGION", "us-west-2")
     monkeypatch.setenv("OPERON_BEDROCK_SUPERVISOR_MODEL_ID", "supervisor-profile")
     monkeypatch.setenv("OPERON_BEDROCK_SPECIALIST_MODEL_ID", "specialist-profile")
