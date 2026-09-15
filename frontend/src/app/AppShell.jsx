@@ -134,7 +134,7 @@ function TopBar({ state, actions, onMenu, phone }) {
   const demo = state.demoScenario || {}, prov = state.reasoningProvenance || {};
   const clockText = demo.active ? elapsed(demo.elapsed_seconds) : `+${String(Math.floor((state.plantMin || 0) / 60)).padStart(2, "0")}:${String((state.plantMin || 0) % 60).padStart(2, "0")}`;
   const available = prov.status === "available";
-  const provider = prov.model_provider ? String(prov.model_provider).replace("Amazon ", "") : prov.backend === "demo" ? "Typed fixture" : "Reasoning";
+  const provider = prov.model_provider || (prov.backend === "demo" ? "Typed fixture" : "No model provider");
   return (
     <header className="topbar">
       {phone ? <button type="button" className="btn btn-quiet btn-icon" onClick={onMenu} aria-label="Open navigation">{Icons.menu({})}</button> : null}

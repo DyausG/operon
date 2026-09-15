@@ -29,6 +29,7 @@ from core import config
 from core.reliability import models as m
 from core.seed_data import seed
 from core.engine import DemoEngine
+from server.providers_api import register_provider_routes
 
 app = FastAPI(title=f"{config.APP_NAME} — {config.APP_TAGLINE}")
 engine: DemoEngine | None = None
@@ -101,8 +102,15 @@ async def _startup():
 # ---- REST ----------------------------------------------------------------
 @app.get("/api/health")
 async def health():
-    return {"ok": True, "agent_mode": config.agent_mode(),
+    registry = config.provider_registry()
+    return {"ok": True, "agent_mode": config.agent_mode(), "provider": registry.resolve_kind(),
+            "reasoning_backend": config.reasoning_backend(),
+            "supervisor_available": bool(engine and engine.runtime is not None),
             "running": engine.running if engine else False}
+
+
+# ---- AI provider configuration (Stage 0; no secrets are ever returned) ----
+register_provider_routes(app, lambda: engine)
 
 
 @app.get("/api/state")

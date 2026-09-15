@@ -133,6 +133,18 @@
 .settings-sections { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .settings-sections .sec { scroll-margin-top: 12px; }
 @media (max-width: 900px) { .settings-layout { grid-template-columns: minmax(0, 1fr); } .settings-nav { flex-direction: row; flex-wrap: wrap; position: static; } }
+/* Settings → AI provider */
+.prov-choice { flex: 1 1 180px; min-width: 0; }
+.prov-choice .choice-title .dot { flex: none; }
+.cap-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.cap { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: var(--r-2); border: 1px solid var(--edge); font: 500 11px/1.2 var(--font-ui); color: var(--text-2); background: var(--surface-2); }
+.cap-yes { border-color: var(--ok); color: var(--ok); background: var(--ok-tint, var(--surface-2)); }
+.cap-no { color: var(--text-4); text-decoration: line-through; }
+.cap-unknown { border-style: dashed; color: var(--text-3); }
+.model-chips { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { padding: 4px 9px; border-radius: 999px; border: 1px solid var(--edge); background: var(--surface-2); color: var(--text-2); font: 500 11.5px/1 var(--font-mono); cursor: pointer; }
+.chip:hover { border-color: var(--edge-strong); color: var(--text-1); }
+.chip.is-active { border-color: var(--brand); color: var(--text-1); box-shadow: inset 0 0 0 1px var(--brand); }
 .scope-tag { font-size: 10px; letter-spacing: .06em; }
 
 /* ---------- maintenance ---------- */
