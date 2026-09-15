@@ -42,7 +42,7 @@
 .btn:hover { background: var(--surface-3); color: var(--text-1); border-color: var(--edge-strong); }
 .btn:active { transform: translateY(1px); }
 .btn:disabled { opacity: .5; cursor: default; transform: none; }
-.btn-primary { background: var(--brand); color: var(--brand-ink); border-color: var(--brand-strong); box-shadow: 0 1px 0 rgba(255,255,255,.25) inset; }
+.btn-primary { background: var(--brand); color: var(--brand-ink); border-color: var(--brand-strong); box-shadow: 0 1px 0 var(--btn-sheen) inset; }
 .btn-primary:hover { background: var(--brand-strong); color: var(--brand-ink); border-color: var(--brand-strong); }
 .btn-quiet { background: transparent; box-shadow: none; }
 .btn-quiet:hover { background: var(--surface-2); }

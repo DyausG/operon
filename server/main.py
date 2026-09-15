@@ -273,3 +273,15 @@ async def index():
 if (config.FRONTEND_BUILD / "assets").exists():
     # Serve built assets (JS/CSS) under the SPA. HTML index handled above.
     app.mount("/assets", StaticFiles(directory=str(config.FRONTEND_BUILD / "assets")), name="assets")
+
+
+@app.get("/{path:path}")
+async def spa_fallback(path: str):
+    """Client-side routes (/login, /app/...) resolve to the SPA on a hard refresh.
+
+    Registered last so every /api route and /ws keep precedence. Unknown API paths stay
+    JSON 404s; nothing under /api or /assets ever falls through to the HTML document.
+    """
+    if path.startswith(("api/", "api", "assets/", "ws")):
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    return await index()

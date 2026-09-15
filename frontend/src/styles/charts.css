@@ -1,0 +1,47 @@
+/* Analytics charts: recessive grid, thin marks, text in text tokens. Colours via --chart-* tokens. */
+.chart { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart-grid line { stroke: var(--chart-grid); stroke-width: 1; }
+.chart-axis { stroke: var(--chart-axis); stroke-width: 1; }
+.chart-t { font: 400 10px var(--font-mono); fill: var(--text-3); }
+.chart-l { font: 500 10.5px var(--font-ui); fill: var(--text-2); }
+.chart-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.chart-line.is-muted { stroke: var(--chart-muted); stroke-width: 1.2; }
+.chart-line.s-1 { stroke: var(--chart-1); } .chart-line.s-2 { stroke: var(--chart-2); } .chart-line.s-3 { stroke: var(--chart-3); }
+.chart-line.tone-crit { stroke: var(--crit); } .chart-line.tone-warn { stroke: var(--warn); } .chart-line.tone-ok { stroke: var(--ok); }
+.chart-area { opacity: .12; }
+.chart-bar { rx: 0; }
+.chart-bar.s-1 { fill: var(--chart-1); } .chart-bar.s-2 { fill: var(--chart-2); } .chart-bar.s-3 { fill: var(--chart-3); }
+.chart-bar.tone-crit { fill: var(--crit); } .chart-bar.tone-warn { fill: var(--warn); } .chart-bar.tone-ok { fill: var(--ok); } .chart-bar.tone-normal { fill: var(--chart-muted); } .chart-bar.tone-auth { fill: var(--chart-1); }
+.chart-bar-bg { fill: var(--well); }
+.chart-marker { stroke: var(--surface-1); stroke-width: 2; }
+.chart-marker.s-1 { fill: var(--chart-1); } .chart-marker.s-2 { fill: var(--chart-2); } .chart-marker.s-3 { fill: var(--chart-3); }
+.chart-marker.tone-crit { fill: var(--crit); } .chart-marker.tone-warn { fill: var(--warn); } .chart-marker.tone-ok { fill: var(--ok); } .chart-marker.is-muted { fill: var(--chart-muted); }
+.chart-cross { stroke: var(--text-3); stroke-width: 1; stroke-dasharray: 2 3; }
+.chart-hit { fill: transparent; cursor: crosshair; }
+.chart-band-crit { fill: var(--chart-band-crit); } .chart-band-warn { fill: var(--chart-band-warn); }
+.chart-thresh { stroke-width: 1; stroke-dasharray: 3 3; }
+.chart-thresh.crit { stroke: var(--crit); } .chart-thresh.warn { stroke: var(--warn); }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11.5px; color: var(--text-2); }
+.chart-legend li { display: inline-flex; align-items: center; gap: 6px; }
+.chart-legend li.is-hidden { opacity: .45; }
+.chart-legend button { display: inline-flex; align-items: center; gap: 6px; color: inherit; font: inherit; }
+.swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+.swatch.s-1 { background: var(--chart-1); } .swatch.s-2 { background: var(--chart-2); } .swatch.s-3 { background: var(--chart-3); }
+.swatch.tone-crit { background: var(--crit); } .swatch.tone-warn { background: var(--warn); } .swatch.tone-ok { background: var(--ok); } .swatch.tone-normal, .swatch.is-muted { background: var(--chart-muted); } .swatch.tone-auth { background: var(--chart-1); }
+.swatch-line { width: 14px; height: 2px; border-radius: 1px; }
+.chart-tip { position: absolute; pointer-events: none; background: var(--surface-3); border: 1px solid var(--edge); border-radius: var(--r-2); box-shadow: var(--shadow-pop); padding: 6px 8px; font-size: 11.5px; color: var(--text-2); z-index: 5; min-width: 120px; transform: translate(-50%, calc(-100% - 10px)); white-space: nowrap; }
+.chart-tip b { color: var(--text-1); font-weight: 500; }
+.chart-tip .tip-row { display: flex; justify-content: space-between; gap: 12px; }
+.chart-wrap { position: relative; }
+.chart-empty { padding: 20px 12px; font-size: 12px; color: var(--text-3); text-align: center; background-color: var(--well); background-image: var(--hatch); border: 1px dashed var(--edge); }
+.chart-table { font-size: 11.5px; }
+.chart-table summary { cursor: pointer; color: var(--text-3); font-size: 11px; padding: 4px 0; }
+.chart-table summary:hover { color: var(--text-1); }
+.hbar-list { display: flex; flex-direction: column; gap: 6px; }
+.hbar { display: grid; grid-template-columns: 130px minmax(0, 1fr) 44px; gap: 10px; align-items: center; font-size: 12px; }
+.hbar-l { color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: inline-flex; align-items: center; gap: 6px; }
+.hbar-track { height: 10px; background: var(--well); border-radius: 1px; overflow: hidden; }
+.hbar-fill { display: block; height: 100%; background: var(--chart-1); }
+.hbar-fill.tone-crit { background: var(--crit); } .hbar-fill.tone-warn { background: var(--warn); } .hbar-fill.tone-ok { background: var(--ok); } .hbar-fill.tone-normal { background: var(--chart-muted); } .hbar-fill.tone-auth { background: var(--chart-1); }
+.hbar-v { text-align: right; color: var(--text-1); }

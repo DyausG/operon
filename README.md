@@ -309,6 +309,13 @@ recipe, MCP setup, and A2A peers.
 
 ---
 
+## Portal routes
+
+The dashboard is a multi-page portal: `/login` (browser-local demo session; the host has no
+authentication layer) and `/app/{dashboard,machines,incidents,agent,maintenance,analytics,
+activity,notifications,profile,settings}`. FastAPI serves the SPA for those paths so deep
+links survive a refresh. Light and dark themes are persisted in the browser.
+
 ## Editing the dashboard (needs Node ≥ 18)
 
 The committed `frontend/dist/` means the app runs without Node. The dashboard (React 18,

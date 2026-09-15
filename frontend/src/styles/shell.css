@@ -1,5 +1,4 @@
-.app { display: grid; grid-template-rows: var(--header-h) var(--kpi-h) var(--fleet-h) var(--proc-h) minmax(0, 1fr); height: 100vh; min-height: 640px; background: var(--surface-0); }
-@media (max-width: 1200px) { .app { height: auto; grid-template-rows: auto auto auto auto auto; } }
+/* The application grid lives in app-shell.css; this file styles the operations board pieces. */
 
 /* ---------- header ---------- */
 .hdr { display: flex; align-items: center; gap: 16px; padding: 0 var(--sp-4); background: var(--surface-1); border-bottom: 1px solid var(--hair-d); }
@@ -9,11 +8,11 @@
 .hdr-badges { display: flex; align-items: center; gap: 8px; margin: 0 auto; }
 .hdr-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: var(--r-1); font: 500 11px/1 var(--font-mono); color: var(--text-2); background: var(--surface-2); border: 1px solid var(--hair-d); box-shadow: 0 1px 0 var(--hair-l) inset; letter-spacing: 0.02em; white-space: nowrap; }
 .hdr-badge svg { color: var(--text-3); flex: none; }
-.hdr-badge.badge-gate { border-color: rgba(94, 234, 212, 0.25); color: var(--text-1); }
+.hdr-badge.badge-gate { border-color: var(--brand-edge); color: var(--text-1); }
 .hdr-badge.badge-gate svg { color: var(--ok); }
 .hdr-badge.badge-bedrock { border-color: var(--hair-d); color: var(--text-2); }
-.hdr-badge.badge-bedrock.online { border-color: rgba(94, 234, 212, 0.3); color: var(--text-1); }
-.hdr-badge.badge-bedrock.online .status-dot { background: var(--ok); box-shadow: 0 0 6px rgba(49, 214, 160, 0.5); }
+.hdr-badge.badge-bedrock.online { border-color: var(--brand-edge); color: var(--text-1); }
+.hdr-badge.badge-bedrock.online .status-dot { background: var(--ok); box-shadow: 0 0 6px var(--ok-glow); }
 .hdr-badge.badge-bedrock.standby .status-dot { background: var(--warn); }
 .status-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
 @media (max-width: 1160px) { .hdr-badges { display: none; } }
@@ -23,7 +22,7 @@
 .activity { width: 8px; height: 8px; border-radius: 1px; background: var(--text-4); transition: background var(--dur-quick); }
 .activity.on { background: var(--brand); }
 .activity.off { background: var(--crit); }
-.hdr-error { position: absolute; top: calc(var(--header-h) + 8px); left: 50%; transform: translateX(-50%); z-index: 30; background: var(--surface-3); border: 1px solid var(--crit); color: var(--text-1); padding: 8px 12px; border-radius: var(--r-2); font-size: 12.5px; display: flex; gap: 10px; align-items: center; box-shadow: 0 8px 24px rgba(0,0,0,.4); }
+.hdr-error { position: absolute; top: calc(var(--header-h) + 8px); left: 50%; transform: translateX(-50%); z-index: 30; background: var(--surface-3); border: 1px solid var(--crit); color: var(--text-1); padding: 8px 12px; border-radius: var(--r-2); font-size: 12.5px; display: flex; gap: 10px; align-items: center; box-shadow: var(--shadow-pop); }
 
 /* ---------- fleet strip ---------- */
 .fleet { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); background: var(--surface-1); border-bottom: 1px solid var(--hair-d); }
@@ -71,7 +70,7 @@
 .col { background: var(--surface-1); display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .col-scroll { overflow-y: auto; overflow-x: hidden; min-height: 0; flex: 1; }
 @media (max-width: 1440px) { .stage { grid-template-columns: var(--col-signal) minmax(0, 1fr); } .col-record { display: none; } }
-@media (max-width: 1200px) { .stage { grid-template-columns: 1fr; } .col { min-height: 320px; } .col-record { display: flex; } }
+@media (max-width: 1200px) { .ops .stage { grid-template-columns: 1fr; } .ops .col { min-height: 320px; } .ops .col-record { display: flex; } }
 
 /* ---------- footer ---------- */
 .foot { display: flex; align-items: center; gap: 18px; padding: 0 var(--sp-4); background: var(--surface-1); border-top: 1px solid var(--hair-d); box-shadow: 0 1px 0 var(--hair-l) inset; font: 400 11px var(--font-mono); color: var(--text-3); white-space: nowrap; overflow: hidden; }

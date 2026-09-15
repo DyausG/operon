@@ -7,13 +7,21 @@ export function AssetNominalBoard({ state, focusId }) {
   const tone = statusTone(asset.status || "HEALTHY");
   const point = asset.point || {};
 
+  // Values come from the last telemetry point the engine reported; "—" means not reported, never a placeholder.
+  // Envelopes are display reference bands; the engine's risk model is the authority. A value
+  // outside its band is labelled as such rather than "Nominal".
   const channels = [
-    { label: "Rotational Speed", val: point.rot_speed ?? 1460, unit: "rpm", normal: "1380 – 1520 rpm", status: "Nominal" },
-    { label: "Torque", val: num(point.torque ?? 40.0, 1), unit: "N·m", normal: "30.0 – 50.0 N·m", status: "Nominal" },
-    { label: "Temperature Rise", val: num(point.temp_diff ?? 7.1, 1), unit: "°C", normal: "< 10.0 °C", status: "Nominal" },
-    { label: "Tool Wear", val: point.tool_wear ?? 38, unit: "min", normal: "< 200 min", status: "Nominal" },
-    { label: "Vibration", val: num(point.vibration ?? 1.6, 1), unit: "mm/s", normal: "< 2.5 mm/s", status: "Nominal" },
-  ];
+    { label: "Rotational Speed", val: point.rot_speed ?? asset.rot_speed, unit: "rpm", lo: 1380, hi: 1520, normal: "1380 – 1520 rpm", d: 0 },
+    { label: "Torque", val: point.torque ?? asset.torque, unit: "N·m", lo: 30, hi: 50, normal: "30.0 – 50.0 N·m", d: 1 },
+    { label: "Temperature Rise", val: point.temp_diff ?? asset.temp_diff, unit: "°C", hi: 10, normal: "< 10.0 °C", d: 1 },
+    { label: "Tool Wear", val: point.tool_wear ?? asset.tool_wear, unit: "min", hi: 200, normal: "< 200 min", d: 0 },
+    { label: "Vibration", val: point.vibration, unit: "mm/s", hi: 2.5, normal: "< 2.5 mm/s", d: 1 },
+  ].map((c) => {
+    const outside = c.val != null && ((c.lo != null && c.val < c.lo) || (c.hi != null && c.val > c.hi));
+    return { ...c, shown: num(c.val, c.d), outside, status: c.val == null ? "Not reported" : outside ? "Outside band" : "Nominal", tone: c.val == null ? "normal" : outside ? "warn" : "ok" };
+  });
+  const reported = channels.filter((c) => c.val != null).length;
+  const outsideCount = channels.filter((c) => c.outside).length;
 
   const failureModes = [
     { code: "TWF", label: "Tool Wear Failure", status: "Guarded" },
@@ -38,11 +46,11 @@ export function AssetNominalBoard({ state, focusId }) {
         <div className="nominal-metrics">
           <div className="nominal-metric-block">
             <span className="lbl">HEALTH SCORE</span>
-            <span className="mono t1">{num(asset.health_score ?? 0.95, 2)}</span>
+            <span className="mono t1">{num(asset.health_score, 2)}</span>
           </div>
           <div className="nominal-metric-block">
             <span className="lbl">24H FAILURE RISK</span>
-            <span className={`mono tone-${tone}`}>{fmtRisk(asset.failure_prob ?? 0.09)}</span>
+            <span className={`mono tone-${tone}`}>{fmtRisk(asset.failure_prob)}</span>
           </div>
           <div className="nominal-metric-block">
             <span className="lbl">STATUS</span>
@@ -54,19 +62,19 @@ export function AssetNominalBoard({ state, focusId }) {
       <div className="nominal-section">
         <div className="nominal-sec-head">
           <span className="lbl">PHYSICAL SCADA TELEMETRY ENVELOPES</span>
-          <span className="ph-meta mono">5 continuous sensor channels active</span>
+          <span className="ph-meta mono">{reported} of {channels.length} channels reported{outsideCount ? ` · ${outsideCount} outside band` : ""}</span>
         </div>
         <div className="nominal-channel-grid">
           {channels.map((ch) => (
             <div key={ch.label} className="nominal-ch-card">
               <span className="ch-lbl">{ch.label}</span>
               <div className="ch-val-row">
-                <span className="ch-val mono">{ch.val}</span>
+                <span className="ch-val mono">{ch.shown}</span>
                 <span className="ch-unit">{ch.unit}</span>
               </div>
               <div className="ch-foot">
                 <span className="ch-range mono">{ch.normal}</span>
-                <span className="ch-status ok"><Dot tone="ok" />{ch.status}</span>
+                <span className={`ch-status ${ch.tone}`}><Dot tone={ch.tone} />{ch.status}</span>
               </div>
             </div>
           ))}
