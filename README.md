@@ -93,9 +93,9 @@ uv run python run.py       # trains model on first run, serves http://127.0.0.1:
 ```
 
 The fleet simulation starts with the server and runs **fully offline** — no cloud account
-required. Press **Start Guided Demo** in the header to watch a clearly labelled **SIMULATED**
-walkthrough of the whole lifecycle on a reproducible, deterministic telemetry and failure
-scenario. Without a reasoning backend configured,
+required. Press **Start Guided Demo** in the header to replay a reproducible, deterministic
+telemetry and failure scenario through Operon's real incident lifecycle; with a provider
+configured its reasoning runs on that provider. Without a reasoning backend configured,
 real incidents still open and collect baseline evidence, but they wait in `INVESTIGATING`
 because no specialist can run; Operon never substitutes a silent fallback for reasoning.
 
@@ -185,13 +185,24 @@ dashboard; see `.env.example`. On free tiers the service sleeps when idle and co
 ## The 90-second Guided Demo
 
 Press **Start Guided Demo** (header). The Guided Demo Scenario is a reproducible,
-deterministic telemetry and failure scenario, labelled **Guided Demo · Simulated Plant ·
-SIMULATED · no live model**, that lets reviewers reliably exercise Operon's full incident
-workflow. It is a disposable read model: it touches no production table, model or
-reasoning backend, never invokes an AI provider, and pauses the live tick loop while it
-runs. Its specialist activity is deterministic and labelled as such; model-backed reasoning
-(when a provider is configured) runs on live incidents from the seeded simulator instead,
-and without a provider Operon's deterministic reliability workflow remains available.
+deterministic telemetry and failure progression on the seeded simulator (seed 7, one
+asset degrading on a fixed ramp toward its class's failure mode) plus clearly labelled
+**SIMULATED** trusted inputs (inspection, resources). Everything else is the real
+product: a durable incident is admitted from the persisted model signal, the configured
+**reasoning backend** runs the Reliability Supervisor and specialists over the frozen
+evidence packet, and promotion, governance, exact human approval, governed execution and
+outcome verification are the ordinary services. The scenario is deterministic; the
+reasoning is whatever you configured:
+
+| Provider in Settings | What reasons on the Guided Demo incident | What the portal shows |
+|----------------------|------------------------------------------|-----------------------|
+| Gemini / Ollama / Bedrock | the real Strands supervisor and specialists on that provider; their output becomes the hypotheses, diagnosis and reviews | `Model · <provider> · <model>`, `live_model true`, run snapshots frozen with the provider and model id |
+| none | the explicitly labelled **deterministic advisory** (`backend deterministic`, no model call is made) so the workflow remains demonstrable | `No model · deterministic advisory`, `live_model false`, `provenance SIMULATED` |
+
+A provider failure (unreachable Ollama, a model without tool support, a bad key) ends
+the scenario as **failed** with the normalized provider error; no advisory text is ever
+substituted for reasoning that did not happen. Changing the provider in Settings applies
+to the next Guided Demo and the next live incident without a restart.
 
 1. **Signal.** `AC-COMP-01` (compressor) climbs from 14 % to 86 % failure risk. Crossing the
    **80 % action gate** opens incident `DEMO-INCIDENT-01`: *prediction, not cause*.
@@ -207,8 +218,8 @@ and without a provider Operon's deterministic reliability workflow remains avail
 5. **Execute, observe, verify.** A work order and execution receipt appear, the incident
    enters `OBSERVING`, recovery samples accumulate against the frozen observation plan, and
    a `VERIFIED_RECOVERY` outcome closes the incident (about 33 s). The impact bar shows the
-   scenario's recovered value. **Reject** instead and the demo incident is cancelled (on the live
-   lifecycle a rejection escalates the incident for human follow-up).
+   intervention's estimated avoided loss. **Reject** instead and the incident is escalated for
+   human follow-up, exactly as on any live incident.
 
 Use **Reset** (top-right) to run it again. The live simulator behind the Guided Demo stages
 four degradations — `AC-COMP-01` (power), `CNC-MILL-07` (overstrain), then the pumps
@@ -257,7 +268,7 @@ operon/
                     governance, approval, execution claims/receipts, outcome policy
     agents/         Strands specialists + Reliability Supervisor (advisory contracts)
     reasoning/      backend seam: local | packet | agentcore, packet protocol, trust checks
-    demo/           deterministic Guided Demo runner + inspectable artifact read model
+    demo_scenario.py deterministic Guided Demo Scenario inputs + deterministic advisory (no model)
     services/       swappable capability layer: 7 interfaces (5 tools + 2 peers),
                     SENTINEL_*_ADAPTER registry, adapters local/mcp/a2a/gemini_peers
     tools.py        thin facade over services/
@@ -380,7 +391,8 @@ recovery, the Strands specialists and supervisor with in-test model doubles, the
 protocol and trust checks, the provider layer (selection, no-provider mode, mocked Gemini,
 Ollama and Bedrock adapters, normalized errors, capabilities, the configuration API's secret
 non-disclosure, connection tests), the `demo.sh` launcher, the AgentCore backend and
-deployment tools with fake clients, the Guided Demo, the services layer, and the peer policies. The `integration` tests exercise a
+deployment tools with fake clients, the Guided Demo Scenario (deterministic advisory, injected model double,
+truthful provider failure, Settings switch, reproducibility), the services layer, and the peer policies. The `integration` tests exercise a
 real **MCP** round-trip (self-spawned stdio server, through governed execution) and a real
 **A2A** round-trip (peer server in-process via ASGI). Tests use a throwaway SQLite file.
 

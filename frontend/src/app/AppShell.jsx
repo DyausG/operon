@@ -12,7 +12,7 @@ import { rowIndex, isActive } from "../state/selectors.js";
 import { InspectorTray } from "../features/Inspector/Tray.jsx";
 import { Btn, Icons, Dot } from "../primitives/index.jsx";
 import { Menu, MenuItem, MenuRule, Modal, ConnectionBanner } from "../components/index.jsx";
-import { elapsed, clock, ago, title } from "../lib/format.js";
+import { elapsed, clock, ago, title, words } from "../lib/format.js";
 import { readJSON, writeJSON } from "../lib/storage.js";
 
 const SIDEBAR_KEY = "operon.sidebar";
@@ -134,13 +134,15 @@ function TopBar({ state, actions, onMenu, phone }) {
   const demo = state.demoScenario || {}, prov = state.reasoningProvenance || {};
   const clockText = demo.active ? elapsed(demo.elapsed_seconds) : `+${String(Math.floor((state.plantMin || 0) / 60)).padStart(2, "0")}:${String((state.plantMin || 0) % 60).padStart(2, "0")}`;
   const available = prov.status === "available";
-  const provider = prov.model_provider || (prov.backend === "guided-demo" ? "Guided Demo · no model provider" : "No model provider");
+  const reasoning = demo.active && demo.reasoning ? demo.reasoning : prov;
+  const provider = reasoning.live_model ? `${reasoning.model_provider || reasoning.provider}${reasoning.model ? ` · ${reasoning.model}` : ""}`
+    : reasoning.backend === "deterministic" ? "No model · deterministic advisory" : "No model provider";
   return (
     <header className="topbar">
       {phone ? <button type="button" className="btn btn-quiet btn-icon" onClick={onMenu} aria-label="Open navigation">{Icons.menu({})}</button> : null}
       <div className="tb-context">
         <span className="tb-title">{PAGE_TITLES[segment] || "Operon"}</span>
-        <span className="tb-sub t3 truncate">{demo.active ? `Guided demo · ${demo.label || "simulated plant"}` : state.meta.plant || ""}</span>
+        <span className="tb-sub t3 truncate">{demo.active ? `${demo.label || "Guided Demo"} · ${demo.error ? "failed" : words(demo.status || "")}` : state.meta.plant || ""}</span>
       </div>
       <GlobalSearch state={state} />
       <div className="tb-right">

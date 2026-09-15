@@ -2,14 +2,18 @@
 
 React + Vite operations portal for Operon. It consumes the engine WebSocket (`/ws`), the
 human-in-the-loop endpoints (`/api/approve`, `/api/reject`, `/api/reset`, `/api/start`,
-`/api/stop`, `/api/demo/scenario`) and the demo artifact endpoint
-(`GET /api/demo/artifacts/{id}`). It never changes backend semantics.
+`/api/stop`, `/api/demo/scenario`) and the artifact inspector endpoint
+(`GET /api/demo/artifacts/{id}`, durable artifacts of any active incident). It never
+changes backend semantics. `demo_scenario` on every snapshot separates the deterministic
+**scenario** (`scenario.id`, seed, failure mode) from the **reasoning** that ran on it
+(`reasoning.backend/provider/model/live_model/provenance`); each `agent_runs[]` row carries
+the same normalized `reasoning` descriptor frozen from its run snapshot.
 
 ```
 npm install          # once
 npm run dev          # hot reload on :5173, proxies /api and /ws to the backend on :8000
 npm run build        # regenerates the committed dist/ bundle served by FastAPI
-npm run fixtures     # dumps every Guided Demo snapshot + artifact index into test/fixtures
+npm run fixtures     # drives the real engine (no provider) through the Guided Demo and dumps its frames + artifacts into test/fixtures
 npm run test:smoke   # server-renders every route for every fixture frame, both themes, every artifact type
 ```
 

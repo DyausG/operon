@@ -39,10 +39,11 @@ export function AgentPage() {
     <div className="page">
       <div className="page-body page-wide">
         <PageHeader eyebrow="Reasoning" title="Operon Agent workspace" meta={<>
-          <span>Backend <span className="mono">{prov.backend || "none"}</span></span>
-          <span>{prov.runtime || "runtime not reported"} · {prov.framework || ""}</span>
-          <span><Dot tone={runtime.available ? "auth" : "warn"} /> {runtime.available ? "runtime available" : "awaiting runtime"}</span>
-          <ProvenanceTag provenance={prov.provenance} runtime={prov.runtime} compact />
+          <span>Backend <span className="mono">{runtime.backend || "none"}</span></span>
+          <span>{runtime.runtime || "runtime not reported"}{prov.framework ? ` · ${prov.framework}` : ""}</span>
+          <span><Dot tone={runtime.available ? "auth" : "warn"} /> {runtime.available ? (runtime.backend === "deterministic" ? "deterministic advisory (no model)" : "runtime available") : "awaiting runtime"}</span>
+          <ProvenanceTag reasoning={{ backend: runtime.backend, provider: runtime.provider, model_provider: runtime.modelProvider, model: runtime.model, live_model: runtime.liveModel, provenance: runtime.provenance }} compact />
+          {state.demoScenario?.active && state.demoScenario.scenario ? <span className="mono t3" title="deterministic telemetry/failure scenario">scenario {state.demoScenario.scenario.id}</span> : null}
         </>} />
         <div className="agent-grid">
           {/* left: context */}

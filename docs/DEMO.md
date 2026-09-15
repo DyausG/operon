@@ -123,15 +123,30 @@ Credentials are read only by the server through the AWS SDK; the API exposes the
 
 ## Running the Guided Demo
 
-The **Guided Demo** is a clearly labelled *SIMULATED* walkthrough of the whole lifecycle.
-It uses a reproducible, deterministic telemetry and failure scenario (the Guided Demo
-Scenario) so reviewers can reliably exercise Operon's full workflow: signal, admission,
-evidence, diagnosis, planning, exact human approval, execution, observation and verified
-closure. The scenario needs no provider and never invokes one; its specialist activity is
-deterministic and labelled *SIMULATED · no live model*. When an AI provider is configured,
-model-backed reasoning operates on the live incidents the seeded simulator raises (step 6
-below); without a provider, Operon's deterministic reliability workflow remains available.
-Start it from the Engine menu in the header, from
+The **Guided Demo** replays a reproducible, deterministic telemetry and failure scenario
+(the Guided Demo Scenario: seeded simulator, one asset on a fixed degradation ramp, and
+clearly labelled *SIMULATED* trusted inputs for the inspection and the resource
+confirmation) through Operon's **real** workflow: signal, durable incident admission,
+baseline evidence, supervisor/specialist reasoning, application promotion, planning,
+exact human approval, governed execution, observation and verified closure.
+
+The scenario is deterministic; the reasoning is whatever is configured:
+
+* **Gemini, Ollama or Bedrock selected** - the scenario's incident genuinely invokes the
+  configured provider through the same reasoning backend every live incident uses. The
+  model's structured output becomes the hypotheses, diagnosis and reviews you inspect;
+  every run snapshot freezes the backend, provider and model id, and the portal shows
+  `Model · <provider> · <model>` with `live_model true`. A provider failure (Ollama not
+  running, a model without tool support, a rejected key) ends the scenario as **failed**
+  with the normalized provider error and no fabricated reasoning.
+* **No provider** - the scenario runs on the explicitly labelled **deterministic advisory**
+  (`backend deterministic`, `provenance SIMULATED`, `live_model false`): typed application
+  text over the frozen evidence packet, so the workflow stays demonstrable. No model call
+  is made and nothing claims to be one.
+
+Provider changes made in **Settings → AI provider** apply to the next Guided Demo and the
+next live incident without a restart; an in-flight run finishes on the backend it started
+with. Start the demo from the Engine menu in the header, from
 **Settings → Plant & system → Start Guided Demo**, or with
 `curl -X POST localhost:8000/api/demo/scenario -H 'Content-Type: application/json' -d '{"equipment_id":"AC-COMP-01"}'`.
 Approve the plan when the approval card appears and watch execution, observation and
@@ -147,8 +162,10 @@ verified closure. **Reset engine** returns to the live simulation.
    pages: evidence ledger with provenance, advisory lane vs. authoritative records.
 5. Approve the exact work package (hash and revision shown), then watch OBSERVING →
    verified recovery → CLOSED.
-6. With a provider configured, let a live incident open (risk ≥ 0.80) and observe the
-   supervisor run and its normalized outcome in the agent workspace.
+6. With a provider configured, start the **Guided Demo** again: the header chip now reads
+   `Model · <provider> · <model>`, the specialist chain carries the same chip, and each
+   run's snapshot in the inspector freezes the provider and model id. Or let a live
+   incident open (risk ≥ 0.80) and observe the same runtime in the agent workspace.
 
 ## Troubleshooting
 

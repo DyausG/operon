@@ -116,7 +116,9 @@ export function ProviderSettings() {
             <KV label="Reasoning backend" mono value={data.reasoning_backend || null} />
             <KV label="Supervisor" value={<span className="row-wrap"><Dot tone={data.supervisor_available ? "auth" : "warn"} />{data.supervisor_available ? "runtime available" : "awaiting runtime"}</span>} />
           </div>
+          {data.locked ? <div className="note-box note-warn" role="status">{Icons.lock({})}<span>{data.lock_reason}</span></div> : null}
           {!data.supervisor_available && prov.unavailable_reason ? <p className="t3">{prov.unavailable_reason}</p> : null}
+          <p className="t3">Changing the provider here takes effect for the next incident and the next Guided Demo without a restart; a run already in progress finishes on the backend it started with.</p>
 
           {active === "none" ? (
             <div className="note-box">{Icons.info({})}<span>Deterministic mode. Telemetry, ML health scoring, incident admission, baseline evidence, governance policy and the Guided Demo all run. Model-backed reasoning (supervisor and specialists) is disabled and reports itself as unavailable; incidents wait in INVESTIGATING. Operon never substitutes fabricated reasoning.</span></div>

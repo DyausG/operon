@@ -60,10 +60,14 @@ def _error(message: str, status: int = 400) -> JSONResponse:
 def register_provider_routes(app: FastAPI, get_engine: Callable[[], Any]) -> None:
     """Attach the provider endpoints as plain routes (keeps ``app.routes`` introspectable)."""
 
+    LOCK_REASON = ("POC_FORCE_DETERMINISTIC is set on the server: the provider is locked to none and "
+                   "model-backed reasoning stays disabled. Unset it and restart to select a provider.")
+
     def overview() -> dict:
         registry = config.provider_registry()
         engine = get_engine()
         return {"ok": True, **registry.overview(), "agent_mode": config.agent_mode(),
+                "locked": bool(config.FORCE_DETERMINISTIC), "lock_reason": LOCK_REASON if config.FORCE_DETERMINISTIC else None,
                 "reasoning_backend": config.reasoning_backend(),
                 "supervisor_available": bool(engine and engine.runtime is not None),
                 "reasoning_provenance": engine.reasoning_provenance() if engine else None,
@@ -78,6 +82,8 @@ def register_provider_routes(app: FastAPI, get_engine: Callable[[], Any]) -> Non
         return overview()
 
     async def select(command: SelectCommand):
+        if config.FORCE_DETERMINISTIC:
+            return _error(LOCK_REASON, 409)
         try:
             config.provider_registry().select(command.provider, model=command.model)
         except ValueError as exc:

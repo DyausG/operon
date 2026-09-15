@@ -77,7 +77,7 @@ class DraftSubmission(BaseModel):
 
 
 class DemoScenarioCommand(BaseModel):
-    """Explicit entry into the isolated, disposable recording scenario."""
+    """Explicit entry into the Guided Demo Scenario (real lifecycle, configured reasoning)."""
     model_config = ConfigDict(extra="forbid")
     equipment_id: str = "AC-COMP-01"
 
@@ -120,7 +120,7 @@ async def state():
 
 @app.get("/api/demo/artifacts/{artifact_id}")
 async def demo_artifact(artifact_id: str):
-    """Read one artifact from the active disposable Guided Demo index."""
+    """Inspector detail for one durable artifact of an active incident (Guided Demo or live)."""
     try:
         return JSONResponse(engine.demo_artifact(artifact_id))
     except LookupError:
@@ -240,7 +240,7 @@ async def reset():
 
 @app.post("/api/demo/scenario")
 async def guided_demo(command: DemoScenarioCommand):
-    """Start DemoScenarioRunner; production persistence/reasoning is not used."""
+    """Start the Guided Demo Scenario on the real lifecycle with the configured reasoning backend."""
     return _status(await engine.start_guided_demo(command.equipment_id), refused=400)
 
 

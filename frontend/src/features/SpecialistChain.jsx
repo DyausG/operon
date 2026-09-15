@@ -23,7 +23,7 @@ export function SpecialistChain({ run, verdict, stage, compact = false, pendingL
       <div className="chain-head">
         <span className="lbl">Specialist chain · {STAGE_LABEL[run.stage || stage] || words(run.stage || stage)}</span>
         <Tag tone="adv" dashed>Advisory</Tag>
-        {identity.provenance || run.provenance ? <ProvenanceTag provenance={identity.provenance || run.provenance} runtime={identity.runtime || run.runtime} live={identity.live_model ?? run.live_model} compact /> : null}
+        {run.reasoning ? <ProvenanceTag reasoning={run.reasoning} compact /> : identity.provenance || run.provenance ? <ProvenanceTag provenance={identity.provenance || run.provenance} runtime={identity.runtime || run.runtime} live={identity.live_model ?? run.live_model} compact /> : null}
         <span className="chain-meta mono">{run.run_id ? <IdToken value={run.run_id} /> : null}{run.tool_calls != null ? ` · ${run.tool_calls} structured outputs` : ""}</span>
       </div>
       <Inspectable id={run.artifact_id} className="chain-sup" as="div">

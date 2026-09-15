@@ -21,7 +21,7 @@ def render(overview: dict, probed: dict | None = None) -> list[str]:
     if active == "none":
         lines.append(f"{WARN} No external model provider configured (selection: {overview['selection']})")
         lines.append("  Starting in deterministic/demo-safe mode: telemetry, health scoring, incidents")
-        lines.append("  and the guided demo run; model-backed reasoning is disabled.")
+        lines.append("  and the Guided Demo run (deterministic advisory, no model); model-backed reasoning is disabled.")
         return lines
     status = overview["providers"][active]
     mark = OK if status["configured"] else WARN

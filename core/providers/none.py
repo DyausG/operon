@@ -5,8 +5,9 @@ from .base import Capabilities, CredentialStatus, DISPLAY_NAMES, ModelOptions, M
 from .errors import ProviderError
 
 REASON = ("No model provider is configured. Deterministic telemetry, health scoring, incident "
-          "admission, baseline evidence and the guided demo remain available; model-backed "
-          "reasoning is disabled and incidents wait in INVESTIGATING.")
+          "admission, baseline evidence and the Guided Demo remain available; model-backed "
+          "reasoning is disabled, live incidents wait in INVESTIGATING and the Guided Demo uses "
+          "the labelled deterministic advisory (no model).")
 
 
 class NoProvider(ModelProvider):

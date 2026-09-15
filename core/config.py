@@ -181,6 +181,10 @@ def agent_mode() -> str:
     """Resolve the active provider: 'gemini' | 'ollama' | 'bedrock' | 'deterministic'.
 
     Legacy name kept for the API/UI; the provider registry decides. No network.
+    POC_FORCE_DETERMINISTIC is a process-start lock (hosted/public demos): while it is
+    set the Settings API refuses provider selection, so what the portal shows and what
+    the reasoning backend uses never diverge. Otherwise the current registry selection
+    applies to the next incident or Guided Demo without a restart.
     """
     if FORCE_DETERMINISTIC:
         return "deterministic"

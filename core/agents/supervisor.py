@@ -20,6 +20,7 @@ from .contracts import (
     DelegationQuery, EvidenceFollowup, SpecialistContext, SupervisorBounds,
     SupervisorDecision, SupervisorResult,
 )
+from core.providers.errors import normalize_exception
 from .invocation import GROUNDING_PROMPT, trace_attributes
 from .runtime import StrandsRuntime
 
@@ -60,6 +61,18 @@ critic review of those inputs, and a grounded proposal with known risk metadata.
 preserve blockers, unknown constraints, missing evidence and the need for human review.
 Return SupervisorDecision; never fabricate delegations, evidence IDs or durable artifacts.
 """
+
+
+def model_failure_text(exc: BaseException, provider: str) -> str:
+    """Normalized, secret-free description of a model/provider failure for the run audit.
+
+    Vendor exceptions map onto ``ProviderError`` codes; anything else is named by
+    type only. The text is application-authored and never resembles advisory content.
+    """
+    error = normalize_exception(exc, provider=provider)
+    if error is not None:
+        return f"Model invocation failed [{error.provider}:{error.code}]: {error}"[:2000]
+    return f"Model invocation failed [{provider}:{type(exc).__name__}]: {str(exc)[:300]}".strip()
 
 
 def create_supervisor_agent(run: SupervisorRun) -> Agent:
@@ -150,9 +163,10 @@ async def supervise_reliability(runtime: StrandsRuntime, service: EvidenceServic
         if cancellation_result_handler is not None:
             cancellation_result_handler(run.finish(None, "CANCELLED"))
         raise
-    except Exception:
+    except Exception as exc:
         logger.exception("supervisor model invocation failed")
         reason = "INVALID_OUTPUT" if run.invalid_output else "MODEL_FAILED"
+        run.errors.add(model_failure_text(exc, runtime.settings.provider))
     finally:
         run.closed = True
     return run.finish(decision, reason)

@@ -11,6 +11,8 @@
 .tag-normal { color: var(--text-3); }
 .tag-hatched { background-image: var(--hatch); color: var(--text-1); border-color: var(--edge-strong); }
 .prov .prov-rt { color: var(--text-3); text-transform: none; letter-spacing: 0; }
+.prov.prov-live { border-color: var(--auth, var(--text-2)); }
+.prov.prov-none { color: var(--text-3); }
 
 .stamp { display: inline-flex; align-items: center; gap: 6px; font: 600 var(--size-label)/1 var(--font-cond); letter-spacing: .12em; text-transform: uppercase; padding: 5px 8px; border: 1.5px solid var(--authority); color: var(--authority); border-radius: var(--r-1); white-space: nowrap; }
 .stamp-ok { border-color: var(--ok); color: var(--ok); } .stamp-crit { border-color: var(--crit); color: var(--crit); } .stamp-warn { border-color: var(--warn); color: var(--warn); }

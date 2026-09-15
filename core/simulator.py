@@ -97,6 +97,7 @@ class AssetState:
 
 class PlantSimulator:
     def __init__(self, seed: int = 7):
+        self.seed = seed
         self.rng = np.random.default_rng(seed)
         self.assets: dict[str, AssetState] = {}
         for p in FLEET:
