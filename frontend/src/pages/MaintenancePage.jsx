@@ -65,7 +65,7 @@ export function MaintenancePage() {
         <div className="grid-2">
           <Section label="Bound resources" meta={`${bindings.length} binding${bindings.length === 1 ? "" : "s"}`}>
             {bindings.length ? bindings.map(({ a, b }) => (
-              <Inspectable key={b.id} id={b.artifact_id || b.id} className="stack" style={{ padding: "8px 10px", background: "var(--surface-2)" }}>
+              <Inspectable key={a.incident_id || a.equipment_id} id={b.artifact_id || b.id} className="stack" style={{ padding: "8px 10px", background: "var(--surface-2)" }}>
                 <div className="row-wrap"><span className="mono t1">{a.equipment_id}</span><Link className="inline-link mono" to={ROUTES.incident(a.incident_id)} onClick={(e) => e.stopPropagation()}>{a.incident_id}</Link><StatusBadge value={b.status || b.inventory_status} /></div>
                 <dl className="kvlist">
                   <dt>Technician</dt><dd className="mono">{b.technician_id || "—"}{b.technician_availability ? ` · ${words(b.technician_availability)}` : ""}</dd>

@@ -7,14 +7,23 @@
 .state-links a:hover { background: var(--brand-tint); }
 @media (max-width: 1200px) {
   .page-fill.page-ops { overflow-y: auto; }
-  .ops { grid-template-rows: auto auto auto auto; flex: none; min-height: 100%; }
-  .ops .stage { grid-template-columns: 1fr; }
-  .ops .col { min-height: 360px; max-height: 70vh; }
-  .ops .col-record { display: flex; }
+  .ops { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto auto; flex: none; min-height: 100%; }
+  .ops .stage { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .ops .col { min-height: 360px; max-height: 70vh; min-width: 0; }
+  .ops .col-record { display: flex; grid-column: 1 / -1; max-height: 50vh; }
+  .ops .proc { flex-wrap: wrap; }
+  .ops .proc-incident { display: none; }
+  .ops .proc-tools { margin-left: auto; border-left: 0; }
   .fleet { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .fleet .tile:nth-child(n+5) { border-top: 1px solid var(--hair-d); }
 }
-@media (max-width: 800px) { .fleet { grid-template-columns: repeat(2, minmax(0, 1fr)); } .fleet .tile:nth-child(n+3) { border-top: 1px solid var(--hair-d); } .kpi-deck { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 800px) {
+  .ops .stage { grid-template-columns: minmax(0, 1fr); }
+  .ops .col { max-height: none; }
+  .ops .sig-band svg { max-height: 220px; }
+  .fleet { grid-template-columns: repeat(2, minmax(0, 1fr)); } .fleet .tile:nth-child(n+3) { border-top: 1px solid var(--hair-d); }
+  .kpi-deck { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 
 /* ---------- machine detail ---------- */
 .mh { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: start; }

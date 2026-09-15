@@ -138,7 +138,9 @@ const EVENT_TITLES = {
   INTERVENTION_VALIDATED: "Intervention validated", APPROVAL_REQUESTED: "Approval requested", APPROVAL_RECORDED: "Approval recorded",
   WORK_ORDER_DISPATCHED: "Work order dispatched", EXECUTION_CONFIRMED: "Execution receipt confirmed",
   RECOVERY_OBSERVATION_RECORDED: "Recovery sample recorded", RECOVERY_VERIFIED: "Recovery verified", INCIDENT_CLOSED: "Incident closed",
-  PHASE_CHANGED: "Phase changed", SIGNAL_RECORDED: "Signal recorded",
+  PHASE_CHANGED: "Phase changed", SIGNAL_RECORDED: "Signal recorded", ARTIFACT_ADDED: "Artifact added",
+  EVIDENCE_REQUESTED: "Evidence requested", EVIDENCE_COLLECTED: "Evidence collected", EVIDENCE_REQUEST_RESOLVED: "Evidence request resolved",
+  EVIDENCE_REQUEST_DEFERRED: "Evidence request deferred", SUPERVISOR_RUN_STARTED: "Supervisor run started", SUPERVISOR_RUN_COMPLETED: "Supervisor run completed",
 };
 
 /** Unified chronological record: authoritative events, trusted inputs, advisory specialist outputs. */
@@ -160,6 +162,19 @@ export function ledgerEntries(view) {
       titleText = `Recovery sample ${ev.payload?.sequence ?? ""}`.trim();
     } else if (type === "SPECIALIST_ACTIVITY_RECORDED") {
       titleText = `Specialist activity recorded · ${words(ev.payload?.stage || row?.stage || "")}`.trim();
+    } else if (type === "ARTIFACT_ADDED" && ev.payload?.kind) {
+      titleText = `Artifact added · ${String(ev.payload.kind).replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase()}`;
+      detail = detail || (ev.payload.boundary ? `boundary ${ev.payload.boundary}` : "");
+    } else if (/^EVIDENCE_REQUEST/.test(type) || type === "EVIDENCE_COLLECTED") {
+      const kind = ev.payload?.kind || ev.payload?.evidence_kind || ev.payload?.capability;
+      if (kind) titleText = `${titleText} · ${words(kind)}`;
+      detail = detail || ev.payload?.status || "";
+    }
+    if (!linked && ev.payload?.artifact_id && typeof ev.payload.artifact_id === "string") {
+      // ARTIFACT_ADDED carries the artifact id in its payload; make the row inspectable.
+      entries.push({ id: `ev:${ev.id}`, lane, title: titleText, detail, at: ev.created_at || "", revision: ev.revision,
+        artifactId: ev.payload.artifact_id, eventType: type, row: row || ev, kind: "event" });
+      continue;
     }
     entries.push({ id: `ev:${ev.id}`, lane, title: titleText, detail, at: ev.created_at || "", revision: ev.revision,
       artifactId: linked || ev.event_artifact_id || (typeof ev.id === "string" ? ev.id : null), eventType: type, row: row || ev, kind: "event" });

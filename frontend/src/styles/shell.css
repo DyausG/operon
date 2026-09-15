@@ -1,5 +1,4 @@
-.app { display: grid; grid-template-rows: var(--header-h) var(--kpi-h) var(--fleet-h) var(--proc-h) minmax(0, 1fr); height: 100vh; min-height: 640px; background: var(--surface-0); }
-@media (max-width: 1200px) { .app { height: auto; grid-template-rows: auto auto auto auto auto; } }
+/* The application grid lives in app-shell.css; this file styles the operations board pieces. */
 
 /* ---------- header ---------- */
 .hdr { display: flex; align-items: center; gap: 16px; padding: 0 var(--sp-4); background: var(--surface-1); border-bottom: 1px solid var(--hair-d); }
@@ -71,7 +70,7 @@
 .col { background: var(--surface-1); display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .col-scroll { overflow-y: auto; overflow-x: hidden; min-height: 0; flex: 1; }
 @media (max-width: 1440px) { .stage { grid-template-columns: var(--col-signal) minmax(0, 1fr); } .col-record { display: none; } }
-@media (max-width: 1200px) { .stage { grid-template-columns: 1fr; } .col { min-height: 320px; } .col-record { display: flex; } }
+@media (max-width: 1200px) { .ops .stage { grid-template-columns: 1fr; } .ops .col { min-height: 320px; } .ops .col-record { display: flex; } }
 
 /* ---------- footer ---------- */
 .foot { display: flex; align-items: center; gap: 18px; padding: 0 var(--sp-4); background: var(--surface-1); border-top: 1px solid var(--hair-d); box-shadow: 0 1px 0 var(--hair-l) inset; font: 400 11px var(--font-mono); color: var(--text-3); white-space: nowrap; overflow: hidden; }

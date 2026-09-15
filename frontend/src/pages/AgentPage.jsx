@@ -81,8 +81,13 @@ export function AgentPage() {
                   <OwnerChip {...ownerOf(selected, state)} />
                   <Link className="inline-link mono" to={ROUTES.incident(selected.incident_id)}>{selected.incident_id} →</Link>
                 </div>
-                <Tabs tabs={[{ key: "operation", label: "Operation" }, { key: "evidence", label: "Evidence", count: (view.evidence || []).length }, { key: "console", label: "Activity", count: console_.length }]} value={tab} onChange={setTab} ariaLabel="Workspace panels" />
+                <Tabs tabs={[{ key: "operation", label: "Operation" }, { key: "runs", label: "Specialist runs", count: runtime.runs.length }, { key: "evidence", label: "Evidence", count: (view.evidence || []).length }, { key: "console", label: "Activity", count: console_.length }]} value={tab} onChange={setTab} ariaLabel="Workspace panels" />
                 {tab === "operation" ? <div className="inc-grid" style={{ gridTemplateColumns: "minmax(0,1fr)" }}><OperationColumn state={state} incident={selected} focusId={selected.equipment_id} approve={() => decide("approve")} reject={() => decide("reject")} viewMode="ACTIVE" showSwitcher={false} /></div> : null}
+                {tab === "runs" ? (
+                  <div className="stack">
+                    {runtime.runs.length ? runtime.runs.map((r) => <Section key={r.run_id} label={`${STAGE_LABEL[r.stage] || words(r.stage || "run")}`} meta={`${r.tool_calls ?? 0} structured outputs`}><SpecialistChain run={r} verdict={verdictFor(view, r.stage === "DIAGNOSIS" ? "diagnosis" : "intervention")} stage={r.stage} /></Section>) : <EmptyState title="No specialist runs" body={runtime.available ? "Runs are admitted by the lifecycle service when a stage needs reasoning." : "The reasoning runtime is not connected; durable evidence still accumulates."} />}
+                  </div>
+                ) : null}
                 {tab === "evidence" ? <Section label="Frozen evidence packet" meta={`${(view.evidence || []).length} records`}><EvidenceSlots evidence={view.evidence || []} blocked={phaseOf(selected) === "AWAITING_EVIDENCE"} /></Section> : null}
                 {tab === "console" ? <AgentConsole entries={console_} runtime={runtime} /> : null}
               </>
@@ -91,8 +96,18 @@ export function AgentPage() {
 
           {/* right: runs, recommendations, transitions */}
           <div className="agent-col">
-            <Section label="Specialist runs" meta={`${runtime.runs.length} · ${runtime.toolCalls} structured outputs`}>
-              {runtime.runs.length ? runtime.runs.map((r) => <SpecialistChain key={r.run_id} run={r} verdict={verdictFor(view, r.stage === "DIAGNOSIS" ? "diagnosis" : "intervention")} stage={r.stage} compact />) : <EmptyState compact title="No runs recorded" body={runtime.available ? "Runs are admitted by the lifecycle service when a stage needs reasoning." : "The reasoning runtime is not connected; durable evidence still accumulates."} />}
+            <Section label="Specialist runs" meta={`${runtime.runs.length} · ${runtime.toolCalls} structured outputs`} flush>
+              {runtime.runs.length ? (
+                <div className="ctx-list">
+                  {runtime.runs.map((r) => (
+                    <Inspectable key={r.run_id} id={r.artifact_id} className="ctx-row" as="div">
+                      <Dot tone={String(r.status).toUpperCase() === "RUNNING" ? "warn" : (r.stale_reasons || []).length ? "crit" : "adv"} dashed />
+                      <span className="ctx-row-text"><span>{STAGE_LABEL[r.stage] || words(r.stage || "run")}</span><small className="truncate">{words(r.disposition || r.status || "")} · {(r.delegations || []).length} delegations · {r.tool_calls ?? 0} outputs</small></span>
+                      <button type="button" className="link-btn" onClick={(e) => { e.stopPropagation(); setTab("runs"); }}>Open</button>
+                    </Inspectable>
+                  ))}
+                </div>
+              ) : <div className="menu-empty t3">{runtime.available ? "No runs admitted yet." : "Reasoning runtime not connected."}</div>}
             </Section>
             <Section label="Recommendations">
               {view.diagnosis || view.intervention ? (

@@ -261,6 +261,8 @@
   gap: 4px;
   color: var(--ok);
 }
+.ch-status.warn { color: var(--warn); }
+.ch-status.normal { color: var(--text-3); }
 
 .nominal-modes-grid {
   display: grid;

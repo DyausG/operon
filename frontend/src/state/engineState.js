@@ -39,6 +39,18 @@ export function applySnapshot(prev, s) {
   const restarted = demo.active && demo.status === "factory_healthy" && Object.keys(alerts).length === 0 &&
     !(prev.demoScenario.active && prev.demoScenario.status === "factory_healthy");
   const leftDemo = prev.demoScenario.active && !demo.active;
+  // Observed transitions between consecutive snapshots: alert phase changes and demo milestones.
+  let eventLog = prev.eventLog || [];
+  const stamp = (entry) => { const seq = (eventLog[0]?.seq || 0) + 1; eventLog = [{ seq, at: new Date().toISOString(), ...entry }].concat(eventLog).slice(0, EVENT_LOG_CAP); };
+  if (demo.active && demo.status && demo.status !== prev.demoScenario?.status) stamp({ kind: "demo", status: demo.status, phase: demo.phase, id: demo.equipment_id });
+  if (!(restarted || leftDemo)) {
+    for (const a of Object.values(alerts)) {
+      const before = prev.alerts?.[a.equipment_id];
+      const prevPhase = before ? (before.lifecycle?.phase || before.status || null) : null;
+      const phase = a.lifecycle?.phase || a.status || null;
+      if (phase && phase !== prevPhase) stamp({ kind: "alert", id: a.equipment_id, incidentId: a.incident_id, phase, from: prevPhase, reason: a.lifecycle?.last_reason || null });
+    }
+  }
   return {
     ...prev,
     connected: true,
@@ -61,6 +73,7 @@ export function applySnapshot(prev, s) {
     supervisorAvailable: s.supervisor_available,
     generation: prev.generation + (restarted || leftDemo ? 1 : 0),
     frames: prev.frames + 1,
+    eventLog,
   };
 }
 

@@ -5,10 +5,11 @@ import { num } from "../lib/format.js";
 
 const PAD = { l: 36, r: 12, t: 10, b: 22 };
 
-function niceTicks(min, max, n = 4) {
+function niceTicks(min, max, n = 4, integer = false) {
   if (!(max > min)) return [min];
   const span = max - min, raw = span / n, mag = 10 ** Math.floor(Math.log10(raw));
-  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => span / s <= n + 1) || mag;
+  let step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => span / s <= n + 1) || mag;
+  if (integer) step = Math.max(1, Math.round(step));
   const out = [];
   for (let v = Math.ceil(min / step) * step; v <= max + 1e-9; v += step) out.push(+v.toFixed(6));
   return out;
@@ -42,7 +43,7 @@ export function LineChart({ series = [], width = 640, height = 220, yMin = 0, yM
         <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={ariaLabel} onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
           <g className="chart-grid">{ticks.map((v) => <line key={v} x1={PAD.l} x2={width - PAD.r} y1={y(v)} y2={y(v)} />)}</g>
           {ticks.map((v) => <text key={`t${v}`} x={PAD.l - 6} y={y(v) + 3} textAnchor="end" className="chart-t">{formatValue(v)}</text>)}
-          {thresholds.map((th) => <g key={th.label}><line x1={PAD.l} x2={width - PAD.r} y1={y(th.value)} y2={y(th.value)} className={`chart-thresh ${th.tone}`} /><text x={width - PAD.r} y={y(th.value) - 4} textAnchor="end" className="chart-t">{th.label}</text></g>)}
+          {thresholds.map((th) => <g key={th.label}><line x1={PAD.l} x2={width - PAD.r} y1={y(th.value)} y2={y(th.value)} className={`chart-thresh ${th.tone}`} /><text x={PAD.l + 4} y={y(th.value) - 4} className="chart-t">{th.label}</text></g>)}
           <line x1={PAD.l} x2={width - PAD.r} y1={y(lo)} y2={y(lo)} className="chart-axis" />
           {visible.map((s) => {
             const pts = s.points.filter((p) => p.v != null);
@@ -82,8 +83,10 @@ export function BarChart({ items = [], height = 180, width = 420, formatValue = 
   const [hover, setHover] = useState(null);
   if (!items.length || items.every((i) => !i.n)) return <div className="chart-empty">{emptyLabel}</div>;
   const max = Math.max(...items.map((i) => i.n), 1);
-  const ticks = niceTicks(0, max, 3);
+  const integer = items.every((i) => Number.isInteger(i.n));
+  const ticks = niceTicks(0, max, 3, integer);
   const bw = (width - PAD.l - PAD.r) / items.length;
+  const maxChars = Math.max(6, Math.floor(bw / 6.5));
   const y = (v) => PAD.t + (1 - v / (ticks[ticks.length - 1] || max)) * (height - PAD.t - PAD.b);
   return (
     <div className="chart">
@@ -98,7 +101,7 @@ export function BarChart({ items = [], height = 180, width = 420, formatValue = 
               <g key={it.key} onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)}>
                 <rect x={bx} y={top} width={w} height={h} className={`chart-bar ${it.tone ? `tone-${it.tone}` : "s-1"}`} rx="2" />
                 <rect x={PAD.l + i * bw} y={PAD.t} width={bw} height={height - PAD.t - PAD.b} className="chart-hit" />
-                <text x={bx + w / 2} y={height - 6} textAnchor="middle" className="chart-t">{it.label.length > 12 ? `${it.label.slice(0, 11)}…` : it.label}</text>
+                <text x={bx + w / 2} y={height - 6} textAnchor="middle" className="chart-t">{it.label.length > maxChars ? `${it.label.slice(0, maxChars - 1)}…` : it.label}</text>
                 {it.n ? <text x={bx + w / 2} y={top - 4} textAnchor="middle" className="chart-t">{formatValue(it.n)}</text> : null}
               </g>
             );

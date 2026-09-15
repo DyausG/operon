@@ -133,7 +133,8 @@ function TopBar({ state, actions, onMenu, phone }) {
   const segment = location.pathname.split("/")[2] || "dashboard";
   const demo = state.demoScenario || {}, prov = state.reasoningProvenance || {};
   const clockText = demo.active ? elapsed(demo.elapsed_seconds) : `+${String(Math.floor((state.plantMin || 0) / 60)).padStart(2, "0")}:${String((state.plantMin || 0) % 60).padStart(2, "0")}`;
-  const bedrock = prov.status === "available" || prov.backend === "agentcore";
+  const available = prov.status === "available";
+  const provider = prov.model_provider ? String(prov.model_provider).replace("Amazon ", "") : prov.backend === "demo" ? "Typed fixture" : "Reasoning";
   return (
     <header className="topbar">
       {phone ? <button type="button" className="btn btn-quiet btn-icon" onClick={onMenu} aria-label="Open navigation">{Icons.menu({})}</button> : null}
@@ -145,7 +146,7 @@ function TopBar({ state, actions, onMenu, phone }) {
       <div className="tb-right">
         <div className="tb-badges">
           <span className="hdr-badge badge-gate" title="Human-in-the-loop governance: automated actions require human sign-off">{Icons.shield({ size: 12 })}<span>Policy gate · HITL</span></span>
-          <span className={`hdr-badge badge-bedrock ${bedrock ? "online" : "standby"}`} title={bedrock ? `${prov.runtime} connected` : "Reasoning runtime in local standby; deterministic trajectories"}><span className="status-dot" /><span>{bedrock ? "Bedrock · connected" : "Bedrock · standby"}</span></span>
+          <span className={`hdr-badge badge-bedrock ${available ? "online" : "standby"}`} title={`Reasoning backend ${prov.backend || "none"} · ${prov.runtime || "no runtime"} · ${prov.status || "unknown"}`}><span className="status-dot" /><span>{provider} · {available ? "available" : "standby"}</span></span>
         </div>
         <span className="hdr-clock" title={demo.active ? "Scripted scenario elapsed" : "Plant operating time"}>{clockText}</span>
         <span className={`activity ${!state.connected ? "off" : "on"}`} title={state.connected ? "Telemetry stream connected" : "Reconnecting"} />
