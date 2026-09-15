@@ -1,5 +1,5 @@
-.tray-backdrop { position: fixed; left: 0; right: 0; top: var(--stage-top); bottom: 0; height: calc(100vh - var(--stage-top)); background: rgba(6, 8, 10, .45); z-index: 20; }
-.tray { position: fixed; right: 0; top: var(--stage-top); bottom: 0; height: calc(100vh - var(--stage-top)); width: var(--tray-w); max-width: 100vw; background: var(--surface-3); box-shadow: var(--shadow-overlay); z-index: 21; display: flex; flex-direction: column; overflow: hidden; }
+.tray-backdrop { position: fixed; inset: 0; background: var(--backdrop); z-index: 40; }
+.tray { position: fixed; right: 0; top: 0; bottom: 0; height: 100vh; width: var(--tray-w); max-width: 100vw; background: var(--surface-3); box-shadow: var(--shadow-overlay); z-index: 41; display: flex; flex-direction: column; overflow: hidden; }
 .tray-record { width: 460px; }
 .tray-record .col-record { display: flex; height: 100%; background: var(--surface-3); }
 .tray-record .tray-close { position: absolute; top: 4px; right: 8px; z-index: 2; }

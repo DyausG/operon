@@ -1,196 +1,76 @@
-import { useEffect, useMemo, useState } from "react";
-import { useEngine } from "./state/useEngine.js";
-import { focusAsset, rowIndex, viewOf, TERMINAL } from "./state/selectors.js";
-import { ArtifactProvider, useInspector } from "./state/artifacts.jsx";
-import { CommandHeader } from "./features/CommandHeader.jsx";
-import { KpiDeck } from "./features/KpiDeck.jsx";
-import { FleetStrip } from "./features/FleetStrip.jsx";
-import { ProcessLine } from "./features/ProcessLine.jsx";
-import { SignalColumn } from "./features/SignalColumn.jsx";
-import { OperationColumn } from "./features/Operation/OperationColumn.jsx";
-import { Record } from "./features/Record.jsx";
-import { InspectorTray } from "./features/Inspector/Tray.jsx";
-import { Icons } from "./primitives/index.jsx";
+// Root: providers + router. Engine state is mirrored once; pages read it through context.
+import { BrowserRouter, MemoryRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { EngineProvider } from "./state/engine.jsx";
+import { SessionProvider, useSession } from "./state/session.jsx";
+import { ThemeProvider } from "./state/theme.jsx";
+import { SettingsProvider } from "./state/settings.jsx";
+import { NotificationsProvider } from "./state/notifications.jsx";
+import { AppShell } from "./app/AppShell.jsx";
+import { ROUTES } from "./app/routes.js";
+import { LoginPage } from "./pages/LoginPage.jsx";
+import { DashboardPage } from "./pages/DashboardPage.jsx";
+import { MachinesPage } from "./pages/MachinesPage.jsx";
+import { MachineDetailPage } from "./pages/MachineDetailPage.jsx";
+import { IncidentsPage } from "./pages/IncidentsPage.jsx";
+import { IncidentDetailPage } from "./pages/IncidentDetailPage.jsx";
+import { AgentPage } from "./pages/AgentPage.jsx";
+import { MaintenancePage } from "./pages/MaintenancePage.jsx";
+import { AnalyticsPage } from "./pages/AnalyticsPage.jsx";
+import { ActivityPage } from "./pages/ActivityPage.jsx";
+import { NotificationsPage } from "./pages/NotificationsPage.jsx";
+import { ProfilePage } from "./pages/ProfilePage.jsx";
+import { SettingsPage } from "./pages/SettingsPage.jsx";
 
-export default function App({ engine }) {
-  const live = useEngine();
-  const { state, approve, reject, reset, stop, resume, startDemo, clearError } = engine || live;
-  return <Shell state={state} actions={{ approve, reject, reset, stop, resume, startDemo, clearError }} />;
+function RequireAuth({ children }) {
+  const { signedIn } = useSession();
+  const location = useLocation();
+  if (!signedIn) return <Navigate to={ROUTES.login} replace state={{ from: location.pathname + location.search + location.hash }} />;
+  return children;
 }
 
-/** Deep link: open the inspector on load for #artifact=<id> (handy for recording and sharing). */
-function DeepLink({ ready }) {
-  const insp = useInspector();
-  useEffect(() => {
-    if (!ready || typeof location === "undefined") return;
-    const m = /#artifact=([^&]+)/.exec(location.hash || "");
-    if (m) insp.open(decodeURIComponent(m[1]));
-  }, [ready]); // eslint-disable-line react-hooks/exhaustive-deps
-  return null;
-}
-
-export function Shell({ state, actions }) {
-  const [selected, setSelected] = useState(null);
-  const [selectedIncident, setSelectedIncident] = useState(null);
-  const [manualMode, setManualMode] = useState(null);
-  const [recordOpen, setRecordOpen] = useState(false);
-
-  useEffect(() => {
-    setSelected(null);
-    setSelectedIncident(null);
-    setManualMode(null);
-  }, [state.generation]);
-
-  const focusId = focusAsset(state, selected);
-
-  // Filter alerts for the currently focused machine
-  const machineAlerts = useMemo(() => {
-    return Object.values(state.alerts || {}).filter((a) => a.equipment_id === focusId);
-  }, [state.alerts, focusId]);
-
-  const activeAlerts = useMemo(() => {
-    return machineAlerts.filter((a) => {
-      const p = a.lifecycle?.phase || a.status;
-      return p && !TERMINAL.has(p);
-    });
-  }, [machineAlerts]);
-
-  const pastAlerts = useMemo(() => {
-    return machineAlerts.filter((a) => {
-      const p = a.lifecycle?.phase || a.status;
-      return p && TERMINAL.has(p);
-    });
-  }, [machineAlerts]);
-
-  // Smart view mode:
-  // - If operator manually clicked a tab for this machine, respect it
-  // - Otherwise:
-  //   1. If active incident exists -> "ACTIVE"
-  //   2. If no active incident, but closed/past incident exists -> "PAST"
-  //   3. If no incidents exist at all -> "NOMINAL"
-  const viewMode = useMemo(() => {
-    if (manualMode && manualMode.assetId === focusId) {
-      return manualMode.mode;
-    }
-    if (activeAlerts.length > 0) return "ACTIVE";
-    if (pastAlerts.length > 0) return "PAST";
-    return "NOMINAL";
-  }, [manualMode, focusId, activeAlerts.length, pastAlerts.length]);
-
-  // Derive target incident based strictly on the effective view mode
-  let currentIncident = null;
-  if (viewMode === "ACTIVE") {
-    if (activeAlerts.length > 0) {
-      currentIncident = (selectedIncident && activeAlerts.some((a) => (a.id || a.incident_id) === (selectedIncident.id || selectedIncident.incident_id)))
-        ? selectedIncident
-        : activeAlerts[0];
-    }
-  } else if (viewMode === "PAST") {
-    if (pastAlerts.length > 0) {
-      currentIncident = (selectedIncident && pastAlerts.some((a) => (a.id || a.incident_id) === (selectedIncident.id || selectedIncident.incident_id)))
-        ? selectedIncident
-        : pastAlerts[0];
-    }
-  } else {
-    // viewMode === "NOMINAL"
-    currentIncident = null;
-  }
-
-  const view = viewOf(currentIncident);
-  const index = useMemo(() => rowIndex(view), [view]);
-  const hasIncident = activeAlerts.length > 0;
-
-  const handleSelectAsset = (id) => {
-    setSelected(id);
-    setSelectedIncident(null);
-    setManualMode(null); // trigger smart mode derivation for the newly selected machine
-  };
-
-  const handleSelectMode = (mode) => {
-    setManualMode({ assetId: focusId, mode });
-    if (mode === "PAST" && pastAlerts.length > 0) {
-      setSelectedIncident(pastAlerts[0]);
-    } else if (mode === "ACTIVE" && activeAlerts.length > 0) {
-      setSelectedIncident(activeAlerts[0]);
-    } else {
-      setSelectedIncident(null);
-    }
-  };
-
-  const handleSelectIncident = (inc) => {
-    setSelectedIncident(inc);
-  };
-
-  const handleStartDemo = (id) => {
-    setSelected(id);
-    setSelectedIncident(null);
-    setManualMode({ assetId: id, mode: "ACTIVE" });
-    actions.startDemo(id);
-  };
-
-  const handleReset = () => {
-    setSelected(null);
-    setSelectedIncident(null);
-    setManualMode(null);
-    actions.reset();
-  };
-
+export function Providers({ engine, session, settings, theme, children }) {
   return (
-    <ArtifactProvider generation={state.generation} rowIndex={index}>
-      <DeepLink ready={state.frames > 0} />
-      <div className="app">
-        <CommandHeader
-          state={state}
-          focusId={focusId}
-          onDemo={handleStartDemo}
-          onReset={handleReset}
-          onStop={actions.stop}
-          onResume={actions.resume}
-          onToggleRecord={() => setRecordOpen((v) => !v)}
-          recordOpen={recordOpen}
-        />
-        <KpiDeck state={state} />
-        <FleetStrip state={state} focusId={focusId} onSelect={handleSelectAsset} hasIncident={hasIncident} />
-        <ProcessLine incident={currentIncident} state={state} />
-        <main className="stage">
-          <SignalColumn state={state} focusId={focusId} incident={currentIncident} />
-          <OperationColumn
-            state={state}
-            incident={currentIncident}
-            focusId={focusId}
-            approve={actions.approve}
-            reject={actions.reject}
-            onSelect={handleSelectAsset}
-            viewMode={viewMode}
-            onSelectMode={handleSelectMode}
-            onSelectIncident={handleSelectIncident}
-          />
-          <Record view={view} incident={currentIncident} state={state} />
-        </main>
-        <InspectorTray view={view} incident={currentIncident} />
-        {recordOpen ? (
-          <div className="tray tray-record" role="dialog" aria-label="Record">
-            <button
-              type="button"
-              className="tray-close btn btn-quiet btn-icon"
-              onClick={() => setRecordOpen(false)}
-              aria-label="Close record"
-            >
-              {Icons.close({})}
-            </button>
-            <Record view={view} incident={currentIncident} state={state} className="col-record-tray" />
-          </div>
-        ) : null}
-        {state.action.error ? (
-          <div className="hdr-error" role="alert">
-            {Icons.warn({})}
-            <span>Action refused: {state.action.error}</span>
-            <button type="button" className="btn btn-quiet btn-small" onClick={actions.clearError}>
-              Dismiss
-            </button>
-          </div>
-        ) : null}
-      </div>
-    </ArtifactProvider>
+    <ThemeProvider initialMode={theme}>
+      <SettingsProvider initialSettings={settings}>
+        <SessionProvider initialSession={session}>
+          <EngineProvider engine={engine}>
+            <NotificationsProvider>{children}</NotificationsProvider>
+          </EngineProvider>
+        </SessionProvider>
+      </SettingsProvider>
+    </ThemeProvider>
   );
+}
+
+export function AppRoutes() {
+  return (
+    <Routes>
+      <Route path={ROUTES.login} element={<LoginPage />} />
+      <Route path={ROUTES.app} element={<RequireAuth><AppShell /></RequireAuth>}>
+        <Route index element={<Navigate to={ROUTES.dashboard} replace />} />
+        <Route path="dashboard" element={<DashboardPage />} />
+        <Route path="machines" element={<MachinesPage />} />
+        <Route path="machines/:id" element={<MachineDetailPage />} />
+        <Route path="incidents" element={<IncidentsPage />} />
+        <Route path="incidents/:id" element={<IncidentDetailPage />} />
+        <Route path="agent" element={<AgentPage />} />
+        <Route path="maintenance" element={<MaintenancePage />} />
+        <Route path="analytics" element={<AnalyticsPage />} />
+        <Route path="activity" element={<ActivityPage />} />
+        <Route path="notifications" element={<NotificationsPage />} />
+        <Route path="profile" element={<ProfilePage />} />
+        <Route path="settings" element={<SettingsPage />} />
+        <Route path="*" element={<Navigate to={ROUTES.dashboard} replace />} />
+      </Route>
+      <Route path="*" element={<Navigate to={ROUTES.dashboard} replace />} />
+    </Routes>
+  );
+}
+
+/** Browser entry. `engine` lets a harness inject a pre-built engine; `router="memory"` with
+ *  `initialEntries` renders a route without a DOM history (server-side smoke test). */
+export default function App({ engine, session, settings, theme, router = "browser", initialEntries }) {
+  const tree = <Providers engine={engine} session={session} settings={settings} theme={theme}><AppRoutes /></Providers>;
+  if (router === "memory") return <MemoryRouter initialEntries={initialEntries || [ROUTES.dashboard]}>{tree}</MemoryRouter>;
+  return <BrowserRouter>{tree}</BrowserRouter>;
 }

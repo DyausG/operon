@@ -1,7 +1,7 @@
 import { IdToken } from "../primitives/index.jsx";
 import { processModel } from "../state/selectors.js";
 
-export function ProcessLine({ incident, state }) {
+export function ProcessLine({ incident, state, tools = null }) {
   const model = processModel(incident, state);
   const branchAt = model.branch ? model.index : -1;
   return (
@@ -22,6 +22,7 @@ export function ProcessLine({ incident, state }) {
           <span className="lbl">Revision</span><span className="mono t2">{incident.lifecycle?.revision ?? "—"}</span>
         </div>
       ) : null}
+      {tools ? <div className="proc-tools">{tools}</div> : null}
     </div>
   );
 }

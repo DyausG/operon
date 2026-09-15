@@ -17,6 +17,11 @@ import "./styles/signal.css";
 import "./styles/stage.css";
 import "./styles/record.css";
 import "./styles/inspector.css";
+import "./styles/app-shell.css";
+import "./styles/components.css";
+import "./styles/pages.css";
+import "./styles/login.css";
+import "./styles/charts.css";
 import App from "./App.jsx";
 
 ReactDOM.createRoot(document.getElementById("root")).render(

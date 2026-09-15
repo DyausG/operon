@@ -1,4 +1,6 @@
+import { Link } from "react-router-dom";
 import { Swap } from "../../motion/index.jsx";
+import { ROUTES } from "../../app/routes.js";
 import { OwnerChip, ClassIcon } from "../../primitives/index.jsx";
 import { ownerOf, phaseOf, phaseTitle, viewOf, EXCEPTIONAL, last } from "../../state/selectors.js";
 import { risk as fmtRisk } from "../../lib/format.js";
@@ -48,6 +50,8 @@ export function OperationColumn({
   viewMode = "ACTIVE",
   onSelectMode,
   onSelectIncident,
+  links = false,
+  showSwitcher = true,
 }) {
   const view = viewOf(incident);
   const phase = phaseOf(incident);
@@ -101,14 +105,16 @@ export function OperationColumn({
 
   return (
     <section className="col col-op" aria-label="Operation">
-      <IncidentSwitcher
-        state={state}
-        focusId={focusId}
-        incident={incident}
-        selectedMode={viewMode}
-        onSelectMode={onSelectMode}
-        onSelectIncident={onSelectIncident}
-      />
+      {showSwitcher ? (
+        <IncidentSwitcher
+          state={state}
+          focusId={focusId}
+          incident={incident}
+          selectedMode={viewMode}
+          onSelectMode={onSelectMode}
+          onSelectIncident={onSelectIncident}
+        />
+      ) : null}
       <div className="state">
         <div className="state-main">
           <h1 className="state-phase">{titleText}</h1>
@@ -122,6 +128,13 @@ export function OperationColumn({
               <span className="truncate">{asset.name}</span>
               <span className="t4">·</span>
               <span className="mono">{asset.equipment_id}</span>
+            </span>
+          ) : null}
+          {links ? (
+            <span className="state-links">
+              {asset ? <Link to={ROUTES.machine(asset.equipment_id)}>Machine detail</Link> : null}
+              {incident?.incident_id ? <Link to={ROUTES.incident(incident.incident_id)}>Incident detail</Link> : null}
+              {incident?.incident_id ? <Link to={`${ROUTES.agent}?incident=${encodeURIComponent(incident.incident_id)}`}>Agent workspace</Link> : null}
             </span>
           ) : null}
         </div>

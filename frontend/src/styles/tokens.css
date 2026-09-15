@@ -1,5 +1,9 @@
-/* Operon design tokens — approved direction: cool graphite, grey-is-normal, one brand color. */
+/* Operon design tokens — cool graphite, grey-is-normal, one brand color.
+   Dark is the native identity and the default. Light is a designed palette, not an inversion:
+   the same roles (surface, well, hairline, edge, text, brand, status, chart) with their own steps.
+   The resolved theme is always stamped as data-theme on <html> by ThemeProvider. */
 :root {
+  /* surfaces: 0 page · 1 panel · 2 raised · 3 overlay · well recessed */
   --surface-0: #131619;
   --surface-1: #191D21;
   --surface-2: #1F2428;
@@ -9,6 +13,8 @@
   --hair-l: rgba(255, 255, 255, 0.06);
   --edge: #30363D;
   --edge-strong: #3C434B;
+  --sheen: rgba(255, 255, 255, 0.03);
+  --btn-sheen: rgba(255, 255, 255, 0.25);
 
   --text-1: #EDEFF1;
   --text-2: #B6BDC5;
@@ -20,6 +26,7 @@
   --brand-ink: #0B1513;
   --brand-tint: rgba(47, 163, 154, 0.16);
   --brand-text: #7FD6CE;
+  --brand-edge: rgba(47, 163, 154, 0.35);
 
   --advisory: #8FA3C8;
   --advisory-tint: rgba(143, 163, 200, 0.14);
@@ -28,16 +35,36 @@
 
   --warn: #E5A23A;
   --warn-tint: rgba(229, 162, 58, 0.12);
+  --warn-edge: rgba(229, 162, 58, 0.4);
   --crit: #E8543A;
   --crit-tint: rgba(232, 84, 58, 0.12);
   --ok: #3FB27F;
   --ok-tint: rgba(63, 178, 127, 0.14);
+  --ok-glow: rgba(63, 178, 127, 0.45);
+  --info: #6FA6DC;
+  --info-tint: rgba(111, 166, 220, 0.14);
   --normal: #7E8791;
 
   --hatch: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.10) 0 1.5px, transparent 1.5px 5px);
   --hatch-brand: repeating-linear-gradient(135deg, var(--brand) 0 3px, transparent 3px 6px);
   --hatch-crit: repeating-linear-gradient(135deg, rgba(232, 84, 58, .55) 0 2px, transparent 2px 6px);
   --dotgrid: radial-gradient(rgba(255, 255, 255, 0.07) 0.6px, transparent 0.7px);
+  --grid-dot: rgba(255, 255, 255, 0.07);
+
+  /* charts: validated categorical slots (dataviz method, adjacent pairs, dark surface #191D21) */
+  --chart-1: #2FA39A;
+  --chart-2: #D95926;
+  --chart-3: #9085E9;
+  --chart-grid: #232930;
+  --chart-axis: #3C434B;
+  --chart-muted: #4F5761;
+  --chart-band-crit: rgba(232, 84, 58, 0.06);
+  --chart-band-warn: rgba(229, 162, 58, 0.05);
+
+  --shadow-overlay: -24px 0 48px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--hair-d);
+  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.4), 0 0 0 1px var(--hair-d);
+  --shadow-tab: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --backdrop: rgba(6, 8, 10, 0.45);
 
   --font-ui: "IBM Plex Sans", system-ui, "Segoe UI", Roboto, sans-serif;
   --font-cond: "IBM Plex Sans Condensed", "IBM Plex Sans", system-ui, sans-serif;
@@ -60,8 +87,13 @@
   --dur-instant: 80ms; --dur-quick: 120ms; --dur-std: 200ms; --dur-deliberate: 320ms; --dur-slow: 480ms;
   --ease: cubic-bezier(.2, .7, .2, 1);
 
-  --shadow-overlay: -24px 0 48px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--hair-d);
+  /* application shell */
+  --sidebar-w: 224px;
+  --sidebar-rail: 56px;
+  --topbar-h: 52px;
+  --page-x: 20px;
 
+  /* operations board (dashboard) */
   --row-h: 30px;
   --header-h: 56px;
   --kpi-h: 46px;
@@ -72,6 +104,74 @@
   --col-record: 420px;
   --tray-w: 720px;
 }
+
+:root[data-theme="light"] {
+  --surface-0: #E8EBEF;
+  --surface-1: #F3F5F7;
+  --surface-2: #FFFFFF;
+  --surface-3: #FFFFFF;
+  --well: #DEE2E7;
+  --hair-d: #CCD2D9;
+  --hair-l: rgba(255, 255, 255, 0.7);
+  --edge: #BAC2CB;
+  --edge-strong: #98A2AD;
+  --sheen: rgba(255, 255, 255, 0.6);
+  --btn-sheen: rgba(255, 255, 255, 0.5);
+
+  --text-1: #14181C;
+  --text-2: #3A424A;
+  --text-3: #626C76;
+  --text-4: #949EA8;
+
+  --brand: #0E948A;
+  --brand-strong: #0B7F76;
+  --brand-ink: #06211E;
+  --brand-tint: rgba(14, 148, 138, 0.13);
+  --brand-text: #0B6F67;
+  --brand-edge: rgba(14, 148, 138, 0.4);
+
+  --advisory: #56699A;
+  --advisory-tint: rgba(86, 105, 154, 0.12);
+  --authority: #14181C;
+  --trusted: #5B6570;
+
+  --warn: #B4761A;
+  --warn-tint: rgba(180, 118, 26, 0.13);
+  --warn-edge: rgba(180, 118, 26, 0.45);
+  --crit: #C43E29;
+  --crit-tint: rgba(196, 62, 41, 0.11);
+  --ok: #26865B;
+  --ok-tint: rgba(38, 134, 91, 0.13);
+  --ok-glow: rgba(38, 134, 91, 0.35);
+  --info: #2F6FB3;
+  --info-tint: rgba(47, 111, 179, 0.12);
+  --normal: #626C76;
+
+  --hatch: repeating-linear-gradient(135deg, rgba(0, 0, 0, 0.08) 0 1.5px, transparent 1.5px 5px);
+  --hatch-crit: repeating-linear-gradient(135deg, rgba(196, 62, 41, .45) 0 2px, transparent 2px 6px);
+  --dotgrid: radial-gradient(rgba(0, 0, 0, 0.10) 0.6px, transparent 0.7px);
+  --grid-dot: rgba(0, 0, 0, 0.10);
+
+  /* validated against the light panel surface #F3F5F7 */
+  --chart-1: #0E948A;
+  --chart-2: #EB6834;
+  --chart-3: #4A3AA7;
+  --chart-grid: #DDE2E7;
+  --chart-axis: #BAC2CB;
+  --chart-muted: #AEB7C0;
+  --chart-band-crit: rgba(196, 62, 41, 0.07);
+  --chart-band-warn: rgba(180, 118, 26, 0.07);
+
+  --shadow-overlay: -24px 0 48px rgba(20, 24, 28, 0.18), 0 0 0 1px var(--hair-d);
+  --shadow-pop: 0 8px 24px rgba(20, 24, 28, 0.16), 0 0 0 1px var(--hair-d);
+  --shadow-tab: 0 1px 2px rgba(20, 24, 28, 0.12);
+  --backdrop: rgba(20, 24, 28, 0.32);
+}
+
+:root[data-density="compact"] {
+  --size-ui: 12.5px; --size-body: 13px; --row-h: 26px; --page-x: 16px;
+}
+
 @media (max-width: 1680px) {
   :root { --col-signal: 400px; --col-record: 360px; --tray-w: 640px; --size-readout-l: 52px; }
 }

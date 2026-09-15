@@ -60,7 +60,7 @@ export function SignalColumn({ state, focusId, incident }) {
         </div>
         <div className="sig-band well" onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
           <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label="Failure risk over time">
-            <defs><pattern id="sig-grid" width="8" height="8" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r=".6" fill="rgba(255,255,255,.07)" /></pattern></defs>
+            <defs><pattern id="sig-grid" width="8" height="8" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r=".6" fill="var(--grid-dot)" /></pattern></defs>
             <rect x={PAD.l} y={PAD.t} width={W - PAD.l - PAD.r} height={H - PAD.t - PAD.b} fill="url(#sig-grid)" />
             <rect x={PAD.l} y={PAD.t} width={W - PAD.l - PAD.r} height={y(trigger) - PAD.t} fill="var(--crit)" opacity=".06" />
             <rect x={PAD.l} y={y(trigger)} width={W - PAD.l - PAD.r} height={y(warn) - y(trigger)} fill="var(--warn)" opacity=".05" />

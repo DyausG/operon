@@ -3,6 +3,10 @@
 import { build } from "esbuild";
 import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import React from "react";
+
+// react-router's history listener uses useLayoutEffect; on the server it is a no-op and React warns.
+React.useLayoutEffect = React.useEffect;
 
 mkdirSync("test/.out", { recursive: true });
 await build({
