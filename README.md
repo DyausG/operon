@@ -347,6 +347,15 @@ recipe, MCP setup, and A2A peers.
 
 ---
 
+## PRISM interruptible runtime (Stage 1)
+
+Operator messages (`POST /api/prism/sessions/{id}/messages`) are acknowledged immediately by a
+deterministic Fast Path and reasoned about by a per-revision Slow Path; a newer message
+supersedes the running revision and an atomic commit fence guarantees stale results never
+become canonical, even across restarts. The Agent workspace shows session, revision, Fast/Slow
+Path state, supersession, stale-result and recovery indicators. Deterministic verification:
+`uv run python scripts/prism_interruption_check.py`. Details: `docs/PRISM_RUNTIME.md`.
+
 ## Portal routes
 
 The dashboard is a multi-page portal: `/login` (browser-local demo session; the host has no

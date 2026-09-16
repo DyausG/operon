@@ -66,7 +66,22 @@ export function run(frames, artifacts) {
     s = reduce(s, { type: "alert", alert: { ...Object.values(s.alerts)[0], lifecycle: { ...Object.values(s.alerts)[0].lifecycle, phase: "ESCALATED" } }, phase: "ESCALATED" });
     s = reduce(s, { type: "failure", equipment_id: "PRESS-08", result: { loss: 1 } });
     s = reduce(s, { type: "error", equipment_id: "AC-COMP-01", error: "stale intent" });
-    if (s.eventLog.length < 4) throw new Error("event log not populated");
+    // PRISM (Stage 1) versioned envelope: durable session view + event; the Agent page renders the panel.
+    const inc = Object.values(s.alerts)[0]?.incident_id || null;
+    const prismSession = { session_id: "11111111-2222-3333-4444-555555555555", incident_id: inc, status: "ACTIVE", current_revision: 2, canonical_revision: 1, canonical_current: false,
+      fast_path: { status: "accepted_superseding", message: "Acknowledged as revision 2", latency_ms: 3.2, revision: 2, superseded_revision: 1, deeper_reasoning: "scheduled" },
+      slow_path: { run_id: "aaaaaaaa-0000-0000-0000-000000000002", revision: 2, attempt: 1, status: "RUNNING", stale: false },
+      active_run: { run_id: "aaaaaaaa-0000-0000-0000-000000000002", revision: 2, attempt: 1, status: "RUNNING", stale: false },
+      runtime_state: "superseding", interruption: { superseded_revision: 1, superseded_by: 2, run_ids: ["aaaaaaaa-0000-0000-0000-000000000001"], at: "2026-09-16T09:00:00Z", still_running: ["aaaaaaaa-0000-0000-0000-000000000001"] },
+      stale_results: 1, stale_run_ids: ["aaaaaaaa-0000-0000-0000-000000000001"], superseded_runs: 1, cancelled_runs: 0, last_failure: null,
+      recovery: { policy: "retry_current_revision", description: "policy retry_current_revision; revision retried as attempt 2" },
+      provenance: { adapter: "deterministic", provider: "none", model: null, live_model: false, provenance: "DETERMINISTIC" }, turn_count: 2, run_count: 2 };
+    s = reduce(s, { type: "prism", prism_version: 1, session: prismSession, event: { event_id: 9, session_id: prismSession.session_id, revision: 1, run_id: "aaaaaaaa-0000-0000-0000-000000000001", event_type: "stale_result_discarded", payload: { reason: "stale_revision" }, created_at: "2026-09-16T09:00:01Z" } });
+    if (!s.prism.sessions[prismSession.session_id] || s.prism.events[0].event_type !== "stale_result_discarded") throw new Error("prism reducer did not mirror the session");
+    if (!deriveAgentRuntime(incidentFor(s, focusAsset(s, null)), s).prism) throw new Error("agent runtime did not pick up the prism session");
+    const agentHtml = render(`/app/agent?incident=${inc}`, s);
+    if (!agentHtml.includes("PRISM session") || !agentHtml.includes("stale result")) throw new Error("PRISM panel not rendered");
+    if (s.eventLog.length < 5) throw new Error("event log not populated");
     const html = render("/app/notifications", s);
     if (!html.includes("ntf-row")) throw new Error("notifications not rendered");
     render("/app/activity", s);

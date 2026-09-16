@@ -1256,3 +1256,13 @@ Show concise findings and evidence references in the timeline, not an unrestrict
 
 The roadmap beyond the Step 13B checkpoint remains deferred; the implemented
 promotion and lifecycle boundaries are described at the start of this document.
+
+## PRISM interruptible runtime (Stage 1)
+
+`core/prism/` adds a session/revision/run model beside the incident lifecycle for the Samsung
+PRISM Theme 5 adaptation. Operator messages are accepted in one `BEGIN IMMEDIATE` transaction
+that advances the session revision, supersedes the previous revision's runs and persists a
+deterministic Fast Path acknowledgement; the Slow Path runs per revision and every result passes
+through the commit fence (`core/prism/fencing.py`), so a stale revision can never mutate
+canonical state, trigger an effect or touch incident authority. Events ride the existing `/ws`
+stream as an additive `prism` envelope. See `docs/PRISM_RUNTIME.md`.

@@ -19,6 +19,8 @@ export const initialState = {
   reasoningProvenance: {},
   action: { pending: null, error: null },
   demoScenario: { active: false },
+  // Samsung PRISM interruptible runtime (Stage 1): durable session views + versioned events, mirrored only.
+  prism: { version: 1, sessions: {}, events: [], slowPath: null, fastPath: null, recovered: null, metrics: null },
   lastEvent: null,
   eventLog: [],
   generation: 0,
@@ -69,6 +71,9 @@ export function applySnapshot(prev, s) {
     reasoningProvenance: s.reasoning_provenance || {},
     action: { pending: null, error: null },
     demoScenario: demo,
+    prism: s.prism ? { ...prev.prism, version: s.prism.prism_version ?? prev.prism.version,
+      sessions: Object.fromEntries((s.prism.sessions || []).map((x) => [x.session_id, x])),
+      slowPath: s.prism.slow_path || null, fastPath: s.prism.fast_path || null, recovered: s.prism.recovered ?? null, metrics: s.prism.metrics || null } : prev.prism,
     authorityPath: s.authority_path,
     supervisorAvailable: s.supervisor_available,
     generation: prev.generation + (restarted || leftDemo ? 1 : 0),
@@ -128,6 +133,15 @@ export function reduce(prev, msg) {
     }
     case "triage":
       return { ...prev, triage: msg.triage || prev.triage };
+    case "prism": {
+      // Additive versioned envelope: { event, session }. Sessions are replaced by the durable view the server sent.
+      const ev = msg.event || {}, session = msg.session;
+      const sessions = session?.session_id ? { ...prev.prism.sessions, [session.session_id]: session } : prev.prism.sessions;
+      const events = [ev].concat(prev.prism.events).slice(0, 200);
+      const notable = new Set(["interruption_received", "stale_result_discarded", "session_recovered", "run_failed", "canonical_state_updated"]);
+      return { ...prev, prism: { ...prev.prism, version: msg.prism_version ?? prev.prism.version, sessions, events },
+        eventLog: notable.has(ev.event_type) ? logged(prev, { kind: "prism", id: session?.incident_id || ev.session_id, sessionId: ev.session_id, revision: ev.revision, event: ev.event_type }) : prev.eventLog };
+    }
     case "failure": {
       const a = prev.alerts[msg.equipment_id];
       return { ...prev, alerts: a ? { ...prev.alerts, [msg.equipment_id]: { ...a, status: "FAILED", result: msg.result } } : prev.alerts,

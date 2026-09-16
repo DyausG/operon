@@ -181,8 +181,10 @@ def init_schema(path: Path | None = None) -> None:
         apply_migrations(conn)
 
 
-RELIABILITY_RESET_TABLES = ("execution_claim", "execution_receipt", "approval_decision", "incident_event",
-                            "incident_artifact", "incident")
+# PRISM session state (Stage 1) references incidents, so it is wiped first.
+PRISM_RESET_TABLES = ("prism_event", "prism_effect", "prism_run", "prism_turn", "prism_session")
+RELIABILITY_RESET_TABLES = PRISM_RESET_TABLES + ("execution_claim", "execution_receipt", "approval_decision",
+                                                 "incident_event", "incident_artifact", "incident")
 
 
 def reset_transactional() -> None:
