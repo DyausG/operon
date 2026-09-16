@@ -6,7 +6,6 @@ through disposable application guards; no Python pipeline drives specialist orde
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import Callable
 
@@ -20,7 +19,9 @@ from .contracts import (
     DelegationQuery, EvidenceFollowup, SpecialistContext, SupervisorBounds,
     SupervisorDecision, SupervisorResult,
 )
+from core.providers.errors import normalize_exception
 from .invocation import GROUNDING_PROMPT, trace_attributes
+from .rendering import model_message
 from .runtime import StrandsRuntime
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,18 @@ critic review of those inputs, and a grounded proposal with known risk metadata.
 preserve blockers, unknown constraints, missing evidence and the need for human review.
 Return SupervisorDecision; never fabricate delegations, evidence IDs or durable artifacts.
 """
+
+
+def model_failure_text(exc: BaseException, provider: str) -> str:
+    """Normalized, secret-free description of a model/provider failure for the run audit.
+
+    Vendor exceptions map onto ``ProviderError`` codes; anything else is named by
+    type only. The text is application-authored and never resembles advisory content.
+    """
+    error = normalize_exception(exc, provider=provider)
+    if error is not None:
+        return f"Model invocation failed [{error.provider}:{error.code}]: {error}"[:2000]
+    return f"Model invocation failed [{provider}:{type(exc).__name__}]: {str(exc)[:300]}".strip()
 
 
 def create_supervisor_agent(run: SupervisorRun) -> Agent:
@@ -124,13 +137,15 @@ async def supervise_reliability(runtime: StrandsRuntime, service: EvidenceServic
     run = SupervisorRun(runtime, specialist_runtime or runtime, service, scope, bounds)
     agent = create_supervisor_agent(run)
     decision, reason = None, "MODEL_COMPLETED"
+    # An explicit bound wins; otherwise the provider's run policy (local inference is slow).
+    run_timeout = bounds.timeout_seconds if bounds.timeout_seconds is not None else runtime.run_timeout()
     try:
         result = await asyncio.wait_for(
             agent.invoke_async(
-                json.dumps({"context": scope.model_dump(mode="json"), "bounds": bounds.model_dump(mode="json")}),
+                model_message({"context": scope, "bounds": bounds}),
                 invocation_state=run.invocation_state(),
                 limits=runtime.settings.invocation_limits() | {"turns": bounds.max_iterations},
-            ), timeout=bounds.timeout_seconds,
+            ), timeout=run_timeout,
         )
         if result.stop_reason.startswith("limit_"):
             run.exhausted.add(f"supervisor_{result.stop_reason}")
@@ -150,9 +165,10 @@ async def supervise_reliability(runtime: StrandsRuntime, service: EvidenceServic
         if cancellation_result_handler is not None:
             cancellation_result_handler(run.finish(None, "CANCELLED"))
         raise
-    except Exception:
+    except Exception as exc:
         logger.exception("supervisor model invocation failed")
         reason = "INVALID_OUTPUT" if run.invalid_output else "MODEL_FAILED"
+        run.errors.add(model_failure_text(exc, runtime.settings.provider))
     finally:
         run.closed = True
     return run.finish(decision, reason)

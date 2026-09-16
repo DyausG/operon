@@ -4,6 +4,8 @@ from unittest.mock import Mock
 
 import pytest
 
+from tests.conftest import prompt_context
+
 from core import config, engine as engine_module
 from core.agents.contracts import SpecialistContext
 from core.agents.runtime import RuntimeConfigurationError, StrandsRuntime
@@ -30,7 +32,7 @@ def lazy_decision(disposition):
     """Build the SupervisorDecision from the run context the supervisor was given."""
     def turn(messages):
         from tests.test_supervisor import decision
-        context = SpecialistContext.model_validate(json.loads(messages[0]["content"][0]["text"])["context"])
+        context = prompt_context(messages)
         return decision(context, disposition)(messages)
     return turn
 
@@ -175,20 +177,36 @@ async def test_packet_backend_requires_snapshot_and_refuses_mismatched_store(flo
     assert failure.value.code == "PACKET_INVALID" and not backend.runtime._model.calls
 
 
+def configure_bedrock(monkeypatch, **env):
+    """Point the provider registry at Bedrock with environment-only credential evidence."""
+    from core.providers import config_from_environment, reset
+    monkeypatch.setattr(config, "FORCE_DETERMINISTIC", False)
+    monkeypatch.setenv("AWS_PROFILE", "operon-test")
+    return reset(config_from_environment({"OPERON_AI_PROVIDER": "bedrock", "AWS_REGION": "us-east-1", **env}))
+
+
 def test_backend_from_environment_modes(monkeypatch):
     forbidden = Mock(side_effect=AssertionError("no AWS session at construction"))
-    monkeypatch.setattr("core.agents.runtime.boto3.Session", forbidden)
+    monkeypatch.setattr("boto3.Session", forbidden)
     monkeypatch.setenv("OPERON_REASONING_BACKEND", "none")
     assert backend_from_environment() is None
     monkeypatch.setenv("OPERON_REASONING_BACKEND", "local")
+    # No configured provider: never a silent fallback, the selection is refused loudly.
+    with pytest.raises(RuntimeConfigurationError, match="No model provider is configured") as refused:
+        backend_from_environment()
+    assert refused.value.code == "provider_not_configured"
+    registry = configure_bedrock(monkeypatch)
     local = backend_from_environment()
     assert isinstance(local, LocalStrandsBackend) and local.runtime.settings.live_enabled
+    assert local.runtime.settings.provider == "bedrock" and local.runtime.settings.aws_region == "us-east-1"
     assert local.runtime.settings.model_id == config.BEDROCK_SUPERVISOR_MODEL_ID and local.specialist_runtime is None
-    monkeypatch.setattr(config, "BEDROCK_SPECIALIST_MODEL_ID", "specialist-model")
+    assert local.identity()["supervisor"]["implementation"] == "strands.models.bedrock"
+    registry.config.specialist_model = "specialist-model"
     monkeypatch.setenv("OPERON_REASONING_BACKEND", "packet")
     packet = backend_from_environment()
     assert isinstance(packet, InProcessPacketBackend) and packet.specialist_runtime.settings.model_id == "specialist-model"
     assert packet.expected_identity().specialist_model_id == "specialist-model"
+    assert packet.expected_identity().region == "us-east-1"
     monkeypatch.setenv("OPERON_REASONING_BACKEND", "agentcore")
     with pytest.raises(RuntimeConfigurationError, match="OPERON_AGENTCORE_RUNTIME_ARN"):
         backend_from_environment()
@@ -202,17 +220,40 @@ def test_backend_from_environment_modes(monkeypatch):
     with pytest.raises(RuntimeConfigurationError, match="unknown"):
         backend_from_environment()
     monkeypatch.delenv("OPERON_REASONING_BACKEND")
-    assert config.reasoning_backend() == "none" and backend_from_environment() is None
-    monkeypatch.setattr(config, "agent_mode", lambda: "bedrock")
+    # Unset resolves from the active provider: configured -> local, none -> none.
     assert config.reasoning_backend() == "local" and isinstance(backend_from_environment(), LocalStrandsBackend)
+    monkeypatch.setattr(config, "agent_mode", lambda: "deterministic")
+    assert config.reasoning_backend() == "none" and backend_from_environment() is None
     forbidden.assert_not_called()
+
+
+def test_backend_from_environment_builds_gemini_and_ollama_runtimes(monkeypatch):
+    from core.providers import config_from_environment, reset
+    monkeypatch.setenv("OPERON_REASONING_BACKEND", "local")
+    reset(config_from_environment({"OPERON_AI_PROVIDER": "gemini", "GEMINI_API_KEY": "fake-key-for-tests-000000",
+                                   "OPERON_GEMINI_MODEL": "gemini-2.5-flash", "OPERON_SPECIALIST_MODEL_ID": "gemini-2.5-flash-lite"}))
+    local = backend_from_environment()
+    assert local.runtime.settings.provider == "gemini" and local.runtime.settings.model_id == "gemini-2.5-flash"
+    assert local.specialist_runtime.settings.model_id == "gemini-2.5-flash-lite"
+    assert local.identity()["specialists"]["settings"]["provider"] == "gemini"
+    assert "fake-key-for-tests" not in json.dumps(local.identity())
+    reset(config_from_environment({"OPERON_AI_PROVIDER": "ollama", "OPERON_OLLAMA_MODEL": "gemma3",
+                                   "OPERON_OLLAMA_BASE_URL": "http://ollama.test:11434"}))
+    monkeypatch.setenv("OPERON_REASONING_BACKEND", "packet")
+    packet = backend_from_environment()
+    assert packet.runtime.settings.provider == "ollama" and packet.runtime.settings.endpoint == "http://ollama.test:11434"
+    assert packet.expected_identity().region == "http://ollama.test:11434"
+    assert packet.specialist_runtime is None
 
 
 def test_engine_selects_backend_from_environment_without_clients(seeded_db, monkeypatch):
     forbidden = Mock(side_effect=AssertionError("no AWS session at engine construction"))
-    monkeypatch.setattr("core.agents.runtime.boto3.Session", forbidden)
+    monkeypatch.setattr("boto3.Session", forbidden)
     assert make_engine(monkeypatch).runtime is None
     monkeypatch.setenv("OPERON_REASONING_BACKEND", "packet")
+    unavailable = make_engine(monkeypatch)
+    assert unavailable.runtime is None and "No model provider" in unavailable.snapshot()["reasoning_provenance"]["unavailable_reason"]
+    configure_bedrock(monkeypatch)
     engine = make_engine(monkeypatch)
     assert isinstance(engine.runtime, InProcessPacketBackend) and engine.snapshot()["authority_path"] == "lifecycle"
     monkeypatch.setenv("OPERON_REASONING_BACKEND", "agentcore")

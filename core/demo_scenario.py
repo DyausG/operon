@@ -1,8 +1,14 @@
-"""Explicit offline recording scenario inputs; never an authority shortcut.
+"""Guided Demo Scenario inputs; never an authority shortcut.
 
-The backend produces typed advisory fixtures only.  Confirmations are visibly
-SIMULATED trusted application inputs.  Promotion, governance, approval,
-execution and outcome verification remain owned by their normal services.
+The *scenario* is a reproducible, deterministic telemetry/failure progression on the
+seeded simulator plus visibly SIMULATED trusted application inputs (inspection,
+resources, binding). It says nothing about how reasoning happens: the engine routes
+the scenario's incident through the same ``ReasoningBackend`` seam as any other
+incident. Only when no model provider is configured does the engine fall back to
+``DeterministicAdvisoryBackend`` below, an explicitly non-model typed advisory that
+keeps the workflow demonstrable and is labelled as such everywhere it appears.
+Promotion, governance, approval, execution and outcome verification remain owned
+by their normal services.
 """
 from __future__ import annotations
 
@@ -17,16 +23,37 @@ from core.reliability.promotion import PromotionService
 from core.reliability.repository import utcnow
 
 
-class DemoReasoningBackend(ReasoningBackend):
-    """Deterministic, typed advisory fixture with unambiguous demo provenance."""
+SCENARIO_ID = "operon.demo.guided-v1"
+GUIDED_RAMP_TICKS = 6
 
-    name = "demo"
+
+def scenario_descriptor(equipment_id: str, failure_mode: str, *, seed: int, ramp_ticks: int = GUIDED_RAMP_TICKS) -> dict:
+    """What the Guided Demo replays. Deterministic inputs only; not a reasoning identity."""
+    return {
+        "id": SCENARIO_ID, "provenance": "SIMULATED", "deterministic": True, "seed": seed,
+        "equipment_id": equipment_id, "failure_mode": failure_mode, "failure_mode_id": f"FM-{failure_mode}",
+        "ramp_ticks": ramp_ticks, "intervention_response": "RECOVERS",
+        "trusted_inputs": "SIMULATED", "telemetry": "seeded simulator", "authoritative_persistence": True,
+    }
+
+
+class DeterministicAdvisoryBackend(ReasoningBackend):
+    """Typed advisory without any model, used only when no provider is configured.
+
+    Its output is deterministic application text over the frozen evidence packet; it
+    never impersonates model reasoning and identifies itself as ``deterministic`` with
+    ``live_model=False`` in every run snapshot.
+    """
+
+    name = "deterministic"
 
     def identity(self) -> dict:
         return {
             "backend": self.name,
+            "provider": "none",
+            "model": None,
             "provenance": "SIMULATED",
-            "implementation": "operon.guided-demo.typed-advisory-v1",
+            "implementation": "operon.demo.deterministic-advisory-v1",
             "framework_contract": "SupervisorResult",
             "live_model": False,
         }
@@ -34,18 +61,22 @@ class DemoReasoningBackend(ReasoningBackend):
     async def supervise(self, service, context, *, bounds: SupervisorBounds,
                         snapshot=None, cancellation_result_handler=None) -> SupervisorResult:
         if snapshot is None:
-            raise ValueError("guided demo reasoning requires a durable run snapshot")
+            raise ValueError("deterministic advisory requires a durable run snapshot")
         evidence_ids = list(snapshot.evidence_manifest)
         evidence = list(context.evidence)
         history = next((item for item in reversed(evidence) if item.kind == "maintenance_history"), evidence[0])
         confirmation = next((item for item in reversed(evidence)
                              if item.source_capability == "operon.confirm_mechanism"), None)
         confirmed = m.TrustedTechnicalConfirmation.model_validate(confirmation.payload) if confirmation else None
-        mechanism = confirmed.confirmed_mechanism if confirmed else "Mechanical degradation requires physical confirmation"
+        signal = next((item for item in evidence if item.kind == "model_signal"), None)
+        code = (signal.payload or {}).get("candidate_failure_mode") if signal else None
+        mechanism = (confirmed.confirmed_mechanism if confirmed else
+                     f"{code or 'Mechanical'} degradation mechanism indicated by the predictive signal; "
+                     "physical confirmation required")
         common = {
             "incident_id": context.incident_id,
             "evidence_reviewed": evidence_ids,
-            "reasoning_summary": "Deterministic demo advisory over the application-frozen evidence packet.",
+            "reasoning_summary": "Deterministic advisory (no model provider) over the application-frozen evidence packet.",
         }
         if context.review_target_id is None:
             diagnostic = common | {
@@ -115,10 +146,10 @@ class DemoReasoningBackend(ReasoningBackend):
             "input_revision": context.input_revision, "disposition": "ADVISORY_CONCLUSION",
             "decision": {"incident_id": context.incident_id, "run_id": context.run_id,
                 "disposition": "ADVISORY_CONCLUSION",
-                "reasoning_summary": "Advisory complete; only Operon application gates may promote it.",
+                "reasoning_summary": "Deterministic advisory complete (no model provider); only Operon application gates may promote it.",
                 "evidence_used": evidence_ids, **selections},
             "assessments": [{"key": key, "assessment": value} for _, key, value in assessments],
-            "delegations": [{"key": key, "role": role, "question": "Review the frozen demo evidence packet.",
+            "delegations": [{"key": key, "role": role, "question": "Deterministic review of the frozen evidence packet (no model).",
                 "input_revision": context.input_revision,
                 "input_assessment_keys": value.get("input_assessment_keys", []),
                 "evidence_ids": evidence_ids, "status": "SUCCEEDED"} for role, key, value in assessments],
@@ -129,6 +160,28 @@ class DemoReasoningBackend(ReasoningBackend):
         })
 
 
+def recommended_mechanism(artifacts) -> str | None:
+    """The mechanism the latest diagnosis-stage advisory recommended, whoever produced it.
+
+    The simulated inspection confirms (or would refute) *that* candidate, exactly as a
+    real technician is dispatched against the current hypothesis. Nothing is invented:
+    when no advisory named a hypothesis there is nothing to confirm.
+    """
+    for report in reversed([item for item in artifacts if isinstance(item, m.SupervisorReport)]):
+        result = report.result_payload
+        key = result.get("candidate_diagnosis_key")
+        if not key:
+            continue
+        assessment = next((item["assessment"] for item in result.get("assessments", []) if item.get("key") == key), None)
+        if not assessment or not assessment.get("recommended_hypothesis"):
+            continue
+        selected = next((item for item in assessment.get("competing_hypotheses", [])
+                         if item.get("key") == assessment["recommended_hypothesis"]), None)
+        if selected and selected.get("mechanism"):
+            return str(selected["mechanism"])
+    return None
+
+
 def technical_confirmation(engine, equipment_id: str) -> m.TrustedTechnicalConfirmation:
     incident = engine.coordinator.repository.fetch_incident(engine.incidents[equipment_id].id)
     engine.lifecycle.refresh_baseline_evidence(incident.id, equipment_id, engine.evidence_service)
@@ -137,13 +190,16 @@ def technical_confirmation(engine, equipment_id: str) -> m.TrustedTechnicalConfi
     superseded = {item.supersedes_id for item in artifacts if getattr(item, "supersedes_id", None)}
     history = [item for item in artifacts if isinstance(item, m.Evidence)
                and item.kind == "maintenance_history" and item.id not in superseded][-1]
+    mechanism = recommended_mechanism(artifacts)
+    if mechanism is None:
+        raise ValueError("no diagnosis-stage advisory recommended a hypothesis; there is nothing to confirm")
     with db.get_conn(engine.coordinator.repository.path) as conn:
         guided_mode_id = f"FM-{engine.sim.assets[equipment_id].profile.scenario}"
         mode = conn.execute("SELECT * FROM failure_mode WHERE failure_mode_id=?",
                             (guided_mode_id,)).fetchone()
     return m.TrustedTechnicalConfirmation(
         incident_id=incident.id, asset_id=equipment_id,
-        confirmed_mechanism=f"Guided-demo inspection confirmed: {mode['failure_mode_name']}", failure_mode_code=mode["mode_code"],
+        confirmed_mechanism=mechanism, failure_mode_code=mode["mode_code"],
         supporting_evidence_ids=(history.id,),
         performed_checks=(m.PerformedCheck(check="Simulator physical inspection",
                                            result=f"Signature consistent with {mode['mode_code']}", passed=True),),
@@ -181,8 +237,11 @@ def binding_fields(engine, equipment_id: str, resource_evidence: m.Evidence) -> 
     diagnosis = repo.get_artifact(incident_id, incident.current_diagnosis_id)
     with db.get_conn(repo.path) as conn:
         mode = conn.execute("SELECT * FROM failure_mode WHERE mode_code=?", (diagnosis.failure_mode_code,)).fetchone()
+    plan_key = report.result_payload.get("maintenance_plan_key")
+    if not plan_key:
+        raise ValueError("the promoted diagnosis run recorded no maintenance plan to bind")
     return {
-        "diagnosis_id": lineage.target_id, "source_report_id": report.id, "source_plan_key": "plan",
+        "diagnosis_id": lineage.target_id, "source_report_id": report.id, "source_plan_key": plan_key,
         "asset_id": equipment_id, "failure_mode_id": mode["failure_mode_id"],
         "technician_id": resource.technician_id, "parts": resource.parts,
         "resource_confirmation_id": resource_evidence.id, "signal_evidence_id": incident.signal_evidence_ids[0],

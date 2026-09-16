@@ -23,6 +23,7 @@ from botocore.exceptions import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from core import config
+from core.providers.base import CLOUD_TIMEOUTS
 from core.agents.contracts import SpecialistContext, SupervisorBounds, SupervisorResult
 from .backend import ReasoningBackend
 from .errors import ReasoningBackendUnavailable
@@ -37,6 +38,9 @@ __all__ = ["AgentCoreBackend", "AgentCoreSettings", "MAX_RESPONSE_BYTES"]
 # limit. Keep the untrusted response boundary aligned with the request boundary.
 MAX_RESPONSE_BYTES = 1_000_000
 _RESPONSE_READ_CHUNK_BYTES = 64 * 1024
+
+
+DEFAULT_RUN_SECONDS = CLOUD_TIMEOUTS.run_seconds
 
 
 class AgentCoreSettings(BaseModel):
@@ -134,7 +138,8 @@ class AgentCoreBackend(ReasoningBackend):
     def _client(self, bounds: SupervisorBounds):
         if self._injected_client is not None:
             return self._injected_client
-        read_timeout = float(bounds.timeout_seconds + self.settings.extra_read_timeout_seconds)
+        run_seconds = bounds.timeout_seconds if bounds.timeout_seconds is not None else DEFAULT_RUN_SECONDS
+        read_timeout = float(run_seconds + self.settings.extra_read_timeout_seconds)
         if read_timeout not in self._clients:
             client_config = Config(
                 connect_timeout=self.settings.connect_timeout_seconds,

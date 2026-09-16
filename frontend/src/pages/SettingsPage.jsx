@@ -9,8 +9,9 @@ import { PageHeader, Section, Toggle, Select, Modal } from "../components/index.
 import { Btn, Icons, Tag, KV, Dot } from "../primitives/index.jsx";
 import { risk as fmtRisk, title } from "../lib/format.js";
 import { ROUTES } from "../app/routes.js";
+import { ProviderSettings } from "../features/ProviderSettings.jsx";
 
-const SECTIONS = [["general", "General"], ["appearance", "Appearance"], ["notifications", "Notifications"], ["agent", "Agent preferences"], ["plant", "Plant & system"], ["account", "Account"]];
+const SECTIONS = [["general", "General"], ["appearance", "Appearance"], ["notifications", "Notifications"], ["agent", "Agent preferences"], ["provider", "AI provider"], ["plant", "Plant & system"], ["account", "Account"]];
 const Scope = ({ children = "browser-local" }) => <Tag className="scope-tag" tone="normal">{children}</Tag>;
 
 export function SettingsPage() {
@@ -57,7 +58,7 @@ export function SettingsPage() {
               <Toggle label="Approvals" hint="Human hold point reached, plan rejected." checked={n.approvals} onChange={(v) => set("notifications", { approvals: v })} />
               <Toggle label="Maintenance" hint="Dispatch, execution and closure." checked={n.maintenance} onChange={(v) => set("notifications", { maintenance: v })} />
               <Toggle label="Agent events" hint="Evidence requests, recovery observation, outcomes, refused actions." checked={n.agent} onChange={(v) => set("notifications", { agent: v })} />
-              <Toggle label="Engine control" hint="Pause, resume, reset and guided demo milestones." checked={n.connection} onChange={(v) => set("notifications", { connection: v })} />
+              <Toggle label="Engine control" hint="Pause, resume, reset and Guided Demo milestones." checked={n.connection} onChange={(v) => set("notifications", { connection: v })} />
               <Toggle label="Sound" hint="Not available: no audio channel is wired." checked={false} onChange={() => {}} disabled />
             </Section>
             <Section label="Agent preferences" actions={<Scope />}>
@@ -67,16 +68,17 @@ export function SettingsPage() {
               <Toggle label="Open inspector from #artifact deep links" hint="Shared links can open an artifact directly." checked={ag.autoOpenDeepLink} onChange={(v) => set("agent", { autoOpenDeepLink: v })} />
               <div className="note-box">{Icons.lock({})}<span>Runtime behaviour (fast/slow path, interruption budgets, re-planning policy) is owned by the reasoning runtime and is not configurable from the portal. Those controls will appear here once the Samsung PRISM runtime exposes them.</span></div>
             </Section>
+            <ProviderSettings />
             <Section label="Plant & system" actions={<Tag className="scope-tag" tone="auth">engine</Tag>}>
               <div id="s-plant" />
               <div className="kvgrid kvgrid-4">
                 <KV label="Plant" value={state.meta.plant || null} /><KV label="Warning band" mono value={fmtRisk(state.warnThreshold)} /><KV label="Incident gate" mono value={fmtRisk(state.triggerThreshold)} /><KV label="Agent mode" mono value={state.agentMode || null} />
-                <KV label="Reasoning backend" mono value={state.reasoningProvenance?.backend || null} /><KV label="Runtime" value={state.reasoningProvenance?.runtime || null} /><KV label="Authority path" mono value={state.authorityPath || null} /><KV label="Stream" value={<span className="row-wrap"><Dot tone={state.connected ? "ok" : "crit"} />{state.connected ? `connected · tick ${state.tick}` : "reconnecting"}</span>} />
+                <KV label="Reasoning backend" mono value={state.reasoningProvenance?.backend || null} /><KV label="Model provider" value={state.reasoningProvenance?.model_provider || "none (deterministic)"} /><KV label="Authority path" mono value={state.authorityPath || null} /><KV label="Stream" value={<span className="row-wrap"><Dot tone={state.connected ? "ok" : "crit"} />{state.connected ? `connected · tick ${state.tick}` : "reconnecting"}</span>} />
               </div>
-              <p className="t3">Thresholds and the reasoning backend are engine configuration (see <span className="mono">core/config.py</span> and the <span className="mono">OPERON_*</span> environment). They are shown here, not edited.</p>
+              <p className="t3">Thresholds and the reasoning backend are engine configuration (see <span className="mono">core/config.py</span> and the <span className="mono">OPERON_*</span> environment). They are shown here, not edited; the model provider is configured in the AI provider section above.</p>
               <div className="row-wrap">
                 {!state.demoScenario?.active ? <Btn small onClick={state.running ? stop : resume}>{state.running ? Icons.pause({}) : Icons.play({})} {state.running ? "Pause simulator" : "Resume simulator"}</Btn> : null}
-                <Btn small onClick={() => startDemo(state.demoScenario?.equipment_id || "AC-COMP-01")}>{Icons.demo({})} {state.demoScenario?.active ? "Restart guided demo" : "Start guided demo"}</Btn>
+                <Btn small onClick={() => startDemo(state.demoScenario?.equipment_id || "AC-COMP-01")}>{Icons.demo({})} {state.demoScenario?.active ? "Restart Guided Demo" : "Start Guided Demo"}</Btn>
                 <Btn small quiet onClick={() => setConfirm("reset-engine")}>{Icons.reset({})} Reset engine…</Btn>
               </div>
               <Toggle label="Show economics on the dashboard" hint="KPI deck economic cells (recovered value, value at risk)." checked={pl.showEconomics} onChange={(v) => set("plant", { showEconomics: v })} />

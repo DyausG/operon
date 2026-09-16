@@ -18,6 +18,14 @@ lifecycle to verify the outcome of each OBSERVING incident deterministically fro
 persisted evidence; the lifecycle, not the engine or the simulator, decides
 CLOSED / re-investigation / escalation. The simulator's post-dispatch response is
 explicitly simulated demo provenance and is never read by verification.
+
+Guided Demo (Stage 0): ``start_guided_demo`` replays a deterministic telemetry/failure
+*scenario* on the seeded simulator and drives the resulting **real** incident through
+the same lifecycle, promotion and governance services as any other incident. Its
+reasoning goes through the engine's configured ``ReasoningBackend`` (Gemini, Ollama,
+Bedrock or AgentCore); only when no provider is configured does it use the explicitly
+labelled ``DeterministicAdvisoryBackend``. The scenario id never masquerades as a
+reasoning runtime: every run snapshot freezes the backend/provider/model that ran.
 """
 from __future__ import annotations
 import asyncio
@@ -29,7 +37,6 @@ import time
 
 from . import config, agent, services
 from .db import get_conn, reset_transactional
-from .demo import DemoScenarioRunner
 from .model import load_or_train
 from .simulator import PlantSimulator
 from .seed_data import CLASS_DEFAULT_MODE, SENSOR_FEATURES
@@ -48,6 +55,7 @@ from .reliability.models import ApprovalRequirement, IncidentPhase, Intervention
 from .reliability.promotion import PromotionRefused
 from .reliability.repository import IncidentRepository, InvalidReference, StaleRevision
 from .reliability.signals import from_prediction, model_version
+from .reasoning.provenance import describe_backend, describe_run_identity, reasoning_label
 
 HISTORY_CAP = 90
 # Per-incident automatic retry cadence. The capped monotonic deadline permits
@@ -62,6 +70,16 @@ LIFECYCLE_STATUS = {
     IncidentPhase.EXECUTING: "APPROVED", IncidentPhase.OBSERVING: "APPROVED",
     IncidentPhase.EXECUTION_FAILED: "EXECUTION_FAILED", IncidentPhase.ESCALATED: "ESCALATED",
     IncidentPhase.CLOSED: "CLOSED", IncidentPhase.CANCELLED: "CANCELLED",
+}
+# Guided Demo: bounded retries when a supervisor run cannot start (RETRY disposition).
+GUIDED_DIAGNOSIS_ATTEMPTS = 3
+GUIDED_PREPARING_STATUSES = ("factory_healthy", "degrading", "risk_rising", "incident_open", "investigating",
+                             "diagnosing", "awaiting_evidence", "trusted_inspection", "diagnosis_validated",
+                             "planning", "intervention_review", "awaiting_human_approval")
+GUIDED_PHASE_STATUS = {
+    IncidentPhase.READY: "ready", IncidentPhase.EXECUTING: "executing", IncidentPhase.OBSERVING: "observing",
+    IncidentPhase.CLOSED: "complete", IncidentPhase.CANCELLED: "cancelled",
+    IncidentPhase.EXECUTION_FAILED: "execution_failed", IncidentPhase.ESCALATED: "escalated",
 }
 LIFECYCLE_ERRORS = (LifecycleRefused, ApprovalRefused, GovernanceBlocked, ExecutionRefused, ReconciliationRequired,
                     ExecutionBusy, PromotionRefused, StaleRevision, InvalidReference, LookupError, KeyError, TypeError,
@@ -100,11 +118,6 @@ class DemoEngine:
         self._task: asyncio.Task | None = None
         self._analyzing: set[str] = set()
         self.meta = self._load_meta()
-        self.demo_runner = DemoScenarioRunner([
-            {"equipment_id": eid, "name": item.get("equipment_name"),
-             "equipment_class": item.get("equipment_class"), "criticality": item.get("criticality")}
-            for eid, item in self.meta.items()
-        ], publish=self._broadcast_demo_snapshot)
         self.coordinator = IncidentCoordinator(IncidentRepository())
         self.lifecycle = LifecycleService(self.coordinator.repository)
         self.evidence_service = EvidenceService(self.coordinator.repository)
@@ -112,7 +125,8 @@ class DemoEngine:
         if self.legacy_demo:
             logger.warning("OPERON_LEGACY_DEMO is enabled: the deprecated proposal shortcut is active; "
                            "its artifacts carry no application promotion lineage")
-        self.runtime = runtime if runtime is not None else self._default_runtime()
+        self._runtime_unavailable_reason: str | None = None
+        self.runtime = runtime if runtime is not None else self._build_runtime()
         self._base_runtime = self.runtime
         self.specialist_runtime = specialist_runtime
         self._guided_demo: dict | None = None
@@ -121,6 +135,7 @@ class DemoEngine:
         self._guided_claim: object | None = None
         self._guided_incident_id: str | None = None
         self._guided_backend = None
+        self._guided_started_at: float | None = None
         self.demo_step_delay = 5.0
         self.incidents = {}
         self._resume: set[str] = set()
@@ -130,6 +145,9 @@ class DemoEngine:
         self._monotonic = time.monotonic
         # Outcome messages produced by the synchronous tick progression, flushed by the tick.
         self._pending_broadcasts: list[dict] = []
+        # Monitoring peer results per active alert set; refreshed off the event loop.
+        self._monitoring_cache: dict[frozenset, dict] = {}
+        self._monitoring_tasks: dict[frozenset, asyncio.Task] = {}
         # Supervisor runs are serialized: 13A's source checkpoint treats another
         # incident's revision change during a run as staleness.
         self._reasoning_lock = asyncio.Lock()
@@ -142,7 +160,8 @@ class DemoEngine:
         """Reasoning backend only when explicitly configured; never a silent fallback.
 
         Returns a ``core.reasoning.backend.ReasoningBackend`` (Step 15) selected by
-        OPERON_REASONING_BACKEND; unset keeps the legacy Bedrock selector behaviour.
+        OPERON_REASONING_BACKEND; unset resolves to ``local`` over the active model
+        provider (Gemini, Ollama or Bedrock) and to ``none`` without a provider.
         """
         if config.reasoning_backend() == "none":
             return None
@@ -152,6 +171,36 @@ class DemoEngine:
         except Exception:
             logger.exception("Supervisor reasoning backend unavailable; incidents will wait in INVESTIGATING")
             return None
+
+    def _build_runtime(self):
+        """``_default_runtime`` plus the truthful reason when no runtime is available."""
+        self._runtime_unavailable_reason = None
+        if config.reasoning_backend() == "none":
+            provider = config.provider_registry().active()
+            self._runtime_unavailable_reason = (
+                provider.not_configured_reason() if provider.kind == "none"
+                else "reasoning backend disabled (OPERON_REASONING_BACKEND=none)")
+            return None
+        try:
+            from .reasoning.backend import backend_from_environment
+            return backend_from_environment()
+        except Exception as exc:  # noqa: BLE001 - reported, never a silent fallback
+            logger.exception("Supervisor reasoning backend unavailable; incidents will wait in INVESTIGATING")
+            self._runtime_unavailable_reason = f"{type(exc).__name__}: {exc}"[:300]
+            return None
+
+    async def reconfigure_runtime(self) -> dict:
+        """Rebuild the reasoning backend after the provider configuration changed (Settings API).
+
+        Serialized with supervisor runs; an in-flight run finishes on the runtime it started with.
+        """
+        async with self._reasoning_lock:
+            self.runtime = self._build_runtime()
+            self._base_runtime = self.runtime
+        snapshot = self.snapshot()
+        await self.broadcast(snapshot)
+        return {"ok": True, "supervisor_available": self.runtime is not None,
+                "reasoning_provenance": snapshot.get("reasoning_provenance")}
 
     def _recover_incidents(self):
         for incident, checkpoint in self.coordinator.recover():
@@ -218,8 +267,6 @@ class DemoEngine:
 
     # -- lifecycle ---------------------------------------------------------
     async def start(self):
-        if self.demo_runner.active:
-            return
         if self._task and not self._task.done():
             return
         self.running = True
@@ -239,14 +286,8 @@ class DemoEngine:
         await self.broadcast({"type": "control", "running": False})
 
     async def reset(self, *, restore_factory: bool = True, restart: bool = True):
-        # The presentation store is disposable and never shares persistence with
-        # the production lifecycle. A dashboard reset while it is active cancels
-        # the old script and replays from its healthy frame without touching
-        # authoritative application data.
-        if self.demo_runner.active:
-            equipment_id = self._demo_projection()["equipment_id"]
-            await self.demo_runner.start(equipment_id)
-            return
+        # A reset cancels any Guided Demo controller first; its incident is ordinary
+        # durable state and is wiped with the rest of the transactional store below.
         guided = self._guided_task
         if guided and guided is not asyncio.current_task() and not guided.done():
             guided.cancel()
@@ -254,6 +295,7 @@ class DemoEngine:
             await asyncio.gather(guided, return_exceptions=True)
         self._guided_task = None
         self._guided_demo = None
+        self._guided_started_at = None
         if self._task:
             self._task.cancel()
             try:
@@ -298,32 +340,212 @@ class DemoEngine:
         if restore_factory and restart:
             await self.broadcast(self.snapshot())
 
+    # -- Guided Demo Scenario (real lifecycle, configured reasoning) -----------
+    def _guided_status(self, guided: dict, incident) -> str:
+        if guided.get("status") == "failed":
+            return "failed"
+        if incident is None:
+            asset = self.assets.get(guided["equipment_id"], {})
+            state = self.sim.assets[guided["equipment_id"]]
+            if state.prog <= 0:
+                return "factory_healthy"
+            return "risk_rising" if float(asset.get("failure_prob", 0)) >= config.WARN_THRESHOLD else "degrading"
+        if incident.phase in GUIDED_PHASE_STATUS:
+            if incident.phase == IncidentPhase.ESCALATED and self._rejected(incident.id):
+                return "cancelled"
+            return GUIDED_PHASE_STATUS[incident.phase]
+        return guided.get("status") or "investigating"
+
+    def _guided_phase(self, guided: dict, incident) -> str:
+        if incident is not None:
+            return incident.phase.value
+        state = self.sim.assets[guided["equipment_id"]]
+        if state.prog <= 0:
+            return "FACTORY_HEALTHY"
+        risk = float(self.assets.get(guided["equipment_id"], {}).get("failure_prob", 0))
+        return "PREDICTIVE_RISK_RISING" if risk >= config.WARN_THRESHOLD else "FACTORY_DEGRADING"
+
     def _demo_projection(self) -> dict:
-        state = self.demo_runner.snapshot()
-        return state["demo_scenario"] if state else {"active": False}
+        """Portal view of the Guided Demo: scenario, reasoning and lifecycle progress kept apart."""
+        guided = self._guided_demo
+        if not guided:
+            return {"active": False}
+        eid = guided["equipment_id"]
+        incident = self.incidents.get(eid)
+        if incident is not None and guided.get("incident_id") in (None, incident.id):
+            guided["incident_id"] = incident.id
+        elif incident is not None and guided.get("incident_id") != incident.id:
+            incident = None
+        phase = self._guided_phase(guided, incident)
+        approval_state = "NOT_REQUESTED"
+        if incident is not None:
+            if incident.phase == IncidentPhase.AWAITING_APPROVAL:
+                approval_state = "PENDING"
+            elif incident.phase in (IncidentPhase.READY, IncidentPhase.EXECUTING, IncidentPhase.OBSERVING,
+                                    IncidentPhase.CLOSED):
+                approval_state = "APPROVED"
+            elif incident.phase == IncidentPhase.ESCALATED and self._rejected(incident.id):
+                approval_state = "REJECTED"
+        started = guided.get("started_at")
+        return {
+            "active": True, "label": guided["label"], "equipment_id": eid,
+            "incident_id": guided.get("incident_id"), "status": self._guided_status(guided, incident),
+            "phase": phase, "risk": round(float(self.assets.get(eid, {}).get("failure_prob", 0)), 3),
+            "elapsed_seconds": int(self._monotonic() - started) if started is not None else 0,
+            "approval_state": approval_state, "error": guided.get("error"),
+            "scenario": guided["scenario"], "reasoning": guided["reasoning"],
+            "authoritative_persistence": True,
+        }
+
+    def _set_guided_status(self, status: str) -> None:
+        if self._guided_demo is not None and self._guided_demo.get("status") != "failed":
+            self._guided_demo["status"] = status
 
     def demo_artifact(self, artifact_id: str) -> dict:
-        """Resolve only the active disposable demo generation's read model."""
-        artifact = self.demo_runner.artifact(artifact_id)
-        if artifact is None:
-            raise LookupError(artifact_id)
-        return artifact
+        """Inspector view of one durable artifact of an active incident (Guided Demo or live)."""
+        repo = self.coordinator.repository
+        for eid, incident in self.incidents.items():
+            try:
+                artifact = repo.get_artifact(incident.id, artifact_id)
+            except (LookupError, InvalidReference, KeyError, ValueError):
+                continue
+            return self._inspector_artifact(artifact, eid)
+        raise LookupError(artifact_id)
 
-    async def _broadcast_demo_snapshot(self):
-        """Publish the isolated read model through the existing websocket shape."""
-        await self.broadcast(self.snapshot())
+    def _inspector_artifact(self, artifact, eid: str) -> dict:
+        """Map a durable record onto the portal's inspector shape; grants nothing."""
+        repo = self.coordinator.repository
+        kind = type(artifact).__name__
+        payload = artifact.model_dump(mode="json")
+        artifact_type, title, summary, status = kind.lower(), kind, "", getattr(artifact, "status", None)
+        provenance, runtime, live_model, reasoning = "APPLICATION", "Operon application", None, None
+        supporting: list[str] = []
+        if isinstance(artifact, m.Evidence):
+            provenance = artifact.provenance
+            supporting = list(artifact.derived_from_ids)
+            summary, status = artifact.summary, artifact.quality
+            if artifact.kind == "model_signal":
+                artifact_type, title = "predictive_signal", "Predictive risk signal"
+                inner = dict(payload.get("payload") or {})
+                inner.setdefault("failure_probability", inner.get("risk_score"))
+                inner.setdefault("threshold", config.TRIGGER_THRESHOLD)
+                payload["payload"] = inner
+            elif artifact.kind == "inspection":
+                artifact_type, title = "technician_inspection", "Trusted technical confirmation"
+            else:
+                artifact_type, title = "evidence", f"{artifact.kind.replace('_', ' ').title()} evidence"
+        elif isinstance(artifact, m.Hypothesis):
+            artifact_type, title, summary = "hypothesis", "Hypothesis", artifact.mechanism
+            supporting = list(artifact.supporting_evidence_ids)
+        elif isinstance(artifact, m.Diagnosis):
+            artifact_type, title, summary = "diagnosis", "Diagnosis", artifact.conclusion
+            supporting = [*artifact.evidence_ids, *artifact.hypothesis_ids]
+        elif isinstance(artifact, m.ValidationVerdict):
+            artifact_type = "diagnosis_validation" if artifact.target_kind == "diagnosis" else "intervention_validation"
+            title, summary = f"{artifact.target_kind.title()} validation", getattr(artifact, "validation_summary", "") or ""
+            status = getattr(artifact, "decision", None)
+            supporting = [getattr(artifact, "target_id", None)] if getattr(artifact, "target_id", None) else []
+        elif isinstance(artifact, m.Intervention):
+            artifact_type, title = "intervention", "Intervention"
+            summary = getattr(artifact, "objective", None) or getattr(artifact, "summary", "") or ""
+            supporting = list(artifact.evidence_ids)
+        elif isinstance(artifact, m.WorkPackageBinding):
+            artifact_type, title = "work_package", "Work package binding"
+        elif isinstance(artifact, m.ApprovalRequirement):
+            artifact_type, title = "approval_request", "Approval requirement"
+            supporting = [artifact.intervention_id]
+        elif isinstance(artifact, m.ObservationPlan):
+            artifact_type, title = "recovery_observation_plan", "Recovery observation plan"
+        elif isinstance(artifact, m.Outcome):
+            artifact_type, title = "outcome_verification", "Outcome verification"
+            summary, status = getattr(artifact, "reason", "") or "", getattr(artifact, "result", None)
+        elif isinstance(artifact, m.SupervisorReport):
+            snapshot = next((item for item in repo.list_artifacts(artifact.incident_id)
+                             if isinstance(item, m.SupervisorRunSnapshot) and item.run_id == artifact.run_id), None)
+            view = self._agent_run_view(artifact, snapshot)
+            reasoning = view["reasoning"]
+            artifact_type, title, payload = "specialist_activity", "Supervisor run", view
+            summary, status = view.get("summary") or "", artifact.completion
+            provenance, runtime, live_model = reasoning["provenance"], reasoning_label(reasoning), reasoning["live_model"]
+            supporting = list(artifact.evidence_manifest)
+        elif isinstance(artifact, m.SupervisorRunSnapshot):
+            reasoning = describe_run_identity(artifact.runtime_identity)
+            artifact_type, title = "supervisor_run_snapshot", "Supervisor run snapshot"
+            provenance, runtime, live_model = reasoning["provenance"], reasoning_label(reasoning), reasoning["live_model"]
+            payload.pop("context_payload", None)
+            supporting = list(artifact.evidence_manifest)
+        elif isinstance(artifact, m.AgentAction):
+            artifact_type, title, summary = "agent_action", "Agent action", artifact.summary
+            supporting = list(artifact.input_artifact_ids)
+        elif isinstance(artifact, m.PromotionRecord):
+            artifact_type, title = "promotion_record", "Application promotion"
+        elif isinstance(artifact, m.EvidenceRequest):
+            artifact_type, title, summary = "evidence_request", "Evidence request", artifact.question
+        return {
+            "id": artifact.id, "artifact_type": artifact_type, "title": title, "status": status,
+            "created_at": artifact.created_at.isoformat(), "incident_id": artifact.incident_id,
+            "equipment_id": eid, "source": getattr(artifact, "source_system", None) or "operon-application",
+            "provenance": provenance, "runtime": runtime, "live_model": live_model, "reasoning": reasoning,
+            "parent_ids": [], "supporting_ids": [item for item in supporting if item], "related_ids": [],
+            "summary": summary, "payload": payload,
+        }
 
     async def _broadcast_demo(self):
         await self.broadcast({"type": "demo", "demo_scenario": self._demo_projection()})
 
+    def _scenario_backend(self):
+        """The configured reasoning backend, or the explicitly labelled deterministic advisory."""
+        if self.runtime is not None:
+            return self.runtime
+        from .demo_scenario import DeterministicAdvisoryBackend
+        return DeterministicAdvisoryBackend()
+
     async def start_guided_demo(self, equipment_id: str) -> dict:
-        """Enter the disposable scripted read model only by explicit action."""
-        if equipment_id not in self.meta:
+        """Replay the deterministic Guided Demo Scenario through the real lifecycle.
+
+        The scenario controls only simulator inputs and SIMULATED trusted submissions.
+        Admission, reasoning, promotion, governance, approval, execution and outcome
+        verification are the ordinary services; reasoning uses the engine's configured
+        backend when one exists (selected in Settings, effective for the next demo).
+        """
+        if equipment_id not in self.sim.assets:
             return {"ok": False, "error": "unknown demo equipment"}
-        # Quiesce normal ticks while their state remains untouched. No repository,
-        # simulator, model, or reasoning object is handed to the demo runner.
-        await self.stop()
-        return await self.demo_runner.start(equipment_id)
+        if self.legacy_demo:
+            return {"ok": False, "error": "the Guided Demo requires the authoritative lifecycle (unset OPERON_LEGACY_DEMO)"}
+        await self.reset(restart=False)
+        backend = self._scenario_backend()
+        for state in self.sim.assets.values():
+            state.mode, state.prog = "healthy", 0.0
+        selected = self.sim.assets[equipment_id]
+        from .demo_scenario import GUIDED_RAMP_TICKS, scenario_descriptor
+        # The asset's own fleet degradation trajectory (its deltas are tuned to the model's
+        # trigger region); healthy-profile assets borrow their class's characteristic mode.
+        if selected.profile.scenario == "healthy":
+            selected.profile.scenario = CLASS_DEFAULT_MODE[selected.profile.equipment_class].removeprefix("FM-")
+        selected.profile.start_tick, selected.profile.ramp_ticks = 1, GUIDED_RAMP_TICKS
+        selected.profile.intervention_response = "RECOVERS"
+        selected.mode = "degrading"
+        claim = object()
+        self._guided_owner, self._guided_claim, self._guided_incident_id = equipment_id, claim, None
+        self._guided_backend = backend
+        self._guided_started_at = self._monotonic()
+        reasoning = describe_backend(backend)
+        reasoning["status"] = "deterministic" if backend.name == "deterministic" else "configured"
+        self._guided_demo = {
+            "equipment_id": equipment_id, "status": "factory_healthy", "incident_id": None, "error": None,
+            "label": f"Guided Demo · {self.meta.get(equipment_id, {}).get('equipment_name') or equipment_id}",
+            "started_at": self._guided_started_at,
+            "scenario": scenario_descriptor(equipment_id, selected.profile.scenario, seed=self.sim.seed),
+            "reasoning": reasoning,
+        }
+        self._trace_reasoning("guided_demo_started", equipment_id=equipment_id, backend=backend, task_kind="guided",
+                              task_creation_location="core.engine.DemoEngine.start_guided_demo",
+                              reasoning_backend_invoked=self._backend_identity(backend))
+        await self.start()
+        self._guided_task = asyncio.create_task(self._guide_to_approval(equipment_id, claim, backend),
+                                                name=f"guided-demo:{equipment_id}")
+        await self.broadcast(self.snapshot())
+        return {"ok": True, "demo_scenario": self._demo_projection()}
 
     async def _wait_demo_phase(self, equipment_id: str, phases: set[IncidentPhase], timeout=45,
                                *, accept_progressed=False):
@@ -350,26 +572,41 @@ class DemoEngine:
             await asyncio.sleep(0.1)
         raise TimeoutError("guided demo timed out waiting for authoritative lifecycle")
 
+    async def _guided_diagnosis(self, equipment_id: str, incident_id: str, backend, claim: object,
+                                expected: set[str]):
+        """Run the real diagnosis stage through ``backend``; a RETRY is retried a bounded number of times."""
+        self._set_guided_status("diagnosing")
+        await self._broadcast_demo()
+        for attempt in range(1, GUIDED_DIAGNOSIS_ATTEMPTS + 1):
+            outcome = await self._diagnose_guided(equipment_id, incident_id, backend, claim)
+            if outcome.disposition in expected:
+                return outcome
+            if outcome.disposition == "RETRY" and attempt < GUIDED_DIAGNOSIS_ATTEMPTS:
+                await asyncio.sleep(self.demo_step_delay)
+                continue
+            raise RuntimeError(f"diagnosis stage ended with {outcome.disposition}: {outcome.reason}")
+        raise RuntimeError("diagnosis stage could not start")  # pragma: no cover - loop always returns/raises
+
     async def _guide_to_approval(self, equipment_id: str, claim: object, backend):
         from .demo_scenario import binding_fields, resource_confirmation, technical_confirmation
         preparation_complete = False
         try:
+            # Pacing only: the seeded simulator ramps the selected asset on its own
+            # deterministic schedule and incident admission still depends on the real
+            # persisted model prediction crossing its threshold.
             await asyncio.sleep(self.demo_step_delay)
-            # Accelerate only the simulator degradation; incident admission still
-            # depends on the real persisted model prediction crossing its threshold.
-            self.sim.assets[equipment_id].prog = 1.0
             incident = await self._wait_demo_phase(
                 equipment_id, {IncidentPhase.INVESTIGATING}, accept_progressed=True)
             if incident.phase == IncidentPhase.INVESTIGATING:
-                outcome = await self._diagnose_guided(equipment_id, incident.id, backend, claim)
-                if outcome.disposition != "NEEDS_EVIDENCE":
-                    raise RuntimeError(f"guided diagnosis expected missing evidence, got {outcome.disposition}")
+                await self._guided_diagnosis(equipment_id, incident.id, backend, claim, {"NEEDS_EVIDENCE"})
             elif incident.phase != IncidentPhase.AWAITING_EVIDENCE:
                 raise RuntimeError(f"guided demo advanced unexpectedly to {incident.phase.value}")
             await self._wait_demo_phase(equipment_id, {IncidentPhase.AWAITING_EVIDENCE})
-            self._guided_demo["status"] = "trusted_inspection"
+            self._set_guided_status("awaiting_evidence")
             await self._broadcast_demo()
             await asyncio.sleep(self.demo_step_delay)
+            self._set_guided_status("trusted_inspection")
+            await self._broadcast_demo()
             confirmation = technical_confirmation(self, equipment_id)
             response = self.submit_technical_confirmation(
                 confirmation, expected_revision=self.coordinator.repository.fetch_incident(confirmation.incident_id).revision)
@@ -380,19 +617,19 @@ class DemoEngine:
             incident = await self._wait_demo_phase(
                 equipment_id, {IncidentPhase.INVESTIGATING}, accept_progressed=True)
             if incident.phase == IncidentPhase.INVESTIGATING:
-                outcome = await self._diagnose_guided(equipment_id, incident.id, backend, claim)
-                if outcome.disposition != "PROMOTED":
-                    raise RuntimeError(f"guided diagnosis was not promoted: {outcome.disposition}")
+                await self._guided_diagnosis(equipment_id, incident.id, backend, claim, {"PROMOTED"})
             elif incident.phase != IncidentPhase.DIAGNOSIS_VALIDATED:
                 raise RuntimeError(f"guided demo advanced unexpectedly to {incident.phase.value}")
             await self._wait_demo_phase(equipment_id, {IncidentPhase.DIAGNOSIS_VALIDATED})
-            self._guided_demo["status"] = "planning"
+            self._set_guided_status("diagnosis_validated")
             await self._broadcast_demo()
             # Freeze the simulated source briefly while the trusted application
             # binds and reviews the exact work package. This satisfies the same
             # dependency-freshness checks as a live caller; it grants no authority.
             await self.stop()
             await asyncio.sleep(self.demo_step_delay)
+            self._set_guided_status("planning")
+            await self._broadcast_demo()
             resource = resource_confirmation(self, equipment_id)
             response = self.submit_resource_confirmation(
                 resource, expected_revision=self.coordinator.repository.fetch_incident(resource.incident_id).revision)
@@ -400,23 +637,27 @@ class DemoEngine:
             await self._refresh_lifecycle(equipment_id, "demo_resource_confirmation",
                                           reason="explicit SIMULATED resource attestation submitted")
             incident = self.coordinator.repository.fetch_incident(resource.incident_id)
+            self._set_guided_status("intervention_review")
+            await self._broadcast_demo()
             result = await self._plan_with_runtime(
                 incident.id, expected_revision=incident.revision, runtime=backend,
                 specialist_runtime=None, guided_claim=claim,
                 **binding_fields(self, equipment_id, resource_evidence),
             )
             if not result["ok"]:
-                raise RuntimeError(result.get("outcome", {}).get("reason", "demo plan was refused"))
-            self._guided_demo["status"] = "awaiting_human_approval"
+                raise RuntimeError(result.get("outcome", {}).get("reason") or result.get("error") or "demo plan was refused")
+            self._set_guided_status("awaiting_human_approval")
             await self.start()
             await self._broadcast_demo()
             preparation_complete = True
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            # Truthful failure: the normalized provider/lifecycle reason is shown; no
+            # advisory text is ever substituted for the reasoning that did not happen.
             logger.exception("Guided demo preparation failed")
             if self._guided_demo is not None:
-                self._guided_demo.update({"status": "failed", "error": str(exc)})
+                self._guided_demo.update({"status": "failed", "error": str(exc)[:600]})
                 await self.start()
                 await self._broadcast_demo()
         finally:
@@ -535,6 +776,8 @@ class DemoEngine:
             for message in self._pending_broadcasts:
                 await self.broadcast(message)
             self._pending_broadcasts = []
+        if self._guided_demo is not None:
+            await self._broadcast_demo()
 
         # unplanned failures for rejected assets
         for eid in list(self.alerts):
@@ -637,6 +880,9 @@ class DemoEngine:
             if self._guided_incident_id not in {None, incident.id}:
                 raise RuntimeError("guided ownership incident changed without reset")
             self._guided_incident_id = incident.id
+            if self._guided_demo is not None:
+                self._guided_demo["incident_id"] = incident.id
+                self._set_guided_status("incident_open")
             self._trace_reasoning(
                 "guided_incident_admitted_and_ownership_bound",
                 equipment_id=eid,
@@ -679,6 +925,8 @@ class DemoEngine:
                                          "phase": self.incidents[eid].phase.value},
             )
         self._resume.discard(eid)
+        if self._guided_owner == eid:
+            self._set_guided_status("investigating")
         self.alerts[eid] = self._lifecycle_alert(eid, ctx)
         self._retriage()
         await self.broadcast({"type": "alert", "alert": self.alerts[eid], "phase": "investigating",
@@ -1012,9 +1260,9 @@ class DemoEngine:
                                          "phase": self.incidents[eid].phase.value, "alert": self.alerts[eid],
                                          "business": self._business_summary(), "triage": self._triage_msg()})
         if self._guided_demo and self._guided_demo.get("equipment_id") == eid:
-            self._guided_demo["status"] = "complete" if verification.disposition == "CLOSED" else verification.disposition.lower()
             if verification.disposition in {"CLOSED", "ESCALATED"}:
                 self._release_guided_ownership(eid, reason=f"outcome_{verification.disposition.lower()}")
+            self._pending_broadcasts.append({"type": "demo", "demo_scenario": self._demo_projection()})
 
     async def verify_outcome(self, incident_id: str) -> dict:
         """Explicit deterministic verification attempt (API); the same authority as the tick path."""
@@ -1046,6 +1294,33 @@ class DemoEngine:
         await self.broadcast({"type": message_type, "alert": self.alerts[eid], "equipment_id": eid,
                               "phase": phase, "triage": self._triage_msg()})
 
+    @staticmethod
+    def _agent_run_view(report, snapshot) -> dict:
+        """One supervisor run for the portal: audit fields plus the normalized reasoning provenance."""
+        result = report.result_payload
+        identity = snapshot.runtime_identity if snapshot else {}
+        return {
+            "run_id": report.run_id, "stage": snapshot.stage if snapshot else None,
+            "status": report.completion, "input_revision": report.input_revision,
+            "checkpoint_revision": report.checkpoint_revision,
+            "runtime_identity": identity,
+            "version_identity": snapshot.version_identity if snapshot else {},
+            "reasoning": describe_run_identity(identity),
+            "disposition": result.get("disposition"),
+            "summary": (result.get("decision") or {}).get("reasoning_summary"),
+            "delegations": result.get("delegations", []), "assessments": result.get("assessments", []),
+            "evidence_requests": result.get("evidence_requests", []), "blockers": result.get("blockers", []),
+            # A provider/model failure is the primary fact of a failed run; governance
+            # completeness gaps (e.g. "requires explicit critic review") still hold but
+            # describe the empty run, so the portal shows them second.
+            "failure": next((item for item in result.get("blockers", [])
+                             if item.startswith("Model invocation failed")), None),
+            "termination_reason": result.get("termination_reason"),
+            "human_review_required": result.get("human_review_required", True),
+            "tool_calls": result.get("tool_calls", 0), "stale_reasons": list(report.stale_reasons),
+            "artifact_id": report.id, "snapshot_id": snapshot.id if snapshot else None,
+        }
+
     def _incident_read_model(self, incident) -> dict:
         """Presentation-only view over committed records; grants no lifecycle authority."""
         repo = self.coordinator.repository
@@ -1061,22 +1336,7 @@ class DemoEngine:
         current_binding = next((item for item in bindings
                                 if current_intervention and item.id == current_intervention.binding_id), None)
         snapshots_by_run = {item.run_id: item for item in snapshots}
-        agent_runs = []
-        for report in reports:
-            result, snapshot = report.result_payload, snapshots_by_run.get(report.run_id)
-            agent_runs.append({
-                "run_id": report.run_id, "stage": snapshot.stage if snapshot else None,
-                "status": report.completion, "input_revision": report.input_revision,
-                "checkpoint_revision": report.checkpoint_revision,
-                "runtime_identity": snapshot.runtime_identity if snapshot else {},
-                "version_identity": snapshot.version_identity if snapshot else {},
-                "disposition": result.get("disposition"),
-                "summary": (result.get("decision") or {}).get("reasoning_summary"),
-                "delegations": result.get("delegations", []), "assessments": result.get("assessments", []),
-                "evidence_requests": result.get("evidence_requests", []), "blockers": result.get("blockers", []),
-                "human_review_required": result.get("human_review_required", True),
-                "tool_calls": result.get("tool_calls", 0), "stale_reasons": list(report.stale_reasons),
-            })
+        agent_runs = [self._agent_run_view(report, snapshots_by_run.get(report.run_id)) for report in reports]
         return {
             "incident": incident.model_dump(mode="json"),
             "events": [item.model_dump(mode="json") for item in repo.list_events(incident.id)[-80:]],
@@ -1221,7 +1481,8 @@ class DemoEngine:
         self._checkpoint_alert(eid)
         await self.broadcast({"type": "alert", "alert": alert, "phase": "analyzing"})
 
-        proposal = agent.decide(ctx)
+        # The legacy path consults the governance peer (a bounded model call): keep it off the loop.
+        proposal = await asyncio.to_thread(agent.decide, ctx)
         alert["proposal"] = proposal
         alert["status"] = "PENDING_APPROVAL"
         prepared = prepare_legacy_intervention(self.coordinator.repository, incident.id, proposal)
@@ -1264,10 +1525,55 @@ class DemoEngine:
                                 "criticality": a.get("criticality")} for a in active]}
             # The dashboard renders monitoring as its own banner from this object,
             # so the triage rationale stays purely about alert contention.
-            msg["monitoring"] = services.monitoring().assess(snap)
+            msg["monitoring"] = self._peer_monitoring(snap)
         except Exception:
             pass
         return msg
+
+    def _peer_monitoring(self, snap: dict) -> dict:
+        """Monitoring peer assessment that never blocks the event loop.
+
+        The LLM-backed adapter performs a bounded model call. That call runs in a
+        worker thread, keyed by the active alert set and cached once it lands; until
+        then the deterministic correlation engine answers immediately (marked
+        ``pending``) so no broadcast or websocket frame waits on a model.
+        """
+        from .services.adapters.local import LocalMonitoringAdapter
+        alerts = snap.get("alerts") or []
+        key = frozenset(a.get("equipment_id") for a in alerts)
+        cached = self._monitoring_cache.get(key)
+        if cached is not None:
+            return cached
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is None:  # synchronous caller (tests, scripts): no loop to protect
+            result = services.monitoring().assess(snap)
+            self._remember_monitoring(key, result)
+            return result
+        task = self._monitoring_tasks.get(key)
+        if task is None or task.done():
+            self._monitoring_tasks[key] = loop.create_task(self._refresh_monitoring(snap, key),
+                                                           name=f"monitoring-peer:{len(key)}")
+        return {**LocalMonitoringAdapter().assess(snap), "pending": True}
+
+    def _remember_monitoring(self, key: frozenset, result: dict) -> None:
+        self._monitoring_cache[key] = result
+        while len(self._monitoring_cache) > 32:
+            self._monitoring_cache.pop(next(iter(self._monitoring_cache)))
+
+    async def _refresh_monitoring(self, snap: dict, key: frozenset) -> None:
+        try:
+            result = await asyncio.to_thread(services.monitoring().assess, snap)
+        except Exception:  # noqa: BLE001 - the peer is best-effort; the deterministic answer stands
+            logger.debug("monitoring peer unavailable; deterministic correlation retained", exc_info=True)
+            return
+        finally:
+            self._monitoring_tasks.pop(key, None)
+        self._remember_monitoring(key, result)
+        if self.alerts and frozenset(self.alerts) & key:
+            await self.broadcast({"type": "triage", "triage": self._triage_msg()})
 
     # -- human-in-the-loop -------------------------------------------------
     def _lifecycle_target(self, eid: str, command: dict | None):
@@ -1283,8 +1589,6 @@ class DemoEngine:
         return al, incident, None
 
     async def approve(self, eid: str, command: dict | None = None) -> dict:
-        if self.demo_runner.active:
-            return await self.demo_runner.approve(eid, command)
         if self.legacy_demo:
             return await self._approve_legacy(eid)
         al, incident, error = self._lifecycle_target(eid, command)
@@ -1346,8 +1650,6 @@ class DemoEngine:
         return next((eid for eid, incident in self.incidents.items() if incident.id == incident_id), None)
 
     async def reject(self, eid: str, command: dict | None = None) -> dict:
-        if self.demo_runner.active:
-            return await self.demo_runner.reject(eid, command)
         if self.legacy_demo:
             return await self._reject_legacy(eid)
         al, incident, error = self._lifecycle_target(eid, command)
@@ -1366,7 +1668,8 @@ class DemoEngine:
         self.sim.set_mode(eid, "failing")   # demo run-to-failure scenario after human rejection
         self.status_override[eid] = "CRITICAL"
         await self._refresh_lifecycle(eid, "rejected", message_type="rejected")
-        self._release_guided_ownership(eid, reason="approval_rejected")
+        if self._release_guided_ownership(eid, reason="approval_rejected"):
+            await self._broadcast_demo()
         return {"ok": True, "phase": self.incidents[eid].phase.value}
 
     # -- trusted application submissions (caller authenticates the actor) ----
@@ -1519,24 +1822,11 @@ class DemoEngine:
                 "recovered_per_event": round(config.recovered_value(), 0)}
 
     def snapshot(self) -> dict:
-        demo = self.demo_runner.snapshot()
-        if demo is not None:
-            return demo
-        backend = getattr(self.runtime, "name", None) or config.reasoning_backend()
         return {"type": "snapshot", "tick": self.tick_i, "running": self.running,
                 "agent_mode": config.agent_mode(), "app_name": config.APP_NAME,
                 "authority_path": "legacy-demo" if self.legacy_demo else "lifecycle",
                 "supervisor_available": self.runtime is not None,
-                "reasoning_provenance": {
-                    "backend": backend,
-                    "status": "available" if self.runtime is not None else "awaiting_runtime",
-                    "application": "Operon",
-                    "runtime": ("AgentCore Runtime" if backend == "agentcore" else
-                                "Offline typed advisory fixture" if backend == "demo" else "Local application runtime"),
-                    "framework": "Operon typed advisory contracts" if backend == "demo" else "Strands Agents",
-                    "model_provider": "Amazon Bedrock" if backend in {"agentcore", "local", "packet"} else None,
-                    "provenance": "SIMULATED" if backend == "demo" else "LIVE" if backend == "agentcore" else "LOCAL",
-                },
+                "reasoning_provenance": self.reasoning_provenance(),
                 "tagline": config.APP_TAGLINE, "plant_name": config.PLANT_NAME,
                 "trigger_threshold": config.TRIGGER_THRESHOLD, "warn_threshold": config.WARN_THRESHOLD,
                 "fleet": [self._asset_summary(e) for e in self.meta if e in self.assets],
@@ -1545,13 +1835,25 @@ class DemoEngine:
                 "triage": self._triage_msg(),
                 "business": self._business_summary(), "demo_scenario": self._demo_projection()}
 
+    def reasoning_provenance(self) -> dict:
+        """Non-secret description of the engine's configured reasoning: backend, provider, model.
+
+        This is what *normal* incidents use. A Guided Demo reports the backend its own
+        runs use under ``demo_scenario.reasoning`` (identical when a provider is
+        configured, ``deterministic`` otherwise).
+        """
+        available = self.runtime is not None
+        description = describe_backend(self.runtime)
+        if not available:
+            description["backend"] = config.reasoning_backend()
+        return {
+            **description,
+            "status": "available" if available else "awaiting_runtime",
+            "application": "Operon",
+            "unavailable_reason": None if available else self._runtime_unavailable_reason,
+        }
+
     async def broadcast(self, msg: dict):
-        import json
-        # Detached production reasoning may finish after the simulator is
-        # quiesced. Its state remains production state, but it must not leak into
-        # the isolated demo projection consumed by the dashboard.
-        if self.demo_runner.active and msg.get("type") != "snapshot":
-            return
         dead, data = [], json.dumps(msg, default=str)
         for ws in list(self.clients):
             try:

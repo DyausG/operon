@@ -32,7 +32,10 @@ export function deriveAgentRuntime(incident, state) {
   const view = viewOf(incident);
   const runs = view.agent_runs || [];
   const current = last(runs);
-  const prov = state.reasoningProvenance || {};
+  const demo = state.demoScenario || {};
+  // A Guided Demo incident reasons through the scenario's backend (the configured provider,
+  // or the labelled deterministic advisory); report that, never the scenario id.
+  const prov = demo.active && demo.reasoning && demo.incident_id && incident?.incident_id === demo.incident_id ? demo.reasoning : (state.reasoningProvenance || {});
   const phase = phaseOf(incident);
   const transitions = (view.events || []).filter((e) => e.event_type === "PHASE_CHANGED").map((e) => ({
     at: e.created_at, from: e.payload?.from, to: e.payload?.to, reason: e.payload?.reason, revision: e.revision, id: e.id,
@@ -41,8 +44,11 @@ export function deriveAgentRuntime(incident, state) {
     backend: prov.backend || "none",
     runtime: prov.runtime || null,
     provenance: prov.provenance || null,
-    liveModel: prov.live_model ?? (prov.backend === "agentcore"),
-    available: state.supervisorAvailable !== false && prov.status !== "awaiting_runtime",
+    liveModel: prov.live_model ?? false,
+    provider: prov.provider || "none",
+    modelProvider: prov.model_provider || null,
+    model: prov.model || null,
+    available: prov.backend === "deterministic" ? true : state.supervisorAvailable !== false && prov.status !== "awaiting_runtime",
     status: prov.status || "unknown",
     phase,
     state: runState(current),

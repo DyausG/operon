@@ -93,43 +93,44 @@ def trusted_submissions_enabled() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Agentic AI — pluggable LLM provider with a graceful deterministic fallback.
+# Agentic AI — provider-agnostic model layer (see core/providers and docs/PROVIDERS.md).
 #
-# For this POC-demo phase the default is **Google Gemini** (generous free tier —
-# just drop a GEMINI_API_KEY in .env). **AWS Bedrock** is kept for the later
-# scale / real-data phase. If no provider is configured/reachable, the agent
-# silently uses a deterministic planner, so the repo always runs for anyone who
-# clones it. No keys are ever committed.
-#
-# Provider selection (SENTINEL_LLM_PROVIDER): "auto" (default) tries Gemini, then
-# Bedrock, then deterministic. Force one with "gemini" | "bedrock" | "deterministic".
+# Provider choice is independent from Operon's reliability domain logic. The
+# registry in core.providers selects Gemini, Ollama (local), Bedrock or none from
+# OPERON_AI_PROVIDER (legacy alias SENTINEL_LLM_PROVIDER): "auto" (default) picks
+# the first *configured* cloud provider, else none. With no provider Operon runs
+# deterministically and reports model-backed reasoning as unavailable; it never
+# fabricates reasoning. POC_FORCE_DETERMINISTIC=1 forces the no-provider mode.
+# The constants below are kept for compatibility; the registry is authoritative.
 # ---------------------------------------------------------------------------
-LLM_PROVIDER = os.getenv("SENTINEL_LLM_PROVIDER", "auto").strip().lower()
-# Explicit off-switch for the hosted/public demo (forces deterministic mode).
+LLM_PROVIDER = os.getenv("OPERON_AI_PROVIDER", os.getenv("SENTINEL_LLM_PROVIDER", "auto")).strip().lower()
 FORCE_DETERMINISTIC = os.getenv("POC_FORCE_DETERMINISTIC", "").strip().lower() in ("1", "true", "yes")
 
-# --- Google Gemini (default for the POC demo) ------------------------------
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", os.getenv("GOOGLE_API_KEY", "")).strip()
-# 'gemini-flash-latest' is an alias that always maps to the current free-tier
-# flash model, so the default keeps working as Google rotates model versions.
-GEMINI_MODEL_ID = os.getenv("GEMINI_MODEL_ID", "gemini-flash-latest")
+# --- Google Gemini -------------------------------------------------------------
+# The API key is never held in this module; it lives only inside the provider registry.
+GEMINI_MODEL_ID = os.getenv("OPERON_GEMINI_MODEL", os.getenv("GEMINI_MODEL_ID", "gemini-flash-latest"))
 GEMINI_MAX_TOKENS = int(os.getenv("GEMINI_MAX_TOKENS", "1024"))
 # Free-tier friendliness: cap requests/min (client-side token bucket) and retry
 # transient 429/5xx with exponential backoff.
 GEMINI_RPM = int(os.getenv("GEMINI_RPM", "12"))
 GEMINI_MAX_RETRIES = int(os.getenv("GEMINI_MAX_RETRIES", "5"))
 
-# --- AWS Bedrock (kept for the scale / real-data phase) --------------------
+# --- Ollama / local models ---------------------------------------------------
+OLLAMA_BASE_URL = os.getenv("OPERON_OLLAMA_BASE_URL", os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434"))
+OLLAMA_MODEL = os.getenv("OPERON_OLLAMA_MODEL", "")
+
+# --- AWS Bedrock (optional; no AWS credentials are required to start) --------
 AWS_REGION = os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "us-east-1"))
 # Cross-region inference profile id works in most accounts; override per your access.
 BEDROCK_MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "us.anthropic.claude-3-5-sonnet-20241022-v2:0")
 BEDROCK_MAX_TOKENS = int(os.getenv("BEDROCK_MAX_TOKENS", "1024"))
 
 # --- Step 15 reasoning backend (supervisor + specialists) -------------------
-# OPERON_REASONING_BACKEND: none | local | packet | agentcore. Unset preserves the
-# legacy behaviour: "local" when the legacy selector resolves to Bedrock, else none.
-# Supervisor/specialist model ids default to BEDROCK_MODEL_ID; they are frozen into
-# every run's expected runtime identity so a drifted deployment is refused.
+# OPERON_REASONING_BACKEND: none | local | packet | agentcore. Unset resolves to
+# "local" whenever a model provider is configured, else "none". local/packet build
+# their Strands runtimes from the active provider; agentcore is Bedrock-only.
+# Model ids are frozen into every run's expected runtime identity so a drifted
+# deployment is refused.
 BEDROCK_SUPERVISOR_MODEL_ID = os.getenv("OPERON_BEDROCK_SUPERVISOR_MODEL_ID", "").strip() or BEDROCK_MODEL_ID
 BEDROCK_SPECIALIST_MODEL_ID = os.getenv("OPERON_BEDROCK_SPECIALIST_MODEL_ID", "").strip() or BEDROCK_SUPERVISOR_MODEL_ID
 
@@ -139,12 +140,18 @@ def reasoning_backend() -> str:
     value = os.getenv("OPERON_REASONING_BACKEND", "").strip().lower()
     if value:
         return value
-    return "local" if agent_mode() == "bedrock" else "none"
+    return "local" if agent_mode() != "deterministic" else "none"
+
+
+def provider_registry():
+    """The process provider registry (lazy; constructing it performs no I/O)."""
+    from core.providers import get_registry
+    return get_registry()
 
 
 def gemini_available() -> bool:
-    """True only if the google-genai SDK is importable AND an API key is set."""
-    if FORCE_DETERMINISTIC or not GEMINI_API_KEY:
+    """True only if the google-genai SDK is importable AND an API key is configured."""
+    if FORCE_DETERMINISTIC or not provider_registry().build("gemini").configured():
         return False
     try:
         import google.genai  # noqa: F401
@@ -154,40 +161,35 @@ def gemini_available() -> bool:
 
 
 def bedrock_available() -> bool:
-    """True only if boto3 is importable AND some AWS credential is resolvable."""
-    if FORCE_DETERMINISTIC:
+    """True only if boto3 is importable AND AWS credentials are configured (env/profile/role/file)."""
+    if FORCE_DETERMINISTIC or not provider_registry().build("bedrock").configured():
         return False
     try:
         import boto3  # noqa: F401
         import botocore  # noqa: F401
     except Exception:
         return False
-    # Explicit env creds or a resolvable profile/role.
-    if os.getenv("AWS_ACCESS_KEY_ID") or os.getenv("AWS_PROFILE"):
-        return True
-    try:
-        import botocore.session
-        return botocore.session.get_session().get_credentials() is not None
-    except Exception:
-        return False
+    return True
+
+
+def ollama_available() -> bool:
+    """True only if an Ollama model is configured (reachability is verified by Test Connection)."""
+    return not FORCE_DETERMINISTIC and provider_registry().build("ollama").configured()
 
 
 def agent_mode() -> str:
-    """Resolve the active agent provider: 'gemini' | 'bedrock' | 'deterministic'."""
+    """Resolve the active provider: 'gemini' | 'ollama' | 'bedrock' | 'deterministic'.
+
+    Legacy name kept for the API/UI; the provider registry decides. No network.
+    POC_FORCE_DETERMINISTIC is a process-start lock (hosted/public demos): while it is
+    set the Settings API refuses provider selection, so what the portal shows and what
+    the reasoning backend uses never diverge. Otherwise the current registry selection
+    applies to the next incident or Guided Demo without a restart.
+    """
     if FORCE_DETERMINISTIC:
         return "deterministic"
-    if LLM_PROVIDER == "gemini":
-        return "gemini" if gemini_available() else "deterministic"
-    if LLM_PROVIDER == "bedrock":
-        return "bedrock" if bedrock_available() else "deterministic"
-    if LLM_PROVIDER == "deterministic":
-        return "deterministic"
-    # auto: prefer Gemini's free tier for the POC, then Bedrock, then fallback.
-    if gemini_available():
-        return "gemini"
-    if bedrock_available():
-        return "bedrock"
-    return "deterministic"
+    kind = provider_registry().resolve_kind()
+    return "deterministic" if kind == "none" else kind
 
 
 # ---------------------------------------------------------------------------

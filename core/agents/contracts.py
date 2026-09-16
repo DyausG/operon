@@ -213,7 +213,8 @@ class SupervisorBounds(AdvisoryContract):
     max_role_invocations: int = Field(default=3, strict=True, ge=1, le=4)
     max_evidence_requests: int = Field(default=3, strict=True, ge=0, le=10)
     max_tool_calls: int = Field(default=24, strict=True, ge=1, le=64)
-    timeout_seconds: float = Field(default=240, gt=0, le=600)
+    # None: the runtime's provider timeout policy (``run_seconds``) bounds the run.
+    timeout_seconds: float | None = Field(default=None, gt=0, le=14400)
 
 
 class DelegationQuery(AdvisoryContract):

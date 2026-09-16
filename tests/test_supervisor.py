@@ -12,7 +12,7 @@ from strands.tools.executors import SequentialToolExecutor
 
 from core.agents.contracts import (
     AdvisoryInput, DiagnosticAssessment,
-    SpecialistContext, SupervisorBounds, SupervisorDecision, SupervisorResult,
+    SupervisorBounds, SupervisorDecision, SupervisorResult,
 )
 from core.agents.runtime import StrandsRuntime
 from core.agents.supervisor import SUPERVISOR_TOOL_NAMES, create_supervisor_agent, supervise_reliability
@@ -21,6 +21,7 @@ from core.reliability import models as m
 from core.reliability.assessments import prepare_specialist_context
 from core.reliability.orchestration import ROLE_CONTRACTS, SupervisorRun, assessment_dependencies, delegation_context
 from core.reliability.repository import ARTIFACT_TYPES, InvalidReference
+from tests.conftest import prompt_context
 from tests.test_specialists import payload
 from tests.test_strands_agents import ScriptedModel, protected_state, report, scoped, settings
 
@@ -88,7 +89,7 @@ class SpecialistsModel(ScriptedModel):
     async def stream(self, messages, tool_specs=None, system_prompt=None, **kwargs):
         names = {item['name'] for item in tool_specs}
         role = next(role for role, cls in ROLE_CONTRACTS.items() if cls.__name__ in names)
-        context = SpecialistContext.model_validate_json(messages[0]['content'][0]['text'])
+        context = prompt_context(messages)
         if len(messages) == 1:
             self.packets.append((role, context))
         value = payload(role, context)

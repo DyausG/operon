@@ -8,27 +8,49 @@ from core import agent, config
 
 
 # --------------------------------------------------------------- provider ----
+def _registry(monkeypatch, env):
+    from core.providers import config_from_environment, reset
+    monkeypatch.setattr(config, "FORCE_DETERMINISTIC", False)
+    return reset(config_from_environment(env))
+
+
+GEMINI = {"GEMINI_API_KEY": "fake-key-for-tests-000000"}
+BEDROCK = {"AWS_PROFILE": "operon-test"}
+
+
 @pytest.mark.parametrize("provider,gem,bed,expected", [
     ("auto", True, True, "gemini"),        # auto prefers gemini
     ("auto", False, True, "bedrock"),
     ("auto", False, False, "deterministic"),
-    ("gemini", False, True, "deterministic"),   # explicit gemini but unavailable
-    ("bedrock", True, False, "deterministic"),
+    ("gemini", False, True, "gemini"),          # explicit selection is honoured and reported unconfigured
+    ("bedrock", True, False, "bedrock"),
     ("deterministic", True, True, "deterministic"),
+    ("none", True, True, "deterministic"),
 ])
 def test_agent_mode_selection(monkeypatch, provider, gem, bed, expected):
-    monkeypatch.setattr(config, "FORCE_DETERMINISTIC", False)
-    monkeypatch.setattr(config, "LLM_PROVIDER", provider)
-    monkeypatch.setattr(config, "gemini_available", lambda: gem)
-    monkeypatch.setattr(config, "bedrock_available", lambda: bed)
+    env = {"OPERON_AI_PROVIDER": provider}
+    if gem:
+        env |= GEMINI
+    if bed:
+        env |= BEDROCK
+        monkeypatch.setenv("AWS_PROFILE", "operon-test")
+    registry = _registry(monkeypatch, env)
     assert config.agent_mode() == expected
+    if expected != "deterministic":
+        assert registry.status().configured is ({"gemini": gem, "bedrock": bed}[expected])
 
 
 def test_force_deterministic_overrides_everything(monkeypatch):
+    _registry(monkeypatch, {"OPERON_AI_PROVIDER": "gemini", **GEMINI})
     monkeypatch.setattr(config, "FORCE_DETERMINISTIC", True)
-    monkeypatch.setattr(config, "LLM_PROVIDER", "gemini")
-    monkeypatch.setattr(config, "gemini_available", lambda: True)
     assert config.agent_mode() == "deterministic"
+    _registry(monkeypatch, {"OPERON_AI_PROVIDER": "gemini", "POC_FORCE_DETERMINISTIC": "1", **GEMINI})
+    assert config.agent_mode() == "deterministic"
+
+
+def test_legacy_selector_alias_still_works(monkeypatch):
+    assert _registry(monkeypatch, {"SENTINEL_LLM_PROVIDER": "gemini", **GEMINI}).resolve_kind() == "gemini"
+    assert config.agent_mode() == "gemini"
 
 
 # ------------------------------------------------------------- rate limit ----
@@ -83,6 +105,12 @@ def test_decide_deterministic_includes_governance_step(seeded_db, monkeypatch):
     # governance sits just before the final Recommendation step
     assert titles[-1] == "Recommendation"
     assert titles[-2].startswith("Governance ruling")
+
+
+def test_decide_keeps_baseline_for_ollama_without_a_legacy_loop(seeded_db, monkeypatch):
+    monkeypatch.setattr(config, "agent_mode", lambda: "ollama")
+    p = agent.decide(_ctx())
+    assert p["mode"] == "deterministic" and "no legacy tool-calling loop" in p["llm_note"]
 
 
 def test_decide_falls_back_when_provider_errors(seeded_db, monkeypatch):

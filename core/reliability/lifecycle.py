@@ -461,7 +461,9 @@ class LifecycleService:
             return "RETRY", "run inputs changed during reasoning: " + ", ".join(report.stale_reasons)
         result = SupervisorResult.model_validate(report.result_payload)
         if report.completion != "MODEL_COMPLETED" or result.exhausted_limits or result.invalid_output:
-            return "ESCALATED", f"supervisor run terminated with {report.completion}"
+            failure = next((item for item in result.blockers if item.startswith("Model invocation failed")), None)
+            return "ESCALATED", (f"supervisor run terminated with {report.completion}"
+                                 + (f": {failure}" if failure else ""))
         if result.disposition in {"BLOCKED", "ESCALATED"}:
             return "ESCALATED", f"supervisor disposition {result.disposition}: " + "; ".join(result.blockers[:3])
         if result.disposition in {"UNRESOLVED", "NEEDS_EVIDENCE"} or result.unresolved_evidence_needs:

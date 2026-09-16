@@ -152,7 +152,7 @@ import server.main
 def test_runtime_injection_and_disabled_live(scoped, monkeypatch):
     _, service, context = scoped
     forbidden = Mock(side_effect=AssertionError("no AWS session allowed"))
-    monkeypatch.setattr("core.agents.runtime.boto3.Session", forbidden)
+    monkeypatch.setattr("boto3.Session", forbidden)
     model = ScriptedModel()
     runtime = StrandsRuntime(settings(), model=model)
     kwargs = dict(name="test", system_prompt=DIAGNOSTIC_PROMPT, output_model=DiagnosticAssessment,
@@ -171,21 +171,39 @@ def test_explicit_bedrock_configuration(monkeypatch):
     session = Mock()
     factory = Mock(return_value=session)
     bedrock = Mock()
-    monkeypatch.setattr("core.agents.runtime.boto3.Session", factory)
-    monkeypatch.setattr("core.agents.runtime.BedrockModel", bedrock)
+    monkeypatch.setattr("core.providers.bedrock._default_session_factory", factory)
+    monkeypatch.setattr("strands.models.BedrockModel", bedrock)
     runtime = StrandsRuntime(settings(live_enabled=True))
-    runtime._bedrock_model()
-    factory.assert_called_once_with(region_name="us-east-1")
+    assert runtime.settings.provider == "bedrock" and runtime.provider.kind == "bedrock"
+    runtime._live_model()
+    factory.assert_called_once_with(region_name="us-east-1", profile_name=None)
     kwargs = bedrock.call_args.kwargs
     assert kwargs["boto_session"] is session and "region_name" not in kwargs
     assert kwargs["model_id"] == "explicit-account-model" and kwargs["max_tokens"] == 2500
     assert kwargs["boto_client_config"].retries == {"mode": "standard", "total_max_attempts": 2}
     session.get_credentials.return_value = None
-    with pytest.raises(RuntimeConfigurationError, match="credentials unavailable"):
-        runtime._bedrock_model()
+    with pytest.raises(RuntimeConfigurationError, match="credentials unavailable") as info:
+        runtime._live_model()
+    assert info.value.code == "provider_not_configured"
     factory.side_effect = ProfileNotFound(profile="missing")
-    with pytest.raises(RuntimeConfigurationError, match="Cannot configure Bedrock"):
-        runtime._bedrock_model()
+    with pytest.raises(RuntimeConfigurationError, match="Cannot configure bedrock"):
+        runtime._live_model()
+
+
+def test_runtime_settings_cover_every_provider():
+    from core.agents.runtime import provider_for_settings
+    with pytest.raises(ValidationError, match="aws_region"):
+        RuntimeSettings(model_id="m")
+    gemini = RuntimeSettings(provider="gemini", model_id="gemini-2.5-flash")
+    assert gemini.identity_locator() == "generativelanguage.googleapis.com" and gemini.aws_region is None
+    ollama = RuntimeSettings(provider="ollama", model_id="gemma3", endpoint="http://box:11434/")
+    assert ollama.identity_locator() == "http://box:11434"
+    assert provider_for_settings(gemini).kind == "gemini" and provider_for_settings(ollama).model_id == "gemma3"
+    assert StrandsRuntime(gemini).model_implementation() == "strands.models.gemini"
+    with pytest.raises(RuntimeConfigurationError, match="disabled"):
+        StrandsRuntime(ollama)._live_model()
+    with pytest.raises(TypeError):
+        StrandsRuntime(ollama, provider=object())
 
 
 @pytest.mark.parametrize("change", [

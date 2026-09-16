@@ -26,7 +26,7 @@ export function IncidentDetailPage() {
 
   if (!state.frames && !state.fleet.length) return <div className="page"><div className="page-body"><LoadingState /></div></div>;
   if (!alert) {
-    return <div className="page"><div className="page-body"><Breadcrumbs items={[{ label: "Incidents", to: ROUTES.incidents }, { label: id }]} /><EmptyState title={`Incident ${id} is not in the current projection`} body="The engine only projects incidents of the current generation. A reset or a new guided demo starts a new generation." action={<Btn onClick={() => navigate(ROUTES.incidents)}>Back to incidents</Btn>} /></div></div>;
+    return <div className="page"><div className="page-body"><Breadcrumbs items={[{ label: "Incidents", to: ROUTES.incidents }, { label: id }]} /><EmptyState title={`Incident ${id} is not in the current projection`} body="The engine only projects incidents of the current generation. A reset or a new Guided Demo starts a new generation." action={<Btn onClick={() => navigate(ROUTES.incidents)}>Back to incidents</Btn>} /></div></div>;
   }
   const phase = phaseOf(alert), owner = ownerOf(alert, state), lc = alert.lifecycle || {};
   const decide = (kind) => {

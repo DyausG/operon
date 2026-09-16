@@ -21,7 +21,15 @@ export function StatusTag({ value, dashed = false }) {
 export function Stamp({ tone = "auth", children, className = "" }) {
   return <span className={`stamp stamp-${tone} ${className}`}>{children}</span>;
 }
-export function ProvenanceTag({ provenance, runtime, live, compact = false }) {
+/** Reasoning provenance chip. `reasoning` is the engine's normalized descriptor
+ * ({ backend, provider, model, live_model, provenance }); legacy props still work. */
+export function ProvenanceTag({ provenance, runtime, live, reasoning = null, compact = false }) {
+  if (reasoning) {
+    const label = reasoning.live_model ? `Model · ${reasoning.model_provider || reasoning.provider}${reasoning.model ? ` · ${reasoning.model}` : ""}`
+      : reasoning.backend === "deterministic" ? "No model · deterministic advisory"
+      : reasoning.provenance === "INJECTED" ? "No live model · injected double" : "No model provider";
+    return <Tag className={`prov ${reasoning.live_model ? "prov-live" : "prov-none"}`} dashed={!reasoning.live_model} title={`backend ${reasoning.backend || "none"} · provider ${reasoning.provider || "none"} · model ${reasoning.model || "none"} · provenance ${reasoning.provenance || "none"}`}>{label}</Tag>;
+  }
   if (!provenance || provenance === "SIMULATED") return null;
   const rt = runtime ? String(runtime).replace("operon.demo.", "") : null;
   return (

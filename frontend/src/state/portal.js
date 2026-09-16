@@ -77,7 +77,7 @@ export function maintenanceRows(state) {
 const STREAM_TITLES = {
   control: (e) => (e.running ? "Simulator resumed" : "Simulator paused"),
   reset: () => "Engine reset",
-  demo: (e) => `Guided demo · ${words(e.status || "")}`,
+  demo: (e) => `Guided Demo · ${words(e.status || "")}`,
   alert: (e) => `Phase → ${title(e.phase)}`,
   outcome: (e) => (e.result ? title(e.result) : "Outcome recorded"),
   resolved: (e) => "Intervention dispatched",

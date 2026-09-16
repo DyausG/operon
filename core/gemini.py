@@ -1,13 +1,13 @@
 """
-Shared Google Gemini plumbing — one place for the client, the rate limiter, and
-the backoff wrapper so the agent's tool-calling loop AND the LLM-backed peers
-(Governance/Monitoring) share a single free-tier budget.
+Shared Google Gemini transport plumbing: the process-wide rate limiter and the
+backoff wrapper, so every Gemini call (specialist agents, peers, legacy demo)
+shares one free-tier budget.
 
-Everything here degrades gracefully: callers are expected to fall back to a
-deterministic path if a call raises (rate-limited past retries, no key, etc.).
+Client construction and JSON completions live in ``core.providers.gemini``; the
+thin wrappers here keep the historical entry points. Callers are expected to
+fall back deterministically if a call raises.
 """
 from __future__ import annotations
-import json
 import random
 import threading
 import time
@@ -50,9 +50,9 @@ def is_transient(e: Exception) -> bool:
 
 
 def get_client():
-    """A Gemini client bound to the configured API key. Raises if unavailable."""
-    from google import genai
-    return genai.Client(api_key=config.GEMINI_API_KEY)
+    """A Gemini client from the provider registry. Raises ProviderError if unconfigured."""
+    from core.providers import get_registry
+    return get_registry().build("gemini").client()
 
 
 def generate(client, **kwargs):
@@ -71,19 +71,7 @@ def generate(client, **kwargs):
 
 
 def structured_json(system: str, user: str) -> dict:
-    """Ask Gemini for a JSON object (no tools) and parse it. Raises on any failure
-    so the caller can fall back deterministically."""
-    from google.genai import types
-    client = get_client()
-    resp = generate(
-        client,
-        model=config.GEMINI_MODEL_ID,
-        contents=[types.Content(role="user", parts=[types.Part.from_text(text=user)])],
-        config=types.GenerateContentConfig(
-            system_instruction=system,
-            temperature=0.2,
-            max_output_tokens=config.GEMINI_MAX_TOKENS,
-            response_mime_type="application/json",
-        ),
-    )
-    return json.loads((resp.text or "").strip())
+    """Ask Gemini for a JSON object (no tools) and parse it. Raises ProviderError on
+    any failure so the caller can fall back deterministically."""
+    from core.providers import get_registry
+    return get_registry().build("gemini").generate_json(system, user)

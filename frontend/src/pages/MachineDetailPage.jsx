@@ -55,7 +55,7 @@ export function MachineDetailPage() {
             <div className="page-actions">
               {active ? <Link className="btn btn-small btn-primary" to={ROUTES.incident(active.incident_id)}>{Icons.incidents({})} Open active incident</Link> : null}
               <Link className="btn btn-small" to={`${ROUTES.agent}?machine=${encodeURIComponent(asset.equipment_id)}`}>{Icons.agent({})} Agent workspace</Link>
-              {!state.demoScenario?.active ? <Btn small quiet onClick={() => startDemo(asset.equipment_id)}>{Icons.demo({})} Run guided demo here</Btn> : null}
+              {!state.demoScenario?.active ? <Btn small quiet onClick={() => startDemo(asset.equipment_id)}>{Icons.demo({})} Run Guided Demo here</Btn> : null}
             </div>
           </div>
           <div className="mh-readouts">

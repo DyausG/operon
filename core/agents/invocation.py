@@ -5,12 +5,14 @@ import asyncio
 import logging
 from typing import TypeVar, cast
 
-from botocore.exceptions import BotoCoreError, ClientError
 from strands.hooks import AfterToolCallEvent
+
+from core.providers.errors import normalize_exception
 
 from core.reliability.assessments import validate_specialist_assessment, validate_specialist_context
 from core.reliability.evidence import EvidenceService
 from .contracts import DiagnosticContext, SpecialistAssessment
+from .rendering import model_message
 from .runtime import StrandsRuntime
 from .tools import EvidenceRequester, specialist_tools
 
@@ -74,17 +76,22 @@ async def invoke_specialist(runtime: StrandsRuntime, service: EvidenceService,
     try:
         result = await asyncio.wait_for(
             agent.invoke_async(
-                scope.model_dump_json(),
+                model_message(scope),
                 invocation_state={"incident_id": scope.incident_id, "run_id": scope.run_id,
                                   "input_revision": scope.input_revision},
                 limits=runtime.settings.invocation_limits(),
-            ), timeout=runtime.settings.invocation_timeout_seconds,
+            ), timeout=runtime.invocation_timeout(),
         )
-    except (BotoCoreError, ClientError) as exc:
-        logger.exception("specialist Bedrock invocation failed")
+    except asyncio.TimeoutError:
+        raise
+    except Exception as exc:
+        provider_error = normalize_exception(exc, provider=runtime.settings.provider)
+        if provider_error is None:
+            raise
+        logger.exception("specialist %s invocation failed (%s)", runtime.settings.provider, provider_error.code)
         raise SpecialistInvocationError(
-            "Bedrock invocation failed; check credentials, region, and model access. No fallback was used."
-        ) from exc
+            f"{runtime.settings.provider} invocation failed ({provider_error.code}): {provider_error}. "
+            "No fallback was used.", stop_reason=provider_error.code) from provider_error
     if result.stop_reason not in {"end_turn", "tool_use"} or result.structured_output is None:
         raise SpecialistInvocationError(f"{role} invocation incomplete: {result.stop_reason}",
                                         stop_reason=result.stop_reason)

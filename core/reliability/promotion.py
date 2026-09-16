@@ -301,7 +301,11 @@ class PromotionService:
         from core.reasoning.identity import code_identity
         bounds = SupervisorBounds.model_validate(bounds or SupervisorBounds())
         # Even injected provider configuration is read before acquiring a DB lock.
-        runtimes = as_backend(runtime, specialist_runtime).identity()
+        backend = as_backend(runtime, specialist_runtime)
+        if bounds.timeout_seconds is None:
+            # Freeze the provider policy's run bound so the durable snapshot states it explicitly.
+            bounds = bounds.model_copy(update={"timeout_seconds": backend.run_timeout()})
+        runtimes = backend.identity()
         version_identity = code_identity()
         with self.repository._write() as conn:
             incident = self.repository._fetch(conn, incident_id)
@@ -357,10 +361,17 @@ class PromotionService:
         Whatever the backend, its result only becomes a report through
         ``_complete_run`` and only becomes authority through the unchanged gates.
         """
+        from core.agents.runtime import RuntimeConfigurationError
         from core.reasoning.backend import as_backend
         _require(service.repository.path.resolve() == self.repository.path.resolve()
                  and service.capabilities.path.resolve() == self.repository.path.resolve(), "run stores must match")
         backend = as_backend(runtime, specialist_runtime)
+        # A model that cannot serve the workflow (unreachable, not pulled, no tool
+        # calling) is refused here, before any durable run record exists.
+        try:
+            await backend.preflight()
+        except RuntimeConfigurationError as exc:
+            raise PromotionRefused(f"reasoning runtime unavailable: {exc}", disposition="RETRY") from exc
         snapshot = self.start_run(incident_id, runtime=runtime, specialist_runtime=specialist_runtime, **kwargs)
         context = SpecialistContext.model_validate(snapshot.context_payload)
         cancelled_result = None

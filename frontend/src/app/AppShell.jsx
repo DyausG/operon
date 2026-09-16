@@ -12,7 +12,7 @@ import { rowIndex, isActive } from "../state/selectors.js";
 import { InspectorTray } from "../features/Inspector/Tray.jsx";
 import { Btn, Icons, Dot } from "../primitives/index.jsx";
 import { Menu, MenuItem, MenuRule, Modal, ConnectionBanner } from "../components/index.jsx";
-import { elapsed, clock, ago, title } from "../lib/format.js";
+import { elapsed, clock, ago, title, words } from "../lib/format.js";
 import { readJSON, writeJSON } from "../lib/storage.js";
 
 const SIDEBAR_KEY = "operon.sidebar";
@@ -134,13 +134,15 @@ function TopBar({ state, actions, onMenu, phone }) {
   const demo = state.demoScenario || {}, prov = state.reasoningProvenance || {};
   const clockText = demo.active ? elapsed(demo.elapsed_seconds) : `+${String(Math.floor((state.plantMin || 0) / 60)).padStart(2, "0")}:${String((state.plantMin || 0) % 60).padStart(2, "0")}`;
   const available = prov.status === "available";
-  const provider = prov.model_provider ? String(prov.model_provider).replace("Amazon ", "") : prov.backend === "demo" ? "Typed fixture" : "Reasoning";
+  const reasoning = demo.active && demo.reasoning ? demo.reasoning : prov;
+  const provider = reasoning.live_model ? `${reasoning.model_provider || reasoning.provider}${reasoning.model ? ` · ${reasoning.model}` : ""}`
+    : reasoning.backend === "deterministic" ? "No model · deterministic advisory" : "No model provider";
   return (
     <header className="topbar">
       {phone ? <button type="button" className="btn btn-quiet btn-icon" onClick={onMenu} aria-label="Open navigation">{Icons.menu({})}</button> : null}
       <div className="tb-context">
         <span className="tb-title">{PAGE_TITLES[segment] || "Operon"}</span>
-        <span className="tb-sub t3 truncate">{demo.active ? `Guided demo · ${demo.label || "simulated plant"}` : state.meta.plant || ""}</span>
+        <span className="tb-sub t3 truncate">{demo.active ? `${demo.label || "Guided Demo"} · ${demo.error ? "failed" : words(demo.status || "")}` : state.meta.plant || ""}</span>
       </div>
       <GlobalSearch state={state} />
       <div className="tb-right">
@@ -148,7 +150,7 @@ function TopBar({ state, actions, onMenu, phone }) {
           <span className="hdr-badge badge-gate" title="Human-in-the-loop governance: automated actions require human sign-off">{Icons.shield({ size: 12 })}<span>Policy gate · HITL</span></span>
           <span className={`hdr-badge badge-bedrock ${available ? "online" : "standby"}`} title={`Reasoning backend ${prov.backend || "none"} · ${prov.runtime || "no runtime"} · ${prov.status || "unknown"}`}><span className="status-dot" /><span>{provider} · {available ? "available" : "standby"}</span></span>
         </div>
-        <span className="hdr-clock" title={demo.active ? "Scripted scenario elapsed" : "Plant operating time"}>{clockText}</span>
+        <span className="hdr-clock" title={demo.active ? "Guided Demo scenario elapsed" : "Plant operating time"}>{clockText}</span>
         <span className={`activity ${!state.connected ? "off" : "on"}`} title={state.connected ? "Telemetry stream connected" : "Reconnecting"} />
         <EngineControls state={state} actions={actions} />
         <ThemeToggle />
@@ -181,7 +183,7 @@ function EngineControls({ state, actions }) {
         </button>
       }>
         <div className="menu-head"><span className="lbl">Engine</span><span className="mono t3">{state.running ? "running" : "paused"} · tick {state.tick}</span></div>
-        <MenuItem icon={Icons.demo({})} onClick={() => { setOpen(false); actions.startDemo(focus); }}>{demo.active ? "Restart guided demo" : "Start guided demo"}</MenuItem>
+        <MenuItem icon={Icons.demo({})} onClick={() => { setOpen(false); actions.startDemo(focus); }}>{demo.active ? "Restart Guided Demo" : "Start Guided Demo"}</MenuItem>
         {!demo.active ? <MenuItem icon={state.running ? Icons.pause({}) : Icons.play({})} onClick={() => { setOpen(false); (state.running ? actions.stop : actions.resume)(); }}>{state.running ? "Pause simulator" : "Resume simulator"}</MenuItem> : null}
         <MenuRule />
         <MenuItem icon={Icons.reset({})} danger onClick={() => { setOpen(false); setConfirmReset(true); }}>Reset engine…</MenuItem>
@@ -189,7 +191,7 @@ function EngineControls({ state, actions }) {
         <MenuItem icon={Icons.settings({})} to={`${ROUTES.settings}#plant`} onClick={() => setOpen(false)}>Plant &amp; system settings</MenuItem>
       </Menu>
       <Modal open={confirmReset} onClose={() => setConfirmReset(false)} title="Reset the engine?" actions={<><Btn onClick={() => setConfirmReset(false)}>Cancel</Btn><Btn primary onClick={() => { setConfirmReset(false); actions.reset(); }}>Reset</Btn></>}>
-        <p className="t2">This clears every projected incident, telemetry history and the guided demo, and starts a new artifact generation. The durable database keeps its committed records.</p>
+        <p className="t2">This clears every projected incident, telemetry history and the Guided Demo, and starts a new artifact generation. The durable database keeps its committed records.</p>
       </Modal>
     </>
   );

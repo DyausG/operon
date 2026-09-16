@@ -10,6 +10,15 @@ checkpoint here supersedes historical implementation-status statements in that
 roadmap. Runtime behavior and contracts are described in
 [STRANDS_FOUNDATION.md](STRANDS_FOUNDATION.md).
 
+> **Stage 0 (provider abstraction).** Model access now goes through the provider-agnostic
+> boundary described in [PROVIDERS.md](PROVIDERS.md): Google Gemini, Ollama (local) and
+> Amazon Bedrock are interchangeable behind `core/providers`, a truthful no-provider mode
+> exists, and provider choice is independent from the reliability domain logic below.
+> Where this document names Bedrock as the model provider for the Strands roles, read
+> "the active model provider". Future Samsung PRISM work may assign separate
+> provider/model configurations to Fast and Slow paths through the same factory; that
+> routing is not implemented.
+
 **Implemented checkpoint: Step 14 — outcome verification and autonomous closure**
 (on top of Step 13C — dependency-scoped source freshness, and Step 13B — lifecycle
 and governed execution integration)

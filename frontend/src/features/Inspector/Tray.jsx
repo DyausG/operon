@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useReducedMotion } from "framer-motion";
 import { AnimatePresence, motion, DUR, EASE } from "../../motion/index.jsx";
 import { useInspector } from "../../state/artifacts.jsx";
-import { ArtifactChip, Btn, Icons, IdToken, Stamp, Tag, Dot, KV } from "../../primitives/index.jsx";
+import { ArtifactChip, Btn, Icons, IdToken, Stamp, Tag, Dot, KV, ProvenanceTag } from "../../primitives/index.jsx";
 import { Renderer, ADVISORY_TYPES, TRUSTED_TYPES } from "./renderers.jsx";
 import { rowIndex, statusTone } from "../../state/selectors.js";
 import { dateTime, title, words } from "../../lib/format.js";
@@ -108,7 +108,8 @@ function Body({ artifact, raw, setRaw }) {
           <KV label="Source" mono value={artifact.source} />
           <KV label="Incident"><IdToken value={artifact.incident_id} full /></KV>
           <KV label="Equipment" mono value={artifact.equipment_id} />
-          <KV label="Runtime" mono value={artifact.runtime || "Autonomous Logic"} />
+          <KV label="Runtime" mono value={artifact.runtime || "Operon application"} />
+          {artifact.reasoning ? <KV label="Reasoning"><ProvenanceTag reasoning={artifact.reasoning} compact /></KV> : null}
         </div>
         {artifact.summary ? <p className="art-summary">{artifact.summary}</p> : null}
       </div>
