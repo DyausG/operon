@@ -57,6 +57,7 @@ from .reliability.repository import IncidentRepository, InvalidReference, StaleR
 from .reliability.signals import from_prediction, model_version
 from .reasoning.provenance import describe_backend, describe_run_identity, reasoning_label
 from .prism import PrismRepository, PrismRuntime
+from .prism.slow_path import adapter_from_environment as prism_adapter_from_environment
 
 HISTORY_CAP = 90
 # Per-incident automatic retry cadence. The capped monotonic deadline permits
@@ -155,10 +156,40 @@ class DemoEngine:
         self._model_version = model_version(config.MODEL_PATH)
         self._observed_at = self._clock()
         self._recover_incidents()
-        # Stage 1 PRISM runtime: sessions/revisions/runs over the same database; events ride /ws.
+        # PRISM runtime: sessions/revisions/runs over the same database; events ride /ws. Stage 2 gives
+        # it the production Slow Path around this engine's real reasoning stack (role ``slow``).
+        self._prism_backend_cache = None
         self.prism = PrismRuntime(PrismRepository(self.coordinator.repository.path),
-                                  incident_repository=self.coordinator.repository, broadcast=self.broadcast)
+                                  incident_repository=self.coordinator.repository, broadcast=self.broadcast,
+                                  adapter=prism_adapter_from_environment(services=self._prism_services()))
         self._prism_recovered = False
+
+    # ---- PRISM production Slow Path wiring (Stage 2) -------------------------------------------
+    def _prism_services(self) -> dict:
+        from .reliability.promotion import PromotionService
+        return {"incident_repository": self.coordinator.repository, "lifecycle": self.lifecycle,
+                "promotion": PromotionService(self.coordinator.repository), "evidence_service": self.evidence_service,
+                "backend_factory": self._prism_backend, "busy": self._prism_busy}
+
+    def _prism_backend(self):
+        """The reasoning backend PRISM's Slow Path uses: the provider bound to role ``slow`` through the
+        Stage 0 registry (the active provider unless a role override exists), or the labelled deterministic
+        advisory when no provider is configured. Rebuilt after Settings changes the provider."""
+        if self._prism_backend_cache is None:
+            from .prism.operon import default_backend_factory
+            self._prism_backend_cache = default_backend_factory()()
+        return self._prism_backend_cache
+
+    def _prism_busy(self, incident_id: str) -> str | None:
+        """Why the production adapter must wait before claiming a run on ``incident_id`` (or ``None``)."""
+        if self._guided_incident_id == incident_id and self._guided_task is not None and not self._guided_task.done():
+            return "the Guided Demo controller owns this incident"
+        for eid, incident in self.incidents.items():
+            if incident.id == incident_id:
+                task = self._lifecycle_tasks.get(eid)
+                if task is not None and not task.done():
+                    return "an engine diagnosis run is in flight for this incident"
+        return None
 
     @staticmethod
     def _default_runtime():
@@ -202,6 +233,7 @@ class DemoEngine:
         async with self._reasoning_lock:
             self.runtime = self._build_runtime()
             self._base_runtime = self.runtime
+            self._prism_backend_cache = None
         snapshot = self.snapshot()
         await self.broadcast(snapshot)
         return {"ok": True, "supervisor_available": self.runtime is not None,
@@ -1045,6 +1077,14 @@ class DemoEngine:
             return
         runtime, specialist_runtime = self._base_runtime, self.specialist_runtime
         if runtime is None or incident is None or incident.phase != IncidentPhase.INVESTIGATING:
+            return
+        if incident.id in self.prism.coordinator.active_incident_ids():
+            # An operator-driven PRISM revision is reasoning over this incident: the autonomous
+            # diagnosis would only supersede its claim. It resumes once the PRISM run is done.
+            self._trace_reasoning(
+                "normal_diagnosis_suppressed", equipment_id=eid, incident_id=incident.id, backend=runtime,
+                task_kind="normal", task_creation_location="core.engine.DemoEngine._schedule_diagnosis",
+                diagnosis_scheduling_decision="suppressed_prism_active", ownership_revalidation_result="prism_run_active")
             return
         task = self._lifecycle_tasks.get(eid)
         if task is not None and not task.done():

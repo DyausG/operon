@@ -380,13 +380,21 @@ class PrismRepository:
             return fencing.decide(session, run, identity)
 
     def commit_result(self, identity: RunIdentity, result: SlowPathResult, *,
-                      runtime: dict | None = None) -> tuple[CommitDecision, list[PrismEvent]]:
+                      runtime: dict | None = None, apply=None) -> tuple[CommitDecision, list[PrismEvent]]:
         """THE commit fence transaction: eligibility and mutation under one BEGIN IMMEDIATE.
 
         Committed: run RUNNING -> COMPLETED, session canonical pointer <- (revision, run, result),
         CAS on ``current_revision``. Not committed: the result is kept on the run row as
         history (STALE / audit) and a ``stale_result_discarded`` event is recorded. A result
         for an already-terminal run changes nothing.
+
+        ``apply(conn)`` (Stage 2) is the application's canonical write for a *current* result:
+        it runs inside this same transaction, after the fence decided and before the run and
+        session rows change, so an incident write and the PRISM commit are one atomic unit and
+        a newer revision can never slip between them. Its return value (a JSON dict or ``None``)
+        is stored under ``result.details["applied"]`` and as the durable ``apply:{run_id}``
+        effect, which is the exactly-once identity of the application. If ``apply`` raises,
+        the whole transaction rolls back: nothing is applied, nothing is committed.
         """
         result = SlowPathResult.model_validate(result.model_dump())
         now = utcnow()
@@ -401,6 +409,14 @@ class PrismRepository:
                 run = None
             decision = fencing.decide(session, run, identity)
             if decision.committed:
+                if apply is not None:
+                    applied = apply(conn)
+                    if applied is not None:
+                        result = result.model_copy(update={"details": {**result.details, "applied": applied}})
+                    key = f"apply:{run.run_id}"
+                    effect = self._insert_effect(conn, identity, key, key, "canonical_apply",
+                                                 content_hash({"run_id": run.run_id, "revision": run.revision}), now)
+                    self._finish_effect(conn, identity, effect, "COMPLETED", applied, now)
                 payload = result.model_dump(mode="json")
                 run = self._set_run_status(conn, run, RunStatus.COMPLETED, now, result=payload, completed_at=now,
                                            runtime=runtime if runtime is not None else run.runtime)
@@ -470,6 +486,60 @@ class PrismRepository:
                                 turn_id=run.turn_id, run_id=run.run_id)]
 
     # ---- effects ----------------------------------------------------------------
+    def transact(self, identity: RunIdentity, *, kind: str, idempotency_key: str, request_hash: str,
+                 perform) -> tuple[PrismEffect, bool, list[PrismEvent]]:
+        """Atomic fenced write (Stage 2): eligibility, the caller's write and the effect record in ONE
+        ``BEGIN IMMEDIATE``.
+
+        ``perform(conn)`` writes through the caller-owned connection (for example the Operon
+        incident tables, which share this database) and returns a JSON dict recorded as the
+        effect result. If the run's revision is no longer canonical the write never starts
+        (``effect_refused`` audited, ``StaleRevisionError`` raised). A duplicate key returns the
+        recorded effect without performing anything. If ``perform`` raises, the transaction
+        rolls back and nothing, not even the effect row, is left behind.
+        Returns ``(effect, performed, events)``.
+        """
+        now = utcnow()
+        refused = None
+        events: list[PrismEvent] = []
+        with self._write() as conn:
+            session = self._session(conn, identity.session_id)
+            run = self._run(conn, identity.run_id)
+            decision = fencing.decide(session, run, identity)
+            row = conn.execute("SELECT * FROM prism_effect WHERE session_id=? AND revision=? AND idempotency_key=?",
+                               (identity.session_id, identity.revision, idempotency_key)).fetchone()
+            if row is not None:
+                existing = _row_effect(row)
+                if (existing.kind, existing.request_hash) != (kind, request_hash):
+                    raise IdempotencyConflict("effect idempotency key is bound to a different action")
+                return existing, False, []
+            if not decision.committed:
+                events.append(self._event(conn, identity.session_id, "effect_refused",
+                                          {"kind": kind, "tool_call_id": idempotency_key, "reason": decision.reason,
+                                           "run_revision": identity.revision, "current_revision": session.current_revision},
+                                          revision=identity.revision, turn_id=identity.turn_id, run_id=identity.run_id, at=now))
+                refused = fencing.StaleRevisionError(decision)
+                effect = None
+            else:
+                effect = self._insert_effect(conn, identity, idempotency_key, idempotency_key, kind, request_hash, now)
+                outcome = perform(conn)
+                effect = self._finish_effect(conn, identity, effect, "COMPLETED", outcome, now)
+        if refused is not None:
+            raise refused
+        return effect, True, events
+
+    def _finish_effect(self, conn, identity, effect: PrismEffect, status: str, result, now) -> PrismEffect:
+        cursor = conn.execute("UPDATE prism_effect SET status=?,result_json=?,updated_at=?,completed_at=? "
+                              "WHERE effect_id=? AND status='PENDING'",
+                              (status, _json(result) if result is not None else None, now.isoformat(), now.isoformat(),
+                               effect.effect_id))
+        if cursor.rowcount != 1:
+            raise RuntimeError("effect changed concurrently")
+        self._event(conn, effect.session_id, "effect_completed", {"effect_id": effect.effect_id, "status": status,
+                    "kind": effect.kind}, revision=effect.revision, turn_id=identity.turn_id, run_id=effect.run_id, at=now)
+        return effect.model_copy(update={"status": EffectStatus(status), "result": result, "updated_at": now,
+                                         "completed_at": now})
+
     def begin_effect(self, identity: RunIdentity, *, tool_call_id: str, idempotency_key: str, kind: str,
                      request_hash: str) -> tuple[PrismEffect, bool]:
         """Durable effect identity ``(session, revision, idempotency_key)``; fenced on the canonical revision."""

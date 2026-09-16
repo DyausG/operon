@@ -193,6 +193,7 @@ class PrismRuntime:
         stale = [r for r in runs if r.status == RunStatus.STALE]
         failure = next((r for r in reversed(runs) if r.status == RunStatus.FAILED and not r.stale
                         and r.revision == session.current_revision), None)
+        events = self.repository.list_events(session_id)
         view = {
             "session_id": session.session_id, "incident_id": session.incident_id, "status": session.status,
             "current_revision": session.current_revision, "current_turn_id": session.current_turn_id,
@@ -207,6 +208,7 @@ class PrismRuntime:
             "last_failure": self._run_summary(failure),
             "recovery": {**session.recovery, "description": describe_recovery(session.recovery)} if session.recovery else None,
             "provenance": self.adapter.identity(), "fast_path_identity": getattr(self.fast_path, "identity", {}),
+            "reasoning": self._reasoning_block(session, current_turn, current_run, runs, events, failure),
             "in_process_runs": [r for r in self.coordinator.active_run_ids() if any(x.run_id == r for x in runs)],
             "turn_count": len(turns), "run_count": len(runs), "metadata": session.metadata,
             "created_at": session.created_at.isoformat(), "updated_at": session.updated_at.isoformat(),
@@ -219,7 +221,7 @@ class PrismRuntime:
                               "created_at": t.created_at.isoformat()} for t in turns]
             view["runs"] = [{**self._run_summary(r), "turn_id": r.turn_id, "result": r.result} for r in runs]
             view["effects"] = [e.model_dump(mode="json") for e in self.repository.list_effects(session_id)]
-            view["events"] = [e.model_dump(mode="json") for e in self.repository.list_events(session_id)[-100:]]
+            view["events"] = [e.model_dump(mode="json") for e in events[-100:]]
             if session.incident_id and self.incident_repository is not None:
                 try:
                     incident = self.incident_repository.fetch_incident(session.incident_id)
@@ -227,6 +229,51 @@ class PrismRuntime:
                 except LookupError:
                     view["incident"] = None
         return view
+
+    @staticmethod
+    def _reasoning_block(session, current_turn, current_run, runs, events, failure) -> dict:
+        """Reviewer-facing Stage 2 view: the current instruction, real reasoning progress of the current
+        run, its structured candidate/apply outcome and the stale candidates that were fenced."""
+        def candidate_of(run):
+            details = ((run.result or {}).get("details") or {}) if run else {}
+            return details.get("candidate"), details.get("applied"), details.get("reasoning"), details.get("reasoning_request")
+        candidate, applied, reasoning, request = candidate_of(current_run)
+        progress = []
+        if current_run is not None:
+            for event in events:
+                if event.event_type == "slow_path_progress" and event.run_id == current_run.run_id:
+                    payload = event.payload
+                    progress.append({k: payload.get(k) for k in ("stage", "role", "status", "disposition", "reason",
+                                                                  "pass_no", "capability", "seconds", "termination_reason")
+                                     if payload.get(k) is not None} | {"at": event.created_at.isoformat()})
+        stale_candidates = []
+        for run in runs:
+            if run.status == RunStatus.STALE and run.result:
+                c = ((run.result.get("details") or {}).get("candidate") or {})
+                stale_candidates.append({"run_id": run.run_id, "revision": run.revision, "attempt": run.attempt,
+                                         "disposition": c.get("disposition"), "summary": run.result.get("summary", "")[:160],
+                                         "provenance": run.result.get("provenance")})
+        summary = None
+        if candidate:
+            rec = candidate.get("recommended_hypothesis") or {}
+            summary = {"disposition": candidate.get("disposition"), "termination_reason": candidate.get("termination_reason"),
+                       "recommended_mechanism": rec.get("mechanism"), "confidence": candidate.get("confidence"),
+                       "hypotheses": len(candidate.get("hypotheses") or []),
+                       "specialists": [f"{s['role']}:{s['status']}" for s in candidate.get("specialists") or []],
+                       "evidence_used": len(candidate.get("evidence_used") or []),
+                       "unresolved_evidence_needs": len(candidate.get("unresolved_evidence_needs") or []),
+                       "blockers": len(candidate.get("blockers") or []), "next_step": candidate.get("next_step"),
+                       "plan_candidate_steps": len(candidate.get("plan_candidate") or []),
+                       "failure": candidate.get("failure"), "operon_run_id": candidate.get("operon_run_id")}
+        return {
+            "instruction": current_turn.content[:500] if current_turn else None,
+            "instruction_revision": current_turn.revision if current_turn else None,
+            "progress": progress[-12:],
+            "candidate": summary, "applied": applied, "reasoning": reasoning, "request": request,
+            "current_failure": (failure.error if failure else None),
+            "stale_candidates": stale_candidates,
+            "canonical_current": session.canonical_revision == session.current_revision,
+        }
 
     def reconnect_state(self, session_id: str, *, after_event_id: int = 0) -> dict:
         """What a reconnecting client needs: the durable view plus events it missed."""

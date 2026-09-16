@@ -186,7 +186,7 @@ class SlowPathResult(BaseModel):
     summary: str = Field(min_length=1, max_length=4000)
     findings: list[str] = Field(default_factory=list, max_length=32)
     proposed_actions: list[JsonDict] = Field(default_factory=list, max_length=16)
-    provenance: Literal["DETERMINISTIC", "LIVE", "INJECTED", "APPLICATION"] = "DETERMINISTIC"
+    provenance: Literal["DETERMINISTIC", "LIVE", "INJECTED", "SIMULATED", "APPLICATION"] = "DETERMINISTIC"
     runtime: JsonDict = Field(default_factory=dict)
     details: JsonDict = Field(default_factory=dict)
 

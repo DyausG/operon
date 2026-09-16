@@ -12,6 +12,8 @@ from .cancellation import CancelledByRuntime, uninterruptible
 from .models import ROLE_SLOW, SlowPathResult
 from .slow_path import SlowPathExecution
 
+from core.reasoning.backend import ReasoningBackend
+
 
 class ControlledAdapter:
     name = "controlled"
@@ -81,3 +83,69 @@ class ControlledAdapter:
             await execution.complete(result)   # first completion (through the runtime's fence)
         self.finished.append(execution.run_id)
         return result                          # second completion, via the runtime: must be a no-op
+
+
+class FakeReasoningBackend(ReasoningBackend):
+    """Injectable stand-in at the *production* reasoning seam (``ReasoningBackend.supervise``).
+
+    It is driven through exactly the interface ``PromotionService.run_supervisor`` and the
+    production PRISM adapter use, so tests exercise the real claim -> compute -> fence -> apply
+    path. It can block until released, ignore cancellation (finish late), fail, or answer at
+    once; it records every context it was asked to reason over (the reasoning request).
+    Provenance is INJECTED; it never presents itself as a live model.
+    """
+    name = "fake"
+    supports_progress = True
+
+    def __init__(self, *, block: bool = True, ignore_cancellation: bool = False, fail_with: str | None = None,
+                 auto_release: bool = False, result_factory=None, fail_calls: set[int] | None = None):
+        self.block, self.ignore_cancellation, self.fail_with = block, ignore_cancellation, fail_with
+        self.auto_release = auto_release
+        self.fail_calls = fail_calls   # 1-based supervise() call numbers that fail (None: every call when fail_with)
+        self.result_factory = result_factory
+        self.release = asyncio.Event()
+        self.contexts: list = []          # every SpecialistContext handed to the supervisor (in order)
+        self.snapshots: list = []
+        self.progress: list[dict] = []
+        self.cancelled: list[str] = []
+        self.completed: list[str] = []
+
+    def identity(self) -> dict:
+        return {"backend": self.name, "provider": "none", "model": None, "provenance": "INJECTED", "live_model": False,
+                "implementation": "operon.prism.testing.fake-reasoning-backend"}
+
+    def run_timeout(self) -> float:
+        return 60.0
+
+    async def supervise(self, service, context, *, bounds, snapshot=None, cancellation_result_handler=None,
+                        progress=None, cancelled=None):
+        self.contexts.append(context)
+        self.snapshots.append(snapshot)
+        call_no = len(self.contexts)
+        if progress is not None:   # the real supervisor announces itself before any model turn; so does the fake
+            progress({"stage": "supervisor_started", "provider": "none", "model": None, "run_purpose": context.run_purpose,
+                      "evidence_count": len(context.evidence), "injected": True})
+        if self.block and not self.auto_release:
+            try:
+                if self.ignore_cancellation:
+                    await uninterruptible(self.release.wait())
+                else:
+                    await self.release.wait()
+            except asyncio.CancelledError:
+                self.cancelled.append(context.run_id)
+                raise
+        if self.fail_with and (self.fail_calls is None or call_no in self.fail_calls):
+            raise RuntimeError(self.fail_with)
+        if self.result_factory is not None:
+            result = self.result_factory(context, snapshot, bounds)
+        else:
+            from core.demo_scenario import DeterministicAdvisoryBackend
+            forward = None if progress is None else (
+                lambda payload: None if payload.get("stage") == "supervisor_started" else progress(payload))
+            result = await DeterministicAdvisoryBackend().supervise(service, context, bounds=bounds, snapshot=snapshot,
+                                                                    progress=forward)
+            decision = result.decision.model_copy(update={
+                "reasoning_summary": f"Injected reasoning over: {context.question[:600]}"})
+            result = result.model_copy(update={"decision": decision})
+        self.completed.append(context.run_id)
+        return result

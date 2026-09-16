@@ -45,6 +45,10 @@ class ReasoningBackend(ABC):
     def identity(self) -> dict:
         """Frozen into ``SupervisorRunSnapshot.runtime_identity`` before any model call."""
 
+    # Stage 2: a backend that can stream safe structured status accepts ``progress=`` and
+    # ``cancelled=`` keyword arguments in ``supervise``; callers pass them only when this is true.
+    supports_progress: bool = False
+
     @abstractmethod
     async def supervise(self, service, context: SpecialistContext, *, bounds: SupervisorBounds,
                         snapshot=None, cancellation_result_handler=None) -> SupervisorResult:
@@ -81,6 +85,7 @@ def _runtimes(runtime, specialist_runtime):
 class LocalStrandsBackend(ReasoningBackend):
     """Today's in-process path, unchanged: the supervisor holds the application EvidenceService."""
     name = "local"
+    supports_progress = True
 
     def __init__(self, runtime: StrandsRuntime, specialist_runtime: StrandsRuntime | None = None):
         self.runtime, self.specialist_runtime = _runtimes(runtime, specialist_runtime)
@@ -95,12 +100,18 @@ class LocalStrandsBackend(ReasoningBackend):
     def run_timeout(self) -> float:
         return self.runtime.run_timeout()
 
-    async def supervise(self, service, context, *, bounds, snapshot=None, cancellation_result_handler=None):
+    async def supervise(self, service, context, *, bounds, snapshot=None, cancellation_result_handler=None,
+                        progress=None, cancelled=None):
         # Call-time import: the application test seam patches this module attribute.
         from core.agents.supervisor import supervise_reliability
+        extra = {}
+        if progress is not None:
+            extra["progress"] = progress
+        if cancelled is not None:
+            extra["cancelled"] = cancelled
         return await supervise_reliability(self.runtime, service, context, bounds=bounds,
                                            specialist_runtime=self.specialist_runtime,
-                                           cancellation_result_handler=cancellation_result_handler)
+                                           cancellation_result_handler=cancellation_result_handler, **extra)
 
 
 class InProcessPacketBackend(ReasoningBackend):
@@ -176,11 +187,16 @@ def runtime_settings_for(provider, *, model_id: str | None = None, **overrides) 
         raise RuntimeConfigurationError(f"{kind} runtime settings invalid: {exc}", code="provider_not_configured") from exc
 
 
-def runtimes_from_registry(registry=None) -> tuple[StrandsRuntime, StrandsRuntime | None]:
-    """Supervisor and (optional, when a distinct model is configured) specialist runtimes."""
+def runtimes_from_registry(registry=None, *, role: str | None = None) -> tuple[StrandsRuntime, StrandsRuntime | None]:
+    """Supervisor and (optional, when a distinct model is configured) specialist runtimes.
+
+    ``role`` (Stage 2) asks the registry for the provider bound to a semantic PRISM role
+    (``slow``); without a per-role override it resolves to the active provider, so the
+    selection stays compatible with today's configuration.
+    """
     from core.providers import get_registry
     registry = registry or get_registry()
-    provider = registry.active()
+    provider = registry.build(role=role) if role else registry.active()
     if provider.kind == "none" or not provider.configured():
         raise RuntimeConfigurationError(provider.not_configured_reason(), code="provider_not_configured")
     supervisor = StrandsRuntime(runtime_settings_for(provider), provider=provider)
@@ -194,7 +210,7 @@ def runtimes_from_registry(registry=None) -> tuple[StrandsRuntime, StrandsRuntim
     return supervisor, specialists
 
 
-def backend_from_environment(mode: str | None = None, *, registry=None) -> ReasoningBackend | None:
+def backend_from_environment(mode: str | None = None, *, registry=None, role: str | None = None) -> ReasoningBackend | None:
     """Select by OPERON_REASONING_BACKEND; never a silent fallback, never a client at import.
 
     ``local``/``packet`` build their Strands runtimes from the active model provider
@@ -215,7 +231,7 @@ def backend_from_environment(mode: str | None = None, *, registry=None) -> Reaso
     if mode not in {"local", "packet"}:
         raise RuntimeConfigurationError(
             f"unknown OPERON_REASONING_BACKEND {mode!r}; expected one of {', '.join(BACKEND_MODES)}")
-    supervisor, specialists = runtimes_from_registry(registry)
+    supervisor, specialists = runtimes_from_registry(registry, role=role)
     if mode == "local":
         return LocalStrandsBackend(supervisor, specialists)
     return InProcessPacketBackend(supervisor, specialists)

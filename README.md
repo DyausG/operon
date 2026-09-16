@@ -347,14 +347,23 @@ recipe, MCP setup, and A2A peers.
 
 ---
 
-## PRISM interruptible runtime (Stage 1)
+## PRISM interruptible runtime (Stage 1 + Stage 2)
 
 Operator messages (`POST /api/prism/sessions/{id}/messages`) are acknowledged immediately by a
 deterministic Fast Path and reasoned about by a per-revision Slow Path; a newer message
 supersedes the running revision and an atomic commit fence guarantees stale results never
-become canonical, even across restarts. The Agent workspace shows session, revision, Fast/Slow
-Path state, supersession, stale-result and recovery indicators. Deterministic verification:
-`uv run python scripts/prism_interruption_check.py`. Details: `docs/PRISM_RUNTIME.md`.
+become canonical, even across restarts. Stage 2 makes that Slow Path the **real Operon
+supervisor/specialist reasoning** (`core/prism/operon.py`, provider role `slow`): each revision
+claims an Operon run over the authoritative incident with the current operator instruction as
+the bounded question, the candidate is fenced before any incident write, and the report plus
+settlement are applied inside the same transaction, exactly once. A stale or late candidate is
+kept as history and never touches the incident. The Agent workspace shows the instruction, real
+supervisor/specialist progress, the canonical result, provider/model provenance, stale candidates
+and recovery. Verification: `uv run python scripts/prism_production_seam_check.py` (no cloud,
+injected at the production seam; `--live` with a configured provider) and
+`uv run python scripts/prism_interruption_check.py` (Stage 1). Details: `docs/PRISM_RUNTIME.md`.
+The Samsung Theme 5 adaptation is not finished: multimodal grounding and the final interruption
+UX are Stage 3.
 
 ## Portal routes
 

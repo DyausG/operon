@@ -46,6 +46,7 @@ class DeterministicAdvisoryBackend(ReasoningBackend):
     """
 
     name = "deterministic"
+    supports_progress = True
 
     def identity(self) -> dict:
         return {
@@ -59,9 +60,18 @@ class DeterministicAdvisoryBackend(ReasoningBackend):
         }
 
     async def supervise(self, service, context, *, bounds: SupervisorBounds,
-                        snapshot=None, cancellation_result_handler=None) -> SupervisorResult:
+                        snapshot=None, cancellation_result_handler=None, progress=None, cancelled=None) -> SupervisorResult:
         if snapshot is None:
             raise ValueError("deterministic advisory requires a durable run snapshot")
+
+        def notify(**payload):
+            if progress is not None:
+                try:
+                    progress({"incident_id": context.incident_id, "run_id": context.run_id, **payload})
+                except Exception:  # noqa: BLE001 - observability only
+                    pass
+        notify(stage="supervisor_started", provider="none", model=None, run_purpose=context.run_purpose,
+               evidence_count=len(context.evidence), deterministic=True)
         evidence_ids = list(snapshot.evidence_manifest)
         evidence = list(context.evidence)
         history = next((item for item in reversed(evidence) if item.kind == "maintenance_history"), evidence[0])
@@ -141,6 +151,9 @@ class DeterministicAdvisoryBackend(ReasoningBackend):
                            ("critic", "critic", critic)]
             selections = {"candidate_diagnosis_key": None, "engineering_key": "engineering",
                           "operations_key": "operations", "maintenance_plan_key": None, "critic_keys": ["critic"]}
+        for role, key, _value in assessments:
+            notify(stage="specialist_started", role=role, key=key, deterministic=True)
+            notify(stage="specialist_completed", role=role, key=key, status="SUCCEEDED", deterministic=True)
         return SupervisorResult.model_validate({
             "incident_id": context.incident_id, "run_id": context.run_id,
             "input_revision": context.input_revision, "disposition": "ADVISORY_CONCLUSION",

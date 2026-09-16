@@ -1266,3 +1266,10 @@ deterministic Fast Path acknowledgement; the Slow Path runs per revision and eve
 through the commit fence (`core/prism/fencing.py`), so a stale revision can never mutate
 canonical state, trigger an effect or touch incident authority. Events ride the existing `/ws`
 stream as an additive `prism` envelope. See `docs/PRISM_RUNTIME.md`.
+
+Stage 2 (`core/prism/operon.py`) runs the real supervisor/specialist stack under PRISM with a
+compute-before-commit split: `PromotionService.start_run` (claim), `ReasoningBackend.supervise`
+(compute) and `_complete_run` + settlement (apply) are driven through connection-injected seams,
+so the claim and the apply execute inside the PRISM fence transaction (`PrismRepository.transact`,
+`commit_result(apply=…)`) over the shared SQLite file. Nothing about promotion, approval,
+execution or outcome verification changed; a PRISM candidate is advisory input to the same gates.

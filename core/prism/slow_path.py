@@ -25,7 +25,7 @@ from core.reliability.repository import content_hash
 
 from .cancellation import CancellationToken, uninterruptible
 from .fencing import RunFence, StaleRevisionError
-from .models import PrismEffect, PrismTurn, ROLE_SLOW, RunIdentity, SlowPathResult
+from .models import CommitDecision, PrismEffect, PrismEvent, PrismTurn, ROLE_SLOW, RunIdentity, SlowPathResult
 
 ROLE_PROVIDER_SLOW = ROLE_SLOW
 
@@ -54,8 +54,10 @@ class SlowPathExecution:
     deadline_monotonic: float | None = None
     role: str = ROLE_SLOW
     progress: Callable[[dict], Awaitable[None]] | None = None
-    commit: Callable[[SlowPathResult], Awaitable[Any]] | None = None
+    commit: Callable[..., Awaitable[Any]] | None = None
+    publish: Callable[[list[PrismEvent]], Awaitable[None]] | None = None
     effects: list[EffectOutcome] = field(default_factory=list)
+    decision: CommitDecision | None = None   # set once ``complete`` has passed the fence (any outcome)
 
     @property
     def session_id(self) -> str:
@@ -81,11 +83,39 @@ class SlowPathExecution:
         if self.progress is not None:
             await self.progress(dict(payload))
 
-    async def complete(self, result: SlowPathResult):
-        """Early/explicit completion through the runtime's fence (events published). Duplicates are no-ops."""
+    async def complete(self, result: SlowPathResult, *, apply: Callable[[Any], dict | None] | None = None):
+        """Early/explicit completion through the runtime's fence (events published). Duplicates are no-ops.
+
+        ``apply(conn)`` (Stage 2) is executed inside the commit transaction only if the fence
+        admits the result: it is the one place a Slow Path result may write canonical
+        application state, and it is atomic with the PRISM commit itself.
+        """
         if self.commit is None:
-            return self.fence.commit(result, runtime=self.runtime)[0]
-        return await self.commit(result)
+            decision, events = self.fence.commit(result, runtime=self.runtime, apply=apply)
+            if self.publish is not None:
+                await self.publish(events)
+        else:
+            decision = await self.commit(result, apply=apply)
+        self.decision = decision
+        return decision
+
+    async def transact(self, *, kind: str, key: str, payload: dict, perform: Callable[[Any], dict | None]) -> EffectOutcome:
+        """Atomic fenced write, exactly once per (session, revision, key) (Stage 2).
+
+        Unlike ``effect`` (which performs an *external* action between two transactions),
+        ``perform(conn)`` runs inside the fence transaction over the shared database, so the
+        eligibility check and the write cannot be separated by a newer revision. Refused with
+        ``StaleRevisionError`` once the revision is superseded; a duplicate key returns the
+        recorded outcome without performing anything.
+        """
+        request_hash = content_hash({"kind": kind, "payload": payload})
+        effect, performed, events = self.fence.transact(kind=kind, idempotency_key=key, request_hash=request_hash,
+                                                        perform=perform)
+        if events and self.publish is not None:
+            await self.publish(events)
+        outcome = EffectOutcome(effect=effect, performed=performed, duplicate=not performed)
+        self.effects.append(outcome)
+        return outcome
 
     async def effect(self, *, tool_call_id: str, kind: str, payload: dict, perform: Callable[[], Awaitable[dict]],
                      idempotency_key: str | None = None) -> EffectOutcome:
@@ -248,14 +278,29 @@ class ProviderSlowPathAdapter:
                               findings=findings, proposed_actions=actions, provenance="LIVE", runtime=self.identity())
 
 
-def adapter_from_environment(registry=None, env=None) -> SlowPathAdapter:
-    """OPERON_PRISM_SLOW_PATH: auto (provider when configured, else deterministic) | deterministic | provider.
+def adapter_from_environment(registry=None, env=None, *, services: dict | None = None) -> SlowPathAdapter:
+    """OPERON_PRISM_SLOW_PATH: auto | operon | deterministic | provider.
+
+    ``auto`` and ``operon`` (Stage 2) select the production adapter around Operon's real
+    supervisor/specialist reasoning (``core.prism.operon``); it reasons through the provider bound
+    to role ``slow`` and labels a no-provider run SIMULATED, never LIVE. ``deterministic`` is the
+    Stage 1 no-model adapter, ``provider`` the Stage 1 bounded JSON completion. Both older modes are
+    explicit development selections; production never masquerades a fake as live reasoning.
 
     OPERON_PRISM_SLOW_DELAY_SECONDS and OPERON_PRISM_SLOW_COOPERATIVE tune the deterministic adapter
-    (the manual interruption scenario uses a delay and a non-cooperative worker on purpose).
+    (the manual interruption scenario uses a delay and a non-cooperative worker on purpose);
+    OPERON_PRISM_SLOW_COOPERATIVE, OPERON_PRISM_SLOW_HOLD_SECONDS and OPERON_PRISM_SLOW_MAX_PASSES
+    tune the production adapter (development knobs, documented in docs/PRISM_RUNTIME.md).
     """
     env = os.environ if env is None else env
     mode = (env.get("OPERON_PRISM_SLOW_PATH") or "auto").strip().lower()
+    if mode in ("auto", "operon"):
+        from .operon import OperonSlowPathAdapter, default_backend_factory, options_from_environment
+        options = options_from_environment(env)
+        if services is None:
+            from core.reliability.repository import IncidentRepository
+            services = {"incident_repository": IncidentRepository(), "backend_factory": default_backend_factory(registry)}
+        return OperonSlowPathAdapter(**{**options, **services})
     try:
         delay = float(env.get("OPERON_PRISM_SLOW_DELAY_SECONDS") or 0.0)
     except ValueError:

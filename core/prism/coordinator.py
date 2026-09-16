@@ -32,6 +32,7 @@ class RunHandle:
     task: asyncio.Task | None = None
     started_monotonic: float = field(default_factory=time.monotonic)
     deadline_task: asyncio.Task | None = None
+    incident_id: str | None = None
 
     @property
     def done(self) -> bool:
@@ -57,7 +58,7 @@ class RunCoordinator:
         if run.run_id in self.handles and not self.handles[run.run_id].done:
             return self.handles[run.run_id]
         identity = self.identity_for(run, turn)
-        handle = RunHandle(identity=identity, token=CancellationToken())
+        handle = RunHandle(identity=identity, token=CancellationToken(), incident_id=session.incident_id)
         self.handles[run.run_id] = handle
         handle.task = asyncio.create_task(self._execute(handle, turn, session, run.deadline_at),
                                           name=f"prism-slow:{run.session_id[:8]}:r{run.revision}:a{run.attempt}")
@@ -100,6 +101,10 @@ class RunCoordinator:
     def active_run_ids(self) -> list[str]:
         return [run_id for run_id, handle in self.handles.items() if not handle.done]
 
+    def active_incident_ids(self) -> set[str]:
+        """Incidents with an in-process Slow Path run (the engine suppresses its own diagnosis for them)."""
+        return {handle.incident_id for handle in self.handles.values() if not handle.done and handle.incident_id}
+
     # ---- execution -------------------------------------------------------------------
     async def _publish(self, events, session_id: str) -> None:
         if events:
@@ -138,18 +143,28 @@ class RunCoordinator:
             remaining = (deadline - datetime.now(timezone.utc)).total_seconds()
             deadline_monotonic = time.monotonic() + max(0.0, remaining)
             handle.deadline_task = asyncio.create_task(self._deadline(handle, max(0.0, remaining)))
+        context = incident_context(self.incident_repository, session.incident_id)
+        canonical = session.canonical or {}
+        context["session"] = {"session_id": session.session_id, "canonical_revision": session.canonical_revision,
+                              "canonical_run_id": session.canonical_run_id,
+                              "canonical_summary": (canonical.get("result") or {}).get("summary")}
         execution = SlowPathExecution(
-            identity=identity, turn=turn, context=incident_context(self.incident_repository, session.incident_id),
+            identity=identity, turn=turn, context=context,
             cancellation=handle.token, fence=self.fence.for_run(identity), runtime=runtime,
             deadline_monotonic=deadline_monotonic, role=identity.role,
             progress=lambda payload: self._progress(identity, payload),
-            commit=lambda result: self._commit(handle, result, runtime))
+            commit=lambda result, apply=None: self._commit(handle, result, runtime, apply=apply),
+            publish=lambda events: self._publish(events, identity.session_id))
         try:
             try:
                 result = await self.adapter.run(execution)
             finally:
                 if handle.deadline_task is not None:
                     handle.deadline_task.cancel()
+            if execution.decision is None:
+                # Every result passes the fence exactly here unless the adapter already
+                # completed explicitly (with an atomic apply); a second pass is a no-op.
+                await self._commit(handle, result, runtime)
         except (asyncio.CancelledError, CancelledByRuntime) as exc:
             reason = handle.token.reason or ("runtime_cancelled" if isinstance(exc, asyncio.CancelledError) else str(exc))
             if reason == "deadline_exceeded":
@@ -179,12 +194,11 @@ class RunCoordinator:
                            run_id=identity.run_id, revision=identity.revision, error_code=str(code),
                            stale=run.stale if run else None, new_status=run.status.value if run else None)
             return
-        await self._commit(handle, result, runtime)
 
-    async def _commit(self, handle: RunHandle, result, runtime: dict):
+    async def _commit(self, handle: RunHandle, result, runtime: dict, apply=None):
         """Every result, early or final, passes through the fence exactly here; duplicates are no-ops."""
         identity = handle.identity
-        decision, events = self.fence.commit(identity, result, runtime=runtime)
+        decision, events = self.fence.commit(identity, result, runtime=runtime, apply=apply)
         await self._publish(events, identity.session_id)
         if decision.committed:
             self.completed += 1
