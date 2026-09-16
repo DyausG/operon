@@ -29,6 +29,7 @@ from core import config
 from core.reliability import models as m
 from core.seed_data import seed
 from core.engine import DemoEngine
+from server.prism_api import register_prism_routes
 from server.providers_api import register_provider_routes
 
 app = FastAPI(title=f"{config.APP_NAME} — {config.APP_TAGLINE}")
@@ -111,6 +112,9 @@ async def health():
 
 # ---- AI provider configuration (Stage 0; no secrets are ever returned) ----
 register_provider_routes(app, lambda: engine)
+
+# ---- PRISM interruptible runtime (Stage 1): sessions, operator messages, reconnect ----
+register_prism_routes(app, lambda: engine.prism if engine is not None else None)
 
 
 @app.get("/api/state")

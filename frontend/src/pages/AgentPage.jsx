@@ -3,6 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { useEngineState } from "../state/engine.jsx";
 import { useSettings } from "../state/settings.jsx";
 import { deriveAgentRuntime, RUN_STATES } from "../state/agentRuntime.js";
+import { usePrismSession } from "../state/prism.js";
 import { alertByIncident, asset as assetOf, incidentRows } from "../state/portal.js";
 import { ledgerEntries, ownerOf, phaseOf, phaseTitle, viewOf, verdictFor, isActive, roleName, STAGE_LABEL } from "../state/selectors.js";
 import { ROUTES } from "../app/routes.js";
@@ -27,6 +28,7 @@ export function AgentPage() {
   const [tab, setTab] = useState("operation");
   const [confirm, setConfirm] = useState(null);
   const runtime = useMemo(() => deriveAgentRuntime(selected, state), [selected, state]);
+  const prism = usePrismSession(selected, state);
   const view = viewOf(selected);
   const asset = selected ? assetOf(state, selected.equipment_id) : (wantMachine ? assetOf(state, wantMachine) : null);
   const console_ = useMemo(() => ledgerEntries(view).filter((e) => settings.agent.showAdvisoryLane || e.lane !== "advisory").slice(0, 60), [view, settings.agent.showAdvisoryLane]);
@@ -70,6 +72,9 @@ export function AgentPage() {
             <Section label="Runtime state" meta={runtime.state}>
               <RuntimeState runtime={runtime} />
             </Section>
+            <Section label="PRISM session" meta={runtime.prism ? `revision ${runtime.prism.current_revision}` : "none"}>
+              <PrismPanel session={runtime.prism} events={state.prism?.events || []} />
+            </Section>
           </div>
 
           {/* centre: operation + console */}
@@ -90,7 +95,7 @@ export function AgentPage() {
                   </div>
                 ) : null}
                 {tab === "evidence" ? <Section label="Frozen evidence packet" meta={`${(view.evidence || []).length} records`}><EvidenceSlots evidence={view.evidence || []} blocked={phaseOf(selected) === "AWAITING_EVIDENCE"} /></Section> : null}
-                {tab === "console" ? <AgentConsole entries={console_} runtime={runtime} /> : null}
+                {tab === "console" ? <AgentConsole entries={console_} runtime={runtime} prism={prism} /> : null}
               </>
             ) : <EmptyState title="No incident selected" body="Pick an incident in the context list. The workspace shows the frozen evidence, specialist runs, recommendations and the approval hold point for that incident." />}
           </div>
@@ -155,9 +160,38 @@ function RuntimeState({ runtime }) {
   );
 }
 
-function AgentConsole({ entries, runtime }) {
+function PrismPanel({ session, events }) {
+  if (!session) return <span className="t3">No PRISM session for this incident. Send an instruction from the Activity tab to start one.</span>;
+  const slow = session.active_run || session.slow_path;
+  const mine = events.filter((e) => e.session_id === session.session_id).slice(0, 8);
+  return (
+    <div className="stack">
+      <div className="kvgrid kvgrid-2">
+        <KV label="Session" mono value={session.session_id.slice(0, 8)} />
+        <KV label="Revision" mono value={String(session.current_revision)} />
+        <KV label="Fast Path" value={session.fast_path ? `${words(session.fast_path.status)} · ${session.fast_path.latency_ms ?? "—"} ms` : "—"} />
+        <KV label="Slow Path" value={slow ? `${words(slow.status)} · ${slow.run_id.slice(0, 8)}${slow.attempt > 1 ? ` · attempt ${slow.attempt}` : ""}` : "not scheduled"} />
+        <KV label="Canonical" value={session.canonical_revision != null ? `revision ${session.canonical_revision}${session.canonical_current ? "" : " (older)"}` : "none yet"} />
+        <KV label="Superseded" value={session.interruption ? `rev ${session.interruption.superseded_revision} → ${session.interruption.superseded_by}${session.interruption.still_running?.length ? " · fencing old worker" : ""}` : "—"} />
+        <KV label="Stale / discarded" value={session.stale_results ? <Tag tone="crit">{session.stale_results} stale result{session.stale_results > 1 ? "s" : ""} discarded</Tag> : "none"} />
+        <KV label="Recovery" value={session.recovery?.description || "—"} />
+      </div>
+      <ProvenanceTag reasoning={{ backend: session.provenance?.adapter, provider: session.provenance?.provider, model: session.provenance?.model, live_model: session.provenance?.live_model, provenance: session.provenance?.provenance }} compact />
+      {mine.length ? <div className="transitions">{mine.map((e) => <div key={e.event_id} className="transition"><span className="mono t4">{clock(e.created_at)}</span><span><span className="t1">{words(e.event_type)}</span>{e.revision != null ? <span className="t3"> · rev {e.revision}</span> : null}{e.payload?.reason ? <span className="t3"> · {e.payload.reason}</span> : null}</span></div>)}</div> : null}
+    </div>
+  );
+}
+
+function AgentConsole({ entries, runtime, prism }) {
   const [draft, setDraft] = useState("");
-  const supported = runtime.capabilities.operatorInstructions.supported;
+  const supported = runtime.capabilities.operatorInstructions.supported && !!prism;
+  const send = async (e) => {
+    e.preventDefault();
+    const text = draft.trim();
+    if (!text || !prism) return;
+    setDraft("");
+    await prism.send(text);
+  };
   return (
     <Section label="Activity & operator console" meta={`${entries.length} entries`}>
       <div className="console">
@@ -169,11 +203,13 @@ function AgentConsole({ entries, runtime }) {
             </Inspectable>
           )) : <span className="t3">No activity recorded for this incident yet.</span>}
         </div>
-        <form className="console-form" onSubmit={(e) => e.preventDefault()}>
-          <textarea className="input" rows={2} value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={supported ? "Instruct the agent…" : "Operator instructions are not connected to a runtime yet."} disabled={!supported} aria-label="Operator instruction" />
-          <Btn primary type="submit" disabled={!supported || !draft.trim()}>{Icons.next({})} Send</Btn>
+        <form className="console-form" onSubmit={send}>
+          <textarea className="input" rows={2} value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={supported ? "Instruct the agent… (a new message supersedes the running revision)" : "Operator instructions need a live engine connection."} disabled={!supported || prism?.pending} aria-label="Operator instruction" />
+          <Btn primary type="submit" disabled={!supported || !draft.trim() || prism?.pending}>{Icons.next({})} Send</Btn>
         </form>
-        {!supported ? <div className="note-box note-warn">{Icons.info({})}<span>{runtime.capabilities.operatorInstructions.note} This composer is the boundary the Samsung PRISM interruptible-agent runtime will connect to; it never fabricates a response.</span></div> : null}
+        {prism?.error ? <div className="note-box note-warn">{Icons.info({})}<span>{prism.error}</span></div> : null}
+        {prism?.last ? <div className="note-box"><Dot tone={prism.last.fast_path?.status === "accepted_superseding" ? "warn" : "auth"} /><span><b>Fast Path · revision {prism.last.revision}{prism.last.duplicate ? " (replayed)" : ""}.</b> {prism.last.fast_path?.message}{prism.last.fast_path?.latency_ms != null ? <span className="t3"> · acknowledged in {prism.last.fast_path.latency_ms} ms</span> : null}</span></div> : null}
+        <div className="note-box"><Dot tone="adv" dashed /><span className="t3">{runtime.capabilities.interrupt.note} Deterministic/fake Slow Path results are labelled as such; nothing here is presented as live AI unless a provider ran it.</span></div>
       </div>
     </Section>
   );

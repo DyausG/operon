@@ -56,6 +56,7 @@ from .reliability.promotion import PromotionRefused
 from .reliability.repository import IncidentRepository, InvalidReference, StaleRevision
 from .reliability.signals import from_prediction, model_version
 from .reasoning.provenance import describe_backend, describe_run_identity, reasoning_label
+from .prism import PrismRepository, PrismRuntime
 
 HISTORY_CAP = 90
 # Per-incident automatic retry cadence. The capped monotonic deadline permits
@@ -154,6 +155,10 @@ class DemoEngine:
         self._model_version = model_version(config.MODEL_PATH)
         self._observed_at = self._clock()
         self._recover_incidents()
+        # Stage 1 PRISM runtime: sessions/revisions/runs over the same database; events ride /ws.
+        self.prism = PrismRuntime(PrismRepository(self.coordinator.repository.path),
+                                  incident_repository=self.coordinator.repository, broadcast=self.broadcast)
+        self._prism_recovered = False
 
     @staticmethod
     def _default_runtime():
@@ -267,6 +272,13 @@ class DemoEngine:
 
     # -- lifecycle ---------------------------------------------------------
     async def start(self):
+        if not self._prism_recovered:
+            # Startup reconstruction of PRISM sessions (explicit policy; never revives superseded work).
+            self._prism_recovered = True
+            try:
+                await self.prism.recover()
+            except Exception:  # noqa: BLE001 - recovery problems are logged, the simulation still starts
+                logger.exception("PRISM recovery failed")
         if self._task and not self._task.done():
             return
         self.running = True
@@ -315,7 +327,9 @@ class DemoEngine:
                     task=task,
                 )
         self._release_guided_ownership(reason="reset")
+        await self.prism.shutdown()
         reset_transactional()
+        self.prism.reset_memory()
         self.sim = PlantSimulator()
         self.tick_i = 0
         self.assets = {}
@@ -1833,7 +1847,8 @@ class DemoEngine:
                 "histories": self.histories,
                 "alerts": list(self.alerts.values()),
                 "triage": self._triage_msg(),
-                "business": self._business_summary(), "demo_scenario": self._demo_projection()}
+                "business": self._business_summary(), "demo_scenario": self._demo_projection(),
+                "prism": self.prism.overview()}
 
     def reasoning_provenance(self) -> dict:
         """Non-secret description of the engine's configured reasoning: backend, provider, model.

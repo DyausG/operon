@@ -8,11 +8,11 @@ import { last, phaseOf, viewOf } from "./selectors.js";
 export const RUN_STATES = ["idle", "fast_path", "slow_path", "tool_executing", "interrupted", "cancelled", "superseded", "recovering", "replanning", "completed", "failed"];
 
 export const CAPABILITIES = {
-  operatorInstructions: { supported: false, note: "No operator-message endpoint exists; instructions cannot reach a runtime yet." },
-  interrupt: { supported: false, note: "Runs are not cancellable from the portal; the lifecycle service owns run admission." },
-  cancel: { supported: false, note: "Reserved for the PRISM runtime." },
+  operatorInstructions: { supported: true, note: "Messages go to POST /api/prism/sessions/{id}/messages; each accepted message is a new revision." },
+  interrupt: { supported: true, note: "A new message supersedes the active revision: its Slow Path is cancelled where possible and fenced otherwise." },
+  cancel: { supported: "partial", note: "Cooperative cancellation only; non-cancellable work completes in isolation and is recorded stale." },
   replan: { supported: false, note: "Re-planning is triggered by the application, never by the portal." },
-  fastSlowPath: { supported: false, note: "The runtime reports one run per stage; fast/slow path split is not modelled." },
+  fastSlowPath: { supported: true, note: "Fast Path acknowledges immediately (deterministic); the Slow Path runs per revision and commits through the fence." },
   toolTrace: { supported: "partial", note: "Structured tool-call counts and delegations are recorded per run; no live step stream." },
   approvals: { supported: true, note: "Exact-plan approval/rejection is wired to /api/approve and /api/reject." },
 };
@@ -27,8 +27,22 @@ function runState(run) {
   return "completed";
 }
 
+/** The PRISM session bound to this incident (durable view mirrored from the server), if any. */
+export function prismSessionFor(incident, state) {
+  const sessions = Object.values(state.prism?.sessions || {});
+  if (!incident?.incident_id) return sessions.find((s) => !s.incident_id) || null;
+  return sessions.find((s) => s.incident_id === incident.incident_id) || null;
+}
+
+function prismState(session) {
+  if (!session) return null;
+  const map = { idle: "idle", fast_path: "fast_path", slow_path: "slow_path", superseding: "superseded", completed: "completed", failed: "failed", cancelled: "cancelled", recovering: "recovering" };
+  return map[session.runtime_state] || null;
+}
+
 /** Derive the workspace's runtime view for one incident. Pure; reads the read model only. */
 export function deriveAgentRuntime(incident, state) {
+  const prism = prismSessionFor(incident, state);
   const view = viewOf(incident);
   const runs = view.agent_runs || [];
   const current = last(runs);
@@ -51,11 +65,12 @@ export function deriveAgentRuntime(incident, state) {
     available: prov.backend === "deterministic" ? true : state.supervisorAvailable !== false && prov.status !== "awaiting_runtime",
     status: prov.status || "unknown",
     phase,
-    state: runState(current),
-    path: null,            // fast | slow — reserved
-    interruption: null,    // reserved
-    supersededBy: null,    // reserved
-    recovery: null,        // reserved
+    state: prismState(prism) || runState(current),
+    path: prism ? (prism.active_run ? "slow" : prism.fast_path ? "fast" : null) : null,
+    interruption: prism?.interruption ? `revision ${prism.interruption.superseded_revision} superseded by ${prism.interruption.superseded_by}${prism.interruption.still_running?.length ? " · old worker still running (fenced)" : ""}` : null,
+    supersededBy: prism?.interruption ? `revision ${prism.interruption.superseded_by}` : null,
+    recovery: prism?.recovery?.description || null,
+    prism,
     runs,
     current,
     toolCalls: runs.reduce((n, r) => n + (r.tool_calls || 0), 0),
