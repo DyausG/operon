@@ -1,4 +1,4 @@
-# PRISM Interruptible Runtime (Stage 1 foundation)
+# PRISM Interruptible Runtime (Stage 1 foundation + Stage 2 real Slow Path)
 
 Operon's adaptation for Samsung PRISM GenAI Hackathon 2026, Theme 5 (*Interruptible
 Real-Time Agents*). Stage 1 builds the **runtime foundation**: durable sessions,
@@ -208,11 +208,146 @@ discarded when the old worker returns; revision 2 becomes canonical. Restart the
 revision 2 remains canonical and nothing is revived. Every deterministic result is labelled
 `DETERMINISTIC`; a provider-backed run is labelled `LIVE`.
 
-## Stage 1 versus later work
+## Stage 2: the production Slow Path over Operon's real reasoning
 
-Done here: persistent identity model, revision/supersession, cooperative cancellation,
-atomic fencing, request and effect idempotency, recovery, versioned events, minimal Agent
-Workspace visibility, deterministic adapters and tests. Later: Fast Path intelligence
-(provider `role="fast"`), production Slow Path integration with the supervisor lifecycle,
-multimodal grounding (`voice_transcript`, `image_reference` are accepted but not processed),
-the final interruption UX, latency optimisation and benchmark/demo hardening.
+Stage 2 connects the Stage 1 substrate to Operon's **real supervisor/specialist reasoning
+lifecycle** without duplicating it and without weakening the invariant. The production adapter
+is `core/prism/operon.py` (`OperonSlowPathAdapter`, selected by `OPERON_PRISM_SLOW_PATH=auto|operon`,
+the default). The Samsung Theme 5 adaptation is still not finished: multimodal grounding, the
+model-backed Fast Path and the final interruption UX are Stage 3 work.
+
+### Compute before commit
+
+Operon's own reasoning path is `PromotionService.run_supervisor` = `start_run` (claim: freezes
+the evidence packet into a `SupervisorRunSnapshot` and sets `incident.active_run_id`) →
+`ReasoningBackend.supervise` (the supervisor and its specialists; only evidence acquisition
+writes) → `_complete_run` (durable `SupervisorReport`) → lifecycle settlement (promotion gates,
+`AWAITING_EVIDENCE`). Stage 2 does not call that combined method. It exposes the phases through
+connection-injected seams (`start_run(conn=…, question=…)`, `_complete_run(conn=…)`,
+`promote_diagnosis(conn=…)`, `IncidentRepository.transition_in(conn, …)`) and drives them as:
+
+```
+operator instruction (revision N)
+   → bounded reasoning question            current instruction + last canonical summary only
+   → CLAIM      start_run                  inside a fenced PRISM transaction (prism_effect claim:{run})
+   → COMPUTE    backend.supervise          real supervisor/specialists; no canonical write
+   → CANDIDATE  SupervisorResult → SlowPathResult (structured, reviewer-visible; nothing applied yet)
+   → FENCE      PrismRepository.commit_result   BEGIN IMMEDIATE, fencing.decide inside
+   → APPLY      _complete_run + settlement    inside that same transaction, recorded as prism_effect apply:{run}
+     or STALE   candidate kept on the PRISM run as history; the incident is untouched
+```
+
+Because the PRISM tables and the incident tables live in the same SQLite file, the fence decision
+and the incident write are one `BEGIN IMMEDIATE` unit: acceptance of revision N+1 and the apply of
+revision N are strictly ordered by the database. A candidate that lost that race is recorded
+`STALE` with its full structured result (audit) and no report, phase change, promotion or
+approval request exists for it. Two repository primitives carry this: `PrismRepository.transact`
+(atomic fenced write: eligibility → caller's write → effect row, all or nothing; refused with
+`StaleRevisionError` once superseded; idempotent per key) and `commit_result(apply=…)` (the
+application write executes only after the fence admits the result and rolls back with it).
+
+### Current instruction and bounded context
+
+`compose_question` builds the reasoning question from the **current** operator instruction
+(authoritative, ≤ 1400 chars) plus, when an earlier revision committed, that canonical result's
+summary (≤ 400 chars, explicitly overridden by the instruction where they conflict). Superseded
+instructions are never included, so a correction cannot be silently outvoted by the text it
+corrects. The question is frozen into the Operon snapshot (`context_payload.question`), the
+request metadata (revision, instruction hash, prior canonical revision, context policy) is
+persisted on the PRISM run (`result.details.reasoning_request`) and emitted as the
+`reasoning_context_prepared` progress event. Prompts and model text are never emitted.
+
+### Real supervisor cancellation
+
+Supersession signals the token and, for the default cooperative adapter, cancels the asyncio task
+(`agent.invoke_async` stops; a Strands `cancelled` stop reason now maps to termination
+`CANCELLED`). Checkpoints: before the claim, before every pass, at the supervisor's tool boundary
+(`SupervisorRun.before_tool` polls the token and calls `agent.cancel()`: no further delegation,
+evidence acquisition or model turn) and inside `CancellationToken.sleep` while waiting for a busy
+incident. Provider threads/streams that cannot be interrupted finish in isolation and are fenced.
+`OPERON_PRISM_SLOW_COOPERATIVE=0` makes the adapter deliberately non-cooperative (the worker ignores
+cancellation) and `OPERON_PRISM_SLOW_HOLD_SECONDS` holds a genuine candidate at the fence: both are
+development knobs for reproducing a late real result being fenced. A stale run's failure or
+cancellation is audited on the incident only when its revision is still current; otherwise it is
+refused by the fence and stays PRISM history, never the session's current failure.
+
+### Exactly-once apply, settlement and governance
+
+A current candidate applies once: the PRISM run row moves `RUNNING → COMPLETED` under a CAS, the
+`apply:{run_id}` effect is unique per (session, revision), `_complete_run` is idempotent per Operon
+run id (a different result for the same run is a `PromotionConflict`), and the whole apply rolls
+back with the commit if any step fails. Duplicate completion, a replayed execution (refused at the
+claim: `already_terminal`), a retried HTTP/websocket message (idempotency key) and a restart after
+the apply cannot apply twice. Settlement inside the apply is the lifecycle's deterministic rule:
+`ADVISORY_CONCLUSION` goes through the unchanged diagnosis gates (`promote_diagnosis` still requires
+the trusted technical confirmation; without it the incident parks in `AWAITING_EVIDENCE`),
+`NEEDS_EVIDENCE` parks the incident, blocked/failed candidates are recorded and left to the
+operator (PRISM never escalates on the operator's behalf). A plan proposed by the run is exposed
+as `plan_candidate` only; approval, execution and outcome verification are untouched. If the
+frozen inputs changed during reasoning (evidence collected mid-run), the report is recorded as
+history through the fence and one bounded further pass reasons over the refreshed packet
+(`OPERON_PRISM_SLOW_MAX_PASSES`, default 2).
+
+### Recovery
+
+`retry_current_revision` now retries production reasoning: the new attempt claims a **new** Operon
+run (the dead attempt's snapshot stays as history; its claim effect stays COMPLETED), reasons again
+from the current canonical instruction over the authoritative incident, and applies once. An
+abandoned pre-restart worker that returns later meets a terminal run row and is refused.
+
+### Provider role and provenance
+
+The adapter resolves its backend through `backend_from_environment(role="slow")` →
+`registry.build(role="slow")`: a role override in the provider configuration wins, otherwise the
+active provider (Gemini, Ollama or Bedrock) is used, so today's selection stays valid. Without any
+configured provider the labelled `DeterministicAdvisoryBackend` reasons (provider `none`,
+provenance `SIMULATED`, `live_model=false`); a configured but unusable provider is reported as a
+run failure, never silently replaced. Every PRISM run records the effective backend, provider,
+model id, `live_model`, provenance (`LIVE` / `INJECTED` / `SIMULATED`) and pass, the Operon
+snapshot freezes the same identity, and the Agent Workspace shows it next to the revision.
+
+### Progress events, view and UI
+
+Real progress rides `slow_path_progress` with a `stage`: `reasoning_context_prepared`,
+`run_claimed`, `supervisor_started`, `specialist_started`, `specialist_completed`,
+`evidence_considered`, `cancellation_observed`, `candidate_ready`, `development_hold`,
+`candidate_fenced` (`committed` / `stale` / `retry`), `candidate_applied`, `waiting_for_incident`,
+`stale_failure_fenced`. Every event carries session/revision/run identity and only safe status
+fields. The session view gains `reasoning`: the current instruction, the current run's progress,
+a structured candidate summary (disposition, recommended hypothesis, confidence, specialists,
+evidence used, next step), the apply outcome (report id, settlement, incident phase), the current
+failure and the stale candidates that were fenced. The Agent Workspace PRISM panel renders these.
+
+While a PRISM revision reasons over an incident, the engine's autonomous diagnosis for that
+incident is suppressed (`normal_diagnosis_suppressed`, `suppressed_prism_active`); the adapter in
+turn waits (cooperatively, bounded by the deadline) while the Guided Demo controller or an engine
+diagnosis owns the incident. An instruction on an `AWAITING_EVIDENCE` incident resumes
+`INVESTIGATING` inside the fenced claim (audited as `operator instruction (PRISM revision N)`).
+
+### Verification
+
+```
+uv run python scripts/prism_production_seam_check.py            # no cloud: injected backend at the production seam
+uv run python scripts/prism_production_seam_check.py --live     # configured provider (Gemini first); candidate held 6 s
+uv run python scripts/prism_interruption_check.py               # Stage 1 deterministic adapter check still passes
+```
+
+The injected check drives a real incident through the production adapter: revision 1 claims an
+Operon run and starts, the correction is accepted as revision 2 while revision 1 is held at the
+seam, revision 2 claims its own run with the correction as the authoritative instruction, both
+results are released, revision 1's valid diagnosis candidate is recorded `STALE` and leaves no
+report, revision 2 applies exactly once, and a restart changes nothing. `--live` refuses to run
+(exit 2) unless a live provider is configured for role `slow`, and only reports `LIVE` when the
+run's provenance is `LIVE`. Tests: `tests/test_prism_production.py` (wiring, correction, stale and
+non-cooperative candidates, the apply race on durable connections, exactly-once apply, stale
+failure, recovery, responsiveness, bounded retry pass, lifecycle boundaries, the transact primitive).
+
+## Stage 1 / Stage 2 versus later work
+
+Done: persistent identity model, revision/supersession, cooperative cancellation, atomic fencing,
+request and effect idempotency, recovery, versioned events, the production Slow Path over the real
+supervisor/specialist stack with compute-before-commit, fenced incident apply, bounded instruction
+context, real progress events and Agent Workspace visibility. Stage 3+: Fast Path intelligence
+(provider `role="fast"`), multimodal grounding (`voice_transcript`, `image_reference` are accepted
+but not processed; image/voice understanding and evidence fusion), the final interruption UX,
+intervention-review stages under PRISM, benchmark suite, demo video and submission hardening.

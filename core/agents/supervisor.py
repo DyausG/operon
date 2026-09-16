@@ -122,11 +122,18 @@ def create_supervisor_agent(run: SupervisorRun) -> Agent:
 async def supervise_reliability(runtime: StrandsRuntime, service: EvidenceService,
                                 context: SpecialistContext, *, bounds: SupervisorBounds | None = None,
                                 specialist_runtime: StrandsRuntime | None = None,
-                                cancellation_result_handler: Callable[[SupervisorResult], None] | None = None) -> SupervisorResult:
+                                cancellation_result_handler: Callable[[SupervisorResult], None] | None = None,
+                                progress: Callable[[dict], None] | None = None,
+                                cancelled: Callable[[], bool] | None = None) -> SupervisorResult:
     """Application entry point. Context/configuration errors fail before model access.
 
     Model/tool failures return bounded advisory escalation. Caller cancellation is
     propagated; an already-running evidence thread can finish its evidence-only write.
+
+    Stage 2 hooks (both optional, both observability/cooperation only, never authority):
+    ``progress`` receives safe structured status dicts (supervisor/specialist/evidence
+    stages; never prompts or model text); ``cancelled`` is polled at every tool
+    boundary and, when true, stops the agent at its next cancellation-safe point.
     """
     if not service.same_store():
         raise ValueError("evidence capabilities and repository must use the same application store")
@@ -134,9 +141,12 @@ async def supervise_reliability(runtime: StrandsRuntime, service: EvidenceServic
         raise TypeError("supervisor requires an application-assembled SpecialistContext")
     scope = validate_specialist_context(service.repository, context)
     bounds = SupervisorBounds.model_validate(bounds or SupervisorBounds())
-    run = SupervisorRun(runtime, specialist_runtime or runtime, service, scope, bounds)
+    run = SupervisorRun(runtime, specialist_runtime or runtime, service, scope, bounds,
+                        progress=progress, cancelled=cancelled)
     agent = create_supervisor_agent(run)
     decision, reason = None, "MODEL_COMPLETED"
+    run.notify(stage="supervisor_started", provider=runtime.settings.provider, model=runtime.settings.model_id,
+               run_purpose=scope.run_purpose, evidence_count=len(scope.evidence))
     # An explicit bound wins; otherwise the provider's run policy (local inference is slow).
     run_timeout = bounds.timeout_seconds if bounds.timeout_seconds is not None else runtime.run_timeout()
     try:
@@ -149,6 +159,9 @@ async def supervise_reliability(runtime: StrandsRuntime, service: EvidenceServic
         )
         if result.stop_reason.startswith("limit_"):
             run.exhausted.add(f"supervisor_{result.stop_reason}")
+        elif result.stop_reason == "cancelled":
+            # Stopped at a cancellation-safe point after the runtime's cooperative signal.
+            reason = "CANCELLED"
         elif result.stop_reason not in {"end_turn", "tool_use"} or result.structured_output is None:
             reason = "INVALID_OUTPUT" if run.invalid_output else "MODEL_FAILED"
         else:

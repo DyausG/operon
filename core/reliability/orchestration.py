@@ -267,9 +267,12 @@ class SupervisorRun:
     """One event-loop-owned run. Never shared between incidents or reused."""
 
     def __init__(self, runtime: StrandsRuntime, specialist_runtime: StrandsRuntime,
-                 service: EvidenceService, scope: SpecialistContext, bounds: SupervisorBounds):
+                 service: EvidenceService, scope: SpecialistContext, bounds: SupervisorBounds,
+                 *, progress=None, cancelled=None):
         self.runtime, self.specialist_runtime = runtime, specialist_runtime
         self.service, self.scope, self.bounds = service, scope, bounds
+        # Stage 2: safe status callback and cooperative cancellation poll (no authority).
+        self._progress, self._cancelled = progress, cancelled
         self.advice = {item.key: item for item in scope.advisory_inputs}
         assessment_dependencies(tuple(self.advice), self.advice)
         self.evidence_ids = dict.fromkeys(item.id for item in scope.evidence)
@@ -299,7 +302,32 @@ class SupervisorRun:
         self.exhausted.add(name)
         raise OrchestrationLimitError(f"orchestration limit exhausted: {name}")
 
+    def notify(self, **payload) -> None:
+        """Structured, secret-free status for the caller; a failing observer never affects the run."""
+        if self._progress is None:
+            return
+        try:
+            self._progress({"incident_id": self.scope.incident_id, "run_id": self.scope.run_id, **payload})
+        except Exception:  # noqa: BLE001 - observability only
+            pass
+
+    def cancellation_requested(self) -> bool:
+        if self._cancelled is None:
+            return False
+        try:
+            return bool(self._cancelled())
+        except Exception:  # noqa: BLE001 - a broken poll never stops a run on its own
+            return False
+
     def before_tool(self, event: BeforeToolCallEvent):
+        if self.cancellation_requested():
+            # Cooperative checkpoint at the tool boundary: no further delegation, evidence
+            # acquisition or model turn for a superseded run. Whatever came back so far is
+            # still fenced by the caller; this only stops wasting provider time.
+            self.notify(stage="cancellation_observed", boundary="tool", tool=event.tool_use["name"])
+            event.cancel_tool = "Run cancelled: the operator instruction was superseded"
+            event.agent.cancel()
+            return
         if self.tool_calls >= self.bounds.max_tool_calls:
             self.exhausted.add("supervisor_tool_calls")
             event.cancel_tool = "Supervisor tool call budget exhausted"
@@ -355,6 +383,7 @@ class SupervisorRun:
             record["parameters"] = parameters
         self.requests.append(EvidenceRequestRecord(**record, status="CANCELLED", error_code="IncompleteCollection"))
         self.evidence_cache[fingerprint] = None
+        self.notify(stage="evidence_considered", role=role, capability=query.capability, status="requested")
         try:
             if validation_error is not None:
                 raise validation_error
@@ -379,6 +408,8 @@ class SupervisorRun:
             self.evidence_cache[fingerprint] = collection
             self.requests[index] = EvidenceRequestRecord(
                 **record, status="UNAVAILABLE" if collection.evidence.quality == "MISSING" else "COLLECTED")
+            self.notify(stage="evidence_considered", role=role, capability=query.capability,
+                        status=self.requests[index].status, evidence_id=collection.evidence.id)
             return collection
         except asyncio.CancelledError:
             raise
@@ -424,6 +455,8 @@ class SupervisorRun:
         self.delegations.append(DelegationRecord(**record, status="CANCELLED", error_code="IncompleteInvocation"))
         # Reserve fingerprint before awaiting: failed identical calls cannot start another agent.
         self.delegation_cache[fingerprint] = _error("PreviousDelegationFailed")
+        self.notify(stage="specialist_started", role=role, key=key, evidence_count=len(record["evidence_ids"]),
+                    provider=self.specialist_runtime.settings.provider, model=self.specialist_runtime.settings.model_id)
         try:
             invoke = {"diagnostic": assess_diagnosis, "engineering": assess_engineering,
                       "operations": assess_operations, "critic": review_assessment,
@@ -435,11 +468,14 @@ class SupervisorRun:
             self.advice[key] = item
             self.delegations[index] = DelegationRecord(**record, status="SUCCEEDED")
             self.delegation_cache[fingerprint] = result
+            self.notify(stage="specialist_completed", role=role, key=key, status="SUCCEEDED")
             return result
         except asyncio.CancelledError:
+            self.notify(stage="specialist_completed", role=role, key=key, status="CANCELLED")
             raise
         except Exception as exc:
             self.delegations[index] = DelegationRecord(**record, status="FAILED", error_code=type(exc).__name__)
+            self.notify(stage="specialist_completed", role=role, key=key, status="FAILED", error_code=type(exc).__name__)
             if isinstance(exc, SpecialistInvocationError) and (exc.stop_reason or "").startswith("limit_"):
                 self.exhausted.add(f"{role}_{exc.stop_reason}")
             elif isinstance(exc, asyncio.TimeoutError):

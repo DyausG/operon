@@ -7,6 +7,7 @@ application invocation seam, never a public endpoint accepting model/caller JSON
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 
 from core import db
 from core.agents.contracts import (
@@ -62,6 +63,21 @@ def executable_content_hash(intervention: m.Intervention) -> str:
 class PromotionService:
     def __init__(self, repository: IncidentRepository):
         self.repository = repository
+
+    @contextmanager
+    def _writer(self, conn=None):
+        """The caller's already-open ``BEGIN IMMEDIATE`` connection, or a fresh one.
+
+        Stage 2 (PRISM) runs the claim and the completion of a supervisor run *inside*
+        the PRISM commit-fence transaction so the revision check and the incident write
+        cannot be separated by a newer operator revision. Every other caller keeps the
+        original one-transaction-per-command behaviour.
+        """
+        if conn is not None:
+            yield conn
+            return
+        with self.repository._write() as own:
+            yield own
 
     def _all(self, conn, incident_id, cls):
         return [self.repository._artifact(conn, incident_id, row[0]) for row in conn.execute(
@@ -287,7 +303,8 @@ class PromotionService:
 
     def start_run(self, incident_id: str, *, asset_id: str, stage: str, expected_revision: int,
                   evidence_ids: tuple[str, ...], runtime, specialist_runtime=None,
-                  bounds: SupervisorBounds | None = None, draft_id: str | None = None):
+                  bounds: SupervisorBounds | None = None, draft_id: str | None = None,
+                  question: str | None = None, conn=None):
         """Atomically claim a new application ID and freeze inputs; never invokes a model.
 
         A new claim supersedes an older active run, including an unfinished one.
@@ -296,6 +313,11 @@ class PromotionService:
         ``runtime`` is a ``StrandsRuntime`` (wrapped as the local backend) or a
         ``core.reasoning.backend.ReasoningBackend``; its identity and the code
         identity are frozen here so a drifted runtime can be refused later.
+
+        ``question`` (Stage 2) replaces the stage's default question with the bounded,
+        application-composed operator instruction; it is frozen into the snapshot's
+        ``context_payload`` so the audit shows exactly what the run was asked.
+        ``conn`` lets a fenced caller run the claim inside its own transaction.
         """
         from core.reasoning.backend import as_backend
         from core.reasoning.identity import code_identity
@@ -307,11 +329,11 @@ class PromotionService:
             bounds = bounds.model_copy(update={"timeout_seconds": backend.run_timeout()})
         runtimes = backend.identity()
         version_identity = code_identity()
-        with self.repository._write() as conn:
+        with self._writer(conn) as conn:
             incident = self.repository._fetch(conn, incident_id)
             self.repository._check(incident, expected_revision)
             _require(asset_id in incident.equipment_ids, "run asset outside incident scope")
-            artifacts = []
+            artifacts, requested_question = [], question
             if stage == "DIAGNOSIS":
                 _require(incident.phase == m.IncidentPhase.INVESTIGATING and draft_id is None,
                          "diagnosis run requires INVESTIGATING")
@@ -329,6 +351,10 @@ class PromotionService:
                 question = f"Review exact draft {draft.id} with artifact hash {_hash(draft)}. Preserve its executable content."
             else:
                 raise PromotionRefused("unsupported run stage")
+            if requested_question is not None:
+                _require(isinstance(requested_question, str) and requested_question.strip()
+                         and len(requested_question) <= 2000, "run question must be bounded non-empty text")
+                question = requested_question
             run_id = new_id()
             def context_for(values):
                 return SpecialistContext(
@@ -400,10 +426,10 @@ class PromotionService:
             raise
         return self._complete_run(snapshot, result)
 
-    def _complete_run(self, snapshot, result):
+    def _complete_run(self, snapshot, result, *, conn=None):
         """Private application completion, not caller-supplied promotion input."""
         result = SupervisorResult.model_validate_json(result.model_dump_json())
-        with self.repository._write() as conn:
+        with self._writer(conn) as conn:
             incident = self.repository._fetch(conn, snapshot.incident_id)
             stored = self._get(conn, incident.id, snapshot.id, m.SupervisorRunSnapshot)
             _require(stored == snapshot, "snapshot differs from stored run")
@@ -595,8 +621,9 @@ class PromotionService:
             idempotency_key=content_hash({"incident": incident.id, "run": snapshot.run_id, "stage": stage}),
             request_hash=content_hash(request), **extra)
 
-    def promote_diagnosis(self, incident_id: str, *, report_id: str, confirmation_id: str, expected_revision: int):
-        with self.repository._write() as conn:
+    def promote_diagnosis(self, incident_id: str, *, report_id: str, confirmation_id: str, expected_revision: int,
+                          conn=None):
+        with self._writer(conn) as conn:
             report = self._get(conn, incident_id, report_id, m.SupervisorReport)
             request = {"report_id": report_id, "report_hash": _hash(report), "confirmation_id": confirmation_id}
             retry = self._retry(conn, incident_id, report.run_id, "diagnosis", request)

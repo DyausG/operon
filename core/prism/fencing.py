@@ -72,9 +72,18 @@ class CommitFence:
     def for_run(self, identity: RunIdentity) -> "RunFence":
         return RunFence(self, identity)
 
-    def commit(self, identity: RunIdentity, result: SlowPathResult, *, runtime: dict | None = None):
-        """Atomic canonical commit or stale/discard record. Returns (decision, events)."""
-        return self._repository.commit_result(identity, result, runtime=runtime)
+    def commit(self, identity: RunIdentity, result: SlowPathResult, *, runtime: dict | None = None, apply=None):
+        """Atomic canonical commit or stale/discard record. Returns (decision, events).
+
+        ``apply(conn)`` runs inside the commit transaction only when the fence admits the
+        result (Stage 2: the application's incident write and the PRISM commit are one unit).
+        """
+        return self._repository.commit_result(identity, result, runtime=runtime, apply=apply)
+
+    def transact(self, identity: RunIdentity, *, kind: str, idempotency_key: str, request_hash: str, perform):
+        """Atomic fenced write: ``perform(conn)`` executes inside the fence transaction, once per key."""
+        return self._repository.transact(identity, kind=kind, idempotency_key=idempotency_key,
+                                         request_hash=request_hash, perform=perform)
 
     def check(self, identity: RunIdentity) -> CommitDecision:
         """Advisory, non-mutating eligibility (for cooperative workers). Never a substitute for commit."""
@@ -97,8 +106,11 @@ class RunFence:
     def __init__(self, fence: CommitFence, identity: RunIdentity):
         self.fence, self.identity = fence, identity
 
-    def commit(self, result: SlowPathResult, *, runtime: dict | None = None):
-        return self.fence.commit(self.identity, result, runtime=runtime)
+    def commit(self, result: SlowPathResult, *, runtime: dict | None = None, apply=None):
+        return self.fence.commit(self.identity, result, runtime=runtime, apply=apply)
+
+    def transact(self, **kwargs):
+        return self.fence.transact(self.identity, **kwargs)
 
     def check(self) -> CommitDecision:
         return self.fence.check(self.identity)

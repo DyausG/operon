@@ -418,16 +418,23 @@ class IncidentRepository:
         if m.IncidentPhase(target) == m.IncidentPhase.CLOSED:
             raise InvalidReference("CLOSED requires verified outcome authority (LifecycleService.verify_outcome)")
         with self._write() as conn:
-            incident = self._fetch(conn, incident_id)
-            self._check(incident, expected_revision)
-            validate_transition(incident.phase, target)
-            updated = self._update(conn, incident, phase=target)
-            payload = {"from": incident.phase.value, "to": updated.phase.value, "reason": reason}
-            self._event(conn, updated, "PHASE_CHANGED", payload)
-            if updated.phase == m.IncidentPhase.ESCALATED:
-                self._event(conn, updated, "INCIDENT_ESCALATED", payload)
-            # INCIDENT_CLOSED is emitted only by the lifecycle outcome commit.
-            return updated
+            return self.transition_in(conn, incident_id, target, expected_revision=expected_revision, reason=reason)
+
+    def transition_in(self, conn, incident_id: str, target: m.IncidentPhase, *, expected_revision: int,
+                      reason: str) -> m.Incident:
+        """``transition`` inside a caller-owned ``BEGIN IMMEDIATE`` (Stage 2 fenced apply). Never CLOSED."""
+        if m.IncidentPhase(target) == m.IncidentPhase.CLOSED:
+            raise InvalidReference("CLOSED requires verified outcome authority (LifecycleService.verify_outcome)")
+        incident = self._fetch(conn, incident_id)
+        self._check(incident, expected_revision)
+        validate_transition(incident.phase, target)
+        updated = self._update(conn, incident, phase=target)
+        payload = {"from": incident.phase.value, "to": updated.phase.value, "reason": reason}
+        self._event(conn, updated, "PHASE_CHANGED", payload)
+        if updated.phase == m.IncidentPhase.ESCALATED:
+            self._event(conn, updated, "INCIDENT_ESCALATED", payload)
+        # INCIDENT_CLOSED is emitted only by the lifecycle outcome commit.
+        return updated
 
     def append_event(self, incident_id: str, event_type: str, payload: dict, *, expected_revision: int) -> m.IncidentEvent:
         """Append application activity; lifecycle events are emitted by their commits."""

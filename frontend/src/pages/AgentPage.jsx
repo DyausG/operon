@@ -164,23 +164,48 @@ function PrismPanel({ session, events }) {
   if (!session) return <span className="t3">No PRISM session for this incident. Send an instruction from the Activity tab to start one.</span>;
   const slow = session.active_run || session.slow_path;
   const mine = events.filter((e) => e.session_id === session.session_id).slice(0, 8);
+  const reasoning = session.reasoning || {};
+  const cand = reasoning.candidate;
+  const applied = reasoning.applied;
+  const prov = session.provenance || {};
+  const progress = (reasoning.progress || []).slice(-6);
+  const failure = reasoning.current_failure || session.last_failure?.error;
+  const superseding = !!session.interruption && (session.interruption.still_running?.length || slow?.status === "CANCELLING");
   return (
     <div className="stack">
       <div className="kvgrid kvgrid-2">
         <KV label="Session" mono value={session.session_id.slice(0, 8)} />
-        <KV label="Revision" mono value={String(session.current_revision)} />
+        <KV label="Revision" value={<><span className="mono">{String(session.current_revision)}</span>{session.interruption ? <Tag tone={superseding ? "warn" : "adv"}> rev {session.interruption.superseded_revision} → {session.interruption.superseded_by}</Tag> : null}</>} />
+        <KV label="Instruction" value={reasoning.instruction ? <span title={reasoning.instruction}>{reasoning.instruction.length > 90 ? `${reasoning.instruction.slice(0, 90)}…` : reasoning.instruction}</span> : "—"} />
         <KV label="Fast Path" value={session.fast_path ? `${words(session.fast_path.status)} · ${session.fast_path.latency_ms ?? "—"} ms` : "—"} />
         <KV label="Slow Path" value={slow ? `${words(slow.status)} · ${slow.run_id.slice(0, 8)}${slow.attempt > 1 ? ` · attempt ${slow.attempt}` : ""}` : "not scheduled"} />
+        <KV label="Reasoning" value={prov.adapter === "operon" ? `Operon supervisor · ${prov.live_model ? `${prov.provider} · ${prov.model}` : `${prov.backend || "none"} (${(prov.provenance || "no model").toLowerCase()})`}` : `${prov.adapter || "—"} · ${prov.provider || "none"}`} />
         <KV label="Canonical" value={session.canonical_revision != null ? `revision ${session.canonical_revision}${session.canonical_current ? "" : " (older)"}` : "none yet"} />
         <KV label="Superseded" value={session.interruption ? `rev ${session.interruption.superseded_revision} → ${session.interruption.superseded_by}${session.interruption.still_running?.length ? " · fencing old worker" : ""}` : "—"} />
-        <KV label="Stale / discarded" value={session.stale_results ? <Tag tone="crit">{session.stale_results} stale result{session.stale_results > 1 ? "s" : ""} discarded</Tag> : "none"} />
+        <KV label="Stale / discarded" value={session.stale_results ? <Tag tone="crit">{session.stale_results} stale candidate{session.stale_results > 1 ? "s" : ""} discarded</Tag> : "none"} />
         <KV label="Recovery" value={session.recovery?.description || "—"} />
       </div>
-      <ProvenanceTag reasoning={{ backend: session.provenance?.adapter, provider: session.provenance?.provider, model: session.provenance?.model, live_model: session.provenance?.live_model, provenance: session.provenance?.provenance }} compact />
-      {mine.length ? <div className="transitions">{mine.map((e) => <div key={e.event_id} className="transition"><span className="mono t4">{clock(e.created_at)}</span><span><span className="t1">{words(e.event_type)}</span>{e.revision != null ? <span className="t3"> · rev {e.revision}</span> : null}{e.payload?.reason ? <span className="t3"> · {e.payload.reason}</span> : null}</span></div>)}</div> : null}
+      {progress.length ? <div className="transitions" aria-label="Real reasoning progress">{progress.map((p, i) => <div key={`${p.at}-${i}`} className="transition"><span className="mono t4">{clock(p.at)}</span><span><span className="t1">{words(p.stage || "")}</span>{p.role ? <span className="t3"> · {p.role}{p.status ? ` ${p.status.toLowerCase()}` : ""}</span> : null}{p.disposition ? <span className="t3"> · {p.disposition}</span> : null}{p.reason && p.reason !== p.disposition ? <span className="t3"> · {p.reason}</span> : null}</span></div>)}</div> : null}
+      {cand ? (
+        <div className={`note-box ${session.canonical_current ? "" : "note-warn"}`}>
+          <Dot tone={session.canonical_current ? "auth" : "warn"} />
+          <span>
+            <b>Current result · revision {session.canonical_revision} · {cand.disposition}{cand.termination_reason && cand.termination_reason !== "MODEL_COMPLETED" ? ` (${cand.termination_reason})` : ""}.</b>{" "}
+            {cand.recommended_mechanism ? <>Recommended hypothesis: {cand.recommended_mechanism}{cand.confidence != null ? ` (confidence ${cand.confidence})` : ""}. </> : null}
+            {cand.specialists?.length ? <span className="t3">Specialists {cand.specialists.join(", ")} · {cand.evidence_used} evidence used</span> : null}
+            {cand.next_step ? <div className="t3">{cand.next_step}</div> : null}
+            {applied ? <div className="t3">Applied to incident: report {String(applied.report_id || "").slice(0, 8)}{applied.settlement ? ` · ${applied.settlement.disposition} → ${applied.settlement.incident_phase}` : ""}{applied.stale_reasons?.length ? ` · inputs changed: ${applied.stale_reasons.join(", ")}` : ""}</div> : null}
+          </span>
+        </div>
+      ) : null}
+      {failure ? <div className="note-box note-warn">{Icons.info({})}<span><b>Current failure.</b> {failure.code}: {failure.message}</span></div> : null}
+      {reasoning.stale_candidates?.length ? <div className="t3">{reasoning.stale_candidates.map((s) => <div key={s.run_id}>Stale candidate · rev {s.revision} · {s.disposition || "—"} · fenced, never applied.</div>)}</div> : null}
+      <ProvenanceTag reasoning={{ backend: prov.backend || prov.adapter, provider: prov.provider, model: prov.model, live_model: prov.live_model, provenance: prov.provenance }} compact />
+      {mine.length ? <div className="transitions">{mine.map((e) => <div key={e.event_id} className="transition"><span className="mono t4">{clock(e.created_at)}</span><span><span className="t1">{words(e.event_type)}</span>{e.revision != null ? <span className="t3"> · rev {e.revision}</span> : null}{e.payload?.stage ? <span className="t3"> · {words(e.payload.stage)}</span> : null}{e.payload?.reason ? <span className="t3"> · {e.payload.reason}</span> : null}</span></div>)}</div> : null}
     </div>
   );
 }
+
 
 function AgentConsole({ entries, runtime, prism }) {
   const [draft, setDraft] = useState("");
