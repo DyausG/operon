@@ -4,6 +4,8 @@ from unittest.mock import Mock
 
 import pytest
 
+from tests.conftest import prompt_context
+
 from core import config, engine as engine_module
 from core.agents.contracts import SpecialistContext
 from core.agents.runtime import RuntimeConfigurationError, StrandsRuntime
@@ -30,7 +32,7 @@ def lazy_decision(disposition):
     """Build the SupervisorDecision from the run context the supervisor was given."""
     def turn(messages):
         from tests.test_supervisor import decision
-        context = SpecialistContext.model_validate(json.loads(messages[0]["content"][0]["text"])["context"])
+        context = prompt_context(messages)
         return decision(context, disposition)(messages)
     return turn
 

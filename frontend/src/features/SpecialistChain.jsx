@@ -63,7 +63,13 @@ export function SpecialistChain({ run, verdict, stage, compact = false, pendingL
           )}
         </div>
       </div>
-      {(run.blockers || []).length ? <ul className="chain-blockers">{run.blockers.map((b) => <li key={b}>{b}</li>)}</ul> : null}
+      {run.failure ? <div className="note-box note-warn chain-failure" role="status"><b>Run failed:</b> <span>{run.failure}</span></div> : null}
+      {(run.blockers || []).filter((b) => b !== run.failure).length ? (
+        <ul className="chain-blockers" aria-label={run.failure ? "Governance gaps (the run produced no assessment)" : "Blockers"}>
+          {run.failure ? <li className="t3">Governance still requires, for any diagnosis:</li> : null}
+          {run.blockers.filter((b) => b !== run.failure).map((b) => <li key={b}>{b}</li>)}
+        </ul>
+      ) : null}
     </div>
   );
 }

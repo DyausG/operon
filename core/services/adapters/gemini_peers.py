@@ -30,7 +30,9 @@ def model_json(system: str, user: str) -> dict | None:
     provider = config.provider_registry().active()
     if provider.kind == "none" or not provider.configured() or not provider.capabilities().structured_output:
         return None
-    return provider.generate_json(system, user)
+    # Peer reasoning is auxiliary: it is bounded by the provider's short auxiliary
+    # timeout and degrades to the deterministic engine when that expires.
+    return provider.generate_json(system, user, timeout=provider.timeout_policy().auxiliary_seconds)
 
 
 _GOV_SYSTEM = (

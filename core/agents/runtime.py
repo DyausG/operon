@@ -11,7 +11,7 @@ from strands.tools.executors import SequentialToolExecutor
 from strands.types.agent import Limits
 from strands.types.tools import AgentTool
 
-from core.providers.base import ModelOptions, ModelProvider
+from core.providers.base import ModelOptions, ModelProvider, TimeoutPolicy
 from core.providers.errors import ProviderError
 
 RuntimeProvider = Literal["gemini", "ollama", "bedrock"]
@@ -29,6 +29,10 @@ class RuntimeSettings(BaseModel):
     ``provider`` names the model vendor. ``aws_region`` is required for Bedrock and
     ignored otherwise; ``endpoint`` is the Ollama base URL. Existing callers that
     pass only ``model_id`` and ``aws_region`` keep the Bedrock behaviour unchanged.
+
+    Timeouts default to ``None``: the provider's own ``TimeoutPolicy`` applies
+    (cloud-oriented for Gemini/Bedrock, much larger for local Ollama inference).
+    A value given here is an explicit per-runtime override and always wins.
     """
     model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
     provider: RuntimeProvider = "bedrock"
@@ -38,9 +42,10 @@ class RuntimeSettings(BaseModel):
     live_enabled: bool = False
     max_tokens: int = Field(default=2500, ge=1, le=8000)
     temperature: float = Field(default=0.1, ge=0, le=1)
-    connect_timeout_seconds: float = Field(default=3, gt=0, le=30)
-    read_timeout_seconds: float = Field(default=30, gt=0, le=120)
-    invocation_timeout_seconds: float = Field(default=90, gt=0, le=300)
+    connect_timeout_seconds: float | None = Field(default=None, gt=0, le=120)
+    read_timeout_seconds: float | None = Field(default=None, gt=0, le=3600)
+    invocation_timeout_seconds: float | None = Field(default=None, gt=0, le=7200)
+    run_timeout_seconds: float | None = Field(default=None, gt=0, le=14400)
     request_attempts: int = Field(default=2, ge=1, le=3)
     max_turns: int = Field(default=6, ge=1, le=12)
     max_output_tokens: int = Field(default=8000, ge=1, le=32000)
@@ -57,9 +62,12 @@ class RuntimeSettings(BaseModel):
                 "total_tokens": self.max_total_tokens}
 
     def model_options(self) -> ModelOptions:
+        """Only explicitly supplied timeouts travel; ``None`` leaves the provider policy in force."""
         return ModelOptions(temperature=self.temperature, max_tokens=self.max_tokens,
                             connect_timeout_seconds=self.connect_timeout_seconds,
-                            read_timeout_seconds=self.read_timeout_seconds, request_attempts=self.request_attempts)
+                            read_timeout_seconds=self.read_timeout_seconds,
+                            invocation_timeout_seconds=self.invocation_timeout_seconds,
+                            run_timeout_seconds=self.run_timeout_seconds, request_attempts=self.request_attempts)
 
     def identity_locator(self) -> str:
         """Non-secret locator frozen into run identity: region (Bedrock), host (Ollama) or API host (Gemini)."""
@@ -80,10 +88,12 @@ def provider_for_settings(settings: RuntimeSettings) -> ModelProvider:
     from core.providers.ollama import OllamaProvider
     config = get_registry().config
     if settings.provider == "bedrock":
+        overrides = {"connect_timeout_seconds": settings.connect_timeout_seconds,
+                     "read_timeout_seconds": settings.read_timeout_seconds}
         return BedrockProvider(BedrockSettings(
             region=settings.aws_region, model_id=settings.model_id,
-            connect_timeout_seconds=settings.connect_timeout_seconds, read_timeout_seconds=settings.read_timeout_seconds,
-            request_attempts=settings.request_attempts, max_tokens=settings.max_tokens, temperature=settings.temperature))
+            request_attempts=settings.request_attempts, max_tokens=settings.max_tokens, temperature=settings.temperature,
+            **{key: value for key, value in overrides.items() if value is not None}))
     if settings.provider == "gemini":
         return GeminiProvider(config.gemini.model_copy(update={"model": settings.model_id}))
     update = {"model": settings.model_id}
@@ -115,6 +125,26 @@ class StrandsRuntime:
         if self._model is not None:
             return f"{type(self._model).__module__}.{type(self._model).__qualname__}"
         return f"strands.models.{self.settings.provider}"
+
+    def timeouts(self) -> TimeoutPolicy:
+        """The effective time bounds: the provider's policy with this runtime's explicit overrides."""
+        return self.provider.timeout_policy().merged(self.settings.model_options())
+
+    def invocation_timeout(self) -> float:
+        return self.timeouts().invocation_seconds
+
+    def run_timeout(self) -> float:
+        return self.timeouts().run_seconds
+
+    def preflight(self) -> None:
+        """Provider capability check before a run starts; raises ``RuntimeConfigurationError``."""
+        if self._model is not None:
+            return  # an injected Model is the caller's responsibility
+        try:
+            self.provider.preflight(tool_calling=True)
+        except ProviderError as exc:
+            raise RuntimeConfigurationError(f"{self.settings.provider} cannot serve this run: {exc}",
+                                            code=exc.code) from exc
 
     def _live_model(self) -> Model:
         if not self.settings.live_enabled:

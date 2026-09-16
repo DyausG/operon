@@ -13,8 +13,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.conftest import prompt_context
+
 from core import config, db, engine as engine_module
-from core.agents.contracts import AdvisoryInput, SpecialistContext
+from core.agents.contracts import AdvisoryInput
 from core.agents.runtime import RuntimeSettings, StrandsRuntime
 from core.demo_scenario import SCENARIO_ID
 from core.reasoning.backend import LocalStrandsBackend, ReasoningBackend
@@ -77,7 +79,7 @@ class EngineSpecialists(ScriptedModel):
 
     async def stream(self, messages, tool_specs=None, system_prompt=None, **kwargs):
         from core.reliability.orchestration import ROLE_CONTRACTS
-        context = SpecialistContext.model_validate_json(messages[0]["content"][0]["text"])
+        context = prompt_context(messages, self.engine.coordinator.repository)
         role = next(role for role, cls in ROLE_CONTRACTS.items() if cls.__name__ in {item["name"] for item in tool_specs})
         self.packets.append(context)
         repo = self.engine.coordinator.repository
@@ -102,7 +104,7 @@ class EngineSpecialists(ScriptedModel):
 
 def scripted_supervisor_turns():
     def conclude(messages):
-        context = SpecialistContext.model_validate(json.loads(messages[0]["content"][0]["text"])["context"])
+        context = prompt_context(messages)
         return decision(context, "ADVISORY_CONCLUSION")(messages)
     diagnosis = [delegation("diagnostic"), delegation("critic", ("diagnostic",)),
                  delegation("planner", ("diagnostic", "critic")), conclude]
@@ -241,11 +243,15 @@ async def test_settings_provider_switch_applies_to_the_next_guided_demo(seeded_d
         assert started["demo_scenario"]["reasoning"]["model"] == "gemma3:latest"
         assert engine._guided_backend is engine.runtime
         failed = await wait_status(engine, "failed")  # tests block the network: the real request is refused
-        assert "Model invocation failed" in failed["error"] or "ollama" in failed["error"].lower(), failed
-        snapshot = artifacts_of(engine, m.SupervisorRunSnapshot)[-1]
-        assert snapshot.runtime_identity["supervisor"]["settings"]["provider"] == "ollama"
-        assert snapshot.runtime_identity["supervisor"]["settings"]["model_id"] == "gemma3:latest"
-        assert snapshot.runtime_identity["supervisor"]["implementation"] == "strands.models.ollama"
+        # The provider preflight refuses an unreachable Ollama before a durable run starts,
+        # so the failure names the provider and no doomed run snapshot is recorded.
+        assert "ollama" in failed["error"].lower() and "could not start" in failed["error"], failed
+        assert artifacts_of(engine, m.SupervisorRunSnapshot) == []
+        identity = engine.runtime.identity()
+        assert identity["supervisor"]["settings"]["provider"] == "ollama"
+        assert identity["supervisor"]["settings"]["model_id"] == "gemma3:latest"
+        assert identity["supervisor"]["implementation"] == "strands.models.ollama"
+        assert identity["supervisor"]["timeouts"]["run_seconds"] == 1800  # the local policy, not the cloud one
 
         config.provider_registry().select("none")
         await engine.reconfigure_runtime()

@@ -12,6 +12,7 @@ from core.providers.errors import normalize_exception
 from core.reliability.assessments import validate_specialist_assessment, validate_specialist_context
 from core.reliability.evidence import EvidenceService
 from .contracts import DiagnosticContext, SpecialistAssessment
+from .rendering import model_message
 from .runtime import StrandsRuntime
 from .tools import EvidenceRequester, specialist_tools
 
@@ -75,11 +76,11 @@ async def invoke_specialist(runtime: StrandsRuntime, service: EvidenceService,
     try:
         result = await asyncio.wait_for(
             agent.invoke_async(
-                scope.model_dump_json(),
+                model_message(scope),
                 invocation_state={"incident_id": scope.incident_id, "run_id": scope.run_id,
                                   "input_revision": scope.input_revision},
                 limits=runtime.settings.invocation_limits(),
-            ), timeout=runtime.settings.invocation_timeout_seconds,
+            ), timeout=runtime.invocation_timeout(),
         )
     except asyncio.TimeoutError:
         raise

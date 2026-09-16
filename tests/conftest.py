@@ -111,3 +111,16 @@ def sample_proposal(seeded=True) -> dict:
             "schedule": tools.block_schedule("AC-COMP-01", 45),
         },
     }
+
+
+def prompt_context(messages, repository=None):
+    """The trusted SpecialistContext behind an agent's first user message.
+
+    Agents receive a compact rendering (core.agents.rendering) that every evidence
+    record still validates from; fakes rebuild the context from the prompt alone,
+    as a remote packet handler would. ``repository`` is accepted for call-site
+    symmetry and unused: packet mode forbids store access.
+    """
+    from core.agents.contracts import SpecialistContext
+    from core.agents.rendering import context_from_message
+    return SpecialistContext.model_validate(context_from_message(messages[0]["content"][0]["text"]))

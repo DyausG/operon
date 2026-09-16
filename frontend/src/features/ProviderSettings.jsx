@@ -148,6 +148,21 @@ export function ProviderSettings() {
                   {test.status.models.map((m) => <button key={m} type="button" className={`chip ${(d.model ?? status.model) === m ? "is-active" : ""}`} onClick={() => patch({ model: m })}>{m}</button>)}
                 </div>
               ) : null}
+              <Field label="Context window (num_ctx)" hint="Tokens sent with every request. Ollama's own default (4096) truncates Operon's evidence packet and drops the tool definitions; keep this above the packet size shown by Test connection.">
+                <Input type="number" min="2048" step="1024" value={d.num_ctx ?? status.settings?.num_ctx ?? ""} onChange={(e) => patch({ num_ctx: e.target.value })} />
+              </Field>
+              <Field label="First-token timeout (s)" hint="Longest silence tolerated before the first token and between chunks. On CPU inference prompt evaluation alone can take minutes.">
+                <Input type="number" min="1" value={d.timeout_seconds ?? status.settings?.timeout_seconds ?? ""} onChange={(e) => patch({ timeout_seconds: e.target.value })} />
+              </Field>
+              <Field label="Invocation timeout (s)" hint="One agent invocation: every model turn plus its tool calls.">
+                <Input type="number" min="1" value={d.invocation_timeout_seconds ?? status.settings?.invocation_timeout_seconds ?? ""} onChange={(e) => patch({ invocation_timeout_seconds: e.target.value })} />
+              </Field>
+              <Field label="Run timeout (s)" hint="One complete supervisor run including nested specialists.">
+                <Input type="number" min="1" value={d.run_timeout_seconds ?? status.settings?.run_timeout_seconds ?? ""} onChange={(e) => patch({ run_timeout_seconds: e.target.value })} />
+              </Field>
+              <Field label="Peer timeout (s)" hint="Governance/monitoring peer completions; they fall back to the deterministic engines when this expires.">
+                <Input type="number" min="1" value={d.peer_timeout_seconds ?? status.settings?.peer_timeout_seconds ?? ""} onChange={(e) => patch({ peer_timeout_seconds: e.target.value })} />
+              </Field>
             </div>
           ) : null}
 
@@ -168,6 +183,11 @@ export function ProviderSettings() {
           {active !== "none" ? (
             <>
               <Capabilities capabilities={shownCaps} verified={!!test?.status && !test.status.error} />
+              {status.timeouts ? (
+                <p className="t3 mono" aria-label="Timeout policy">
+                  timeouts · connect {status.timeouts.connect_seconds}s · first token {status.timeouts.first_token_seconds}s · invocation {status.timeouts.invocation_seconds}s · run {status.timeouts.run_seconds}s · peers {status.timeouts.auxiliary_seconds}s
+                </p>
+              ) : null}
               <div className="row-wrap">
                 <Btn small primary onClick={save} disabled={!!busy}>{busy === "save" ? "Saving…" : "Save"}</Btn>
                 <Btn small onClick={runTest} disabled={!!busy}>{Icons.bolt({})} {busy === "test" ? "Testing…" : "Test connection"}</Btn>

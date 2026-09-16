@@ -145,6 +145,9 @@ class DemoEngine:
         self._monotonic = time.monotonic
         # Outcome messages produced by the synchronous tick progression, flushed by the tick.
         self._pending_broadcasts: list[dict] = []
+        # Monitoring peer results per active alert set; refreshed off the event loop.
+        self._monitoring_cache: dict[frozenset, dict] = {}
+        self._monitoring_tasks: dict[frozenset, asyncio.Task] = {}
         # Supervisor runs are serialized: 13A's source checkpoint treats another
         # incident's revision change during a run as staleness.
         self._reasoning_lock = asyncio.Lock()
@@ -1307,6 +1310,12 @@ class DemoEngine:
             "summary": (result.get("decision") or {}).get("reasoning_summary"),
             "delegations": result.get("delegations", []), "assessments": result.get("assessments", []),
             "evidence_requests": result.get("evidence_requests", []), "blockers": result.get("blockers", []),
+            # A provider/model failure is the primary fact of a failed run; governance
+            # completeness gaps (e.g. "requires explicit critic review") still hold but
+            # describe the empty run, so the portal shows them second.
+            "failure": next((item for item in result.get("blockers", [])
+                             if item.startswith("Model invocation failed")), None),
+            "termination_reason": result.get("termination_reason"),
             "human_review_required": result.get("human_review_required", True),
             "tool_calls": result.get("tool_calls", 0), "stale_reasons": list(report.stale_reasons),
             "artifact_id": report.id, "snapshot_id": snapshot.id if snapshot else None,
@@ -1472,7 +1481,8 @@ class DemoEngine:
         self._checkpoint_alert(eid)
         await self.broadcast({"type": "alert", "alert": alert, "phase": "analyzing"})
 
-        proposal = agent.decide(ctx)
+        # The legacy path consults the governance peer (a bounded model call): keep it off the loop.
+        proposal = await asyncio.to_thread(agent.decide, ctx)
         alert["proposal"] = proposal
         alert["status"] = "PENDING_APPROVAL"
         prepared = prepare_legacy_intervention(self.coordinator.repository, incident.id, proposal)
@@ -1515,10 +1525,55 @@ class DemoEngine:
                                 "criticality": a.get("criticality")} for a in active]}
             # The dashboard renders monitoring as its own banner from this object,
             # so the triage rationale stays purely about alert contention.
-            msg["monitoring"] = services.monitoring().assess(snap)
+            msg["monitoring"] = self._peer_monitoring(snap)
         except Exception:
             pass
         return msg
+
+    def _peer_monitoring(self, snap: dict) -> dict:
+        """Monitoring peer assessment that never blocks the event loop.
+
+        The LLM-backed adapter performs a bounded model call. That call runs in a
+        worker thread, keyed by the active alert set and cached once it lands; until
+        then the deterministic correlation engine answers immediately (marked
+        ``pending``) so no broadcast or websocket frame waits on a model.
+        """
+        from .services.adapters.local import LocalMonitoringAdapter
+        alerts = snap.get("alerts") or []
+        key = frozenset(a.get("equipment_id") for a in alerts)
+        cached = self._monitoring_cache.get(key)
+        if cached is not None:
+            return cached
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is None:  # synchronous caller (tests, scripts): no loop to protect
+            result = services.monitoring().assess(snap)
+            self._remember_monitoring(key, result)
+            return result
+        task = self._monitoring_tasks.get(key)
+        if task is None or task.done():
+            self._monitoring_tasks[key] = loop.create_task(self._refresh_monitoring(snap, key),
+                                                           name=f"monitoring-peer:{len(key)}")
+        return {**LocalMonitoringAdapter().assess(snap), "pending": True}
+
+    def _remember_monitoring(self, key: frozenset, result: dict) -> None:
+        self._monitoring_cache[key] = result
+        while len(self._monitoring_cache) > 32:
+            self._monitoring_cache.pop(next(iter(self._monitoring_cache)))
+
+    async def _refresh_monitoring(self, snap: dict, key: frozenset) -> None:
+        try:
+            result = await asyncio.to_thread(services.monitoring().assess, snap)
+        except Exception:  # noqa: BLE001 - the peer is best-effort; the deterministic answer stands
+            logger.debug("monitoring peer unavailable; deterministic correlation retained", exc_info=True)
+            return
+        finally:
+            self._monitoring_tasks.pop(key, None)
+        self._remember_monitoring(key, result)
+        if self.alerts and frozenset(self.alerts) & key:
+            await self.broadcast({"type": "triage", "triage": self._triage_msg()})
 
     # -- human-in-the-loop -------------------------------------------------
     def _lifecycle_target(self, eid: str, command: dict | None):

@@ -36,7 +36,8 @@ _TRUE = ("1", "true", "yes", "on")
 # Non-secret fields the configuration API may change per provider.
 UPDATABLE_FIELDS: dict[str, frozenset[str]] = {
     "gemini": frozenset({"model", "api_key"}),
-    "ollama": frozenset({"model", "base_url"}),
+    "ollama": frozenset({"model", "base_url", "num_ctx", "timeout_seconds", "connect_timeout_seconds",
+                         "invocation_timeout_seconds", "run_timeout_seconds", "peer_timeout_seconds"}),
     "bedrock": frozenset({"model_id", "region"}),
     "none": frozenset(),
 }
@@ -110,10 +111,18 @@ def config_from_environment(env: Mapping[str, str] | None = None) -> ProviderCon
         timeout_seconds=_float(env, "OPERON_GEMINI_TIMEOUT_SECONDS", 30.0),
         max_output_tokens=_int(env, "GEMINI_MAX_TOKENS", 1024),
     )
+    ollama_defaults = OllamaSettings()
     ollama = OllamaSettings(
         base_url=_env(env, "OPERON_OLLAMA_BASE_URL", "OLLAMA_HOST", default=DEFAULT_OLLAMA_BASE_URL),
         model=_env(env, "OPERON_OLLAMA_MODEL"),
-        timeout_seconds=_float(env, "OPERON_OLLAMA_TIMEOUT_SECONDS", 120.0),
+        timeout_seconds=_float(env, "OPERON_OLLAMA_TIMEOUT_SECONDS", ollama_defaults.timeout_seconds),
+        connect_timeout_seconds=_float(env, "OPERON_OLLAMA_CONNECT_TIMEOUT_SECONDS",
+                                       ollama_defaults.connect_timeout_seconds),
+        invocation_timeout_seconds=_float(env, "OPERON_OLLAMA_INVOCATION_TIMEOUT_SECONDS",
+                                          ollama_defaults.invocation_timeout_seconds),
+        run_timeout_seconds=_float(env, "OPERON_OLLAMA_RUN_TIMEOUT_SECONDS", ollama_defaults.run_timeout_seconds),
+        peer_timeout_seconds=_float(env, "OPERON_OLLAMA_PEER_TIMEOUT_SECONDS", ollama_defaults.peer_timeout_seconds),
+        num_ctx=_int(env, "OPERON_OLLAMA_NUM_CTX", ollama_defaults.num_ctx),
     )
     bedrock = BedrockSettings(
         region=_env(env, "AWS_REGION", "AWS_DEFAULT_REGION", default=DEFAULT_AWS_REGION),
@@ -217,6 +226,9 @@ class ProviderRegistry:
                     changes["key_source"] = "environment" if env_key else "none"
             else:
                 if value is None:
+                    continue
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    changes[name] = value  # numeric tunables (num_ctx, timeouts) are validated by the settings model
                     continue
                 text = str(value).strip()
                 if not text and name != "model":

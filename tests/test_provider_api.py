@@ -75,6 +75,23 @@ def test_select_and_update_non_secret_fields(api):
     assert r.status_code == 422
 
 
+def test_ollama_context_and_timeouts_are_updatable_and_reported(api):
+    client, engine = api
+    r = client.put("/api/providers/ollama", json={"model": "qwen2.5:7b", "num_ctx": 32768, "timeout_seconds": 420,
+                                                  "run_timeout_seconds": 2400})
+    assert r.status_code == 200 and r.json()["ok"] is True, r.text
+    status = r.json()["status"]
+    assert status["settings"]["num_ctx"] == 32768 and status["settings"]["timeout_seconds"] == 420
+    assert status["timeouts"]["first_token_seconds"] == 420 and status["timeouts"]["run_seconds"] == 2400
+    assert status["timeouts"]["invocation_seconds"] == 900  # untouched fields keep the local defaults
+    overview = client.get("/api/providers").json()
+    assert overview["providers"]["ollama"]["settings"]["num_ctx"] == 32768
+    r = client.put("/api/providers/ollama", json={"num_ctx": 512})
+    assert r.status_code == 400 and "num_ctx" in r.json()["error"]
+    r = client.put("/api/providers/gemini", json={"num_ctx": 8192})
+    assert r.status_code == 400 and "does not accept" in r.json()["error"]
+
+
 def test_session_secret_is_accepted_from_loopback_and_never_returned(api):
     client, engine = api
     r = client.put("/api/providers/gemini", json={"api_key": FAKE_KEY, "model": "gemini-2.5-flash"})

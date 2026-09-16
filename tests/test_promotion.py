@@ -10,10 +10,12 @@ import json
 import sqlite3
 
 import pytest
+
+from tests.conftest import prompt_context
 from pydantic import ValidationError
 
 from core import db
-from core.agents.contracts import AdvisoryInput, SpecialistContext, SupervisorResult
+from core.agents.contracts import AdvisoryInput, SupervisorResult
 from core.agents.runtime import StrandsRuntime
 from core.reliability import models as m
 from core.reliability.evidence import EvidenceService
@@ -641,7 +643,7 @@ class NativePromotionSpecialists(ScriptedModel):
 
     async def stream(self, messages, tool_specs=None, system_prompt=None, **kwargs):
         from core.reliability.orchestration import ROLE_CONTRACTS
-        context = SpecialistContext.model_validate_json(messages[0]["content"][0]["text"])
+        context = prompt_context(messages, self.env.repo)
         role = next(role for role, cls in ROLE_CONTRACTS.items() if cls.__name__ in {item["name"] for item in tool_specs})
         self.packets.append(context)
         snapshot = next(a for a in self.env.repo.list_artifacts(context.incident_id)
@@ -673,7 +675,7 @@ async def test_native_strands_runs_can_cross_only_the_application_boundary(env, 
         turns = [delegation("engineering"), delegation("operations", ("engineering",)),
                  delegation("critic", ("engineering", "operations"))]
     def finish(messages):
-        context = SpecialistContext.model_validate(json.loads(messages[0]["content"][0]["text"])["context"])
+        context = prompt_context(messages, env.repo)
         return decision(context, "ADVISORY_CONCLUSION")(messages)
     model = ScriptedModel([*turns, finish])
     specialists = NativePromotionSpecialists(env, draft)
@@ -896,7 +898,7 @@ async def test_native_corrected_invalid_specialist_output_is_not_promotable(env)
                 async for event in super().stream(messages, tool_specs, system_prompt, **kwargs):
                     yield event
     def finish(messages):
-        context = SpecialistContext.model_validate(json.loads(messages[0]['content'][0]['text'])['context'])
+        context = prompt_context(messages, env.repo)
         return decision(context, 'UNRESOLVED')(messages)
     report = await env.service.run_supervisor(env.incident_id, service=env.evidence_service,
         runtime=StrandsRuntime(settings(), model=ScriptedModel([delegation('diagnostic'), finish])),

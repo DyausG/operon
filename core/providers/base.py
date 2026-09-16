@@ -16,7 +16,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from .errors import ProviderError
 
@@ -63,15 +63,59 @@ class ProviderStatus(BaseModel):
     error: dict[str, Any] | None = None
     checked_at: str | None = None
     detail: str = ""
+    # Non-secret tunables the Settings page may show and (per UPDATABLE_FIELDS) change.
+    settings: dict[str, Any] = Field(default_factory=dict)
+    timeouts: dict[str, float] = Field(default_factory=dict)
+
+
+class TimeoutPolicy(BaseModel):
+    """Provider-owned time bounds. Every value is seconds; the provider sets the defaults.
+
+    ``connect``      TCP/TLS connect.
+    ``first_token``  the transport read timeout. On a streamed chat this is the longest
+                     silence tolerated before the first token (prompt evaluation) and
+                     between chunks; on a non-streamed completion it bounds the whole reply.
+    ``invocation``   one agent invocation: every model turn plus its tool calls.
+    ``run``          one complete supervisor run including nested specialists.
+    ``auxiliary``    one bounded JSON completion for the governance/monitoring peers.
+    """
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    connect_seconds: float = Field(gt=0, le=120)
+    first_token_seconds: float = Field(gt=0, le=3600)
+    invocation_seconds: float = Field(gt=0, le=7200)
+    run_seconds: float = Field(gt=0, le=14400)
+    auxiliary_seconds: float = Field(gt=0, le=600)
+
+    def merged(self, options: "ModelOptions | None") -> "TimeoutPolicy":
+        """This policy with the explicitly supplied per-runtime overrides applied."""
+        if options is None:
+            return self
+        changes = {
+            "connect_seconds": options.connect_timeout_seconds,
+            "first_token_seconds": options.read_timeout_seconds,
+            "invocation_seconds": options.invocation_timeout_seconds,
+            "run_seconds": options.run_timeout_seconds,
+        }
+        return self.model_copy(update={k: v for k, v in changes.items() if v is not None})
+
+
+CLOUD_TIMEOUTS = TimeoutPolicy(connect_seconds=3, first_token_seconds=30, invocation_seconds=90,
+                               run_seconds=240, auxiliary_seconds=20)
 
 
 class ModelOptions(BaseModel):
-    """Per-invocation knobs a runtime may pass when it asks for a Strands model."""
+    """Per-invocation knobs a runtime may pass when it asks for a Strands model.
+
+    ``None`` means "the provider's own policy"; only an explicitly supplied value
+    overrides it.
+    """
     model_config = ConfigDict(extra="forbid", frozen=True)
     temperature: float | None = None
     max_tokens: int | None = None
     connect_timeout_seconds: float | None = None
     read_timeout_seconds: float | None = None
+    invocation_timeout_seconds: float | None = None
+    run_timeout_seconds: float | None = None
     request_attempts: int | None = None
 
 
@@ -122,10 +166,27 @@ class ModelProvider(ABC):
     def identity_locator(self) -> str:
         """Non-secret endpoint/region string frozen into run identity (e.g. an AWS region)."""
 
+    def timeout_policy(self) -> TimeoutPolicy:
+        """The time bounds this provider considers appropriate; cloud defaults unless overridden."""
+        return CLOUD_TIMEOUTS
+
+    def preflight(self, *, tool_calling: bool = True) -> None:
+        """Verify the selected model can serve the agent workflow; raise ``ProviderError`` otherwise.
+
+        Cloud providers know their capabilities statically, so the default is a no-op.
+        Local providers override this to check the pulled model before a run starts.
+        """
+        self.require_configured()
+
+    def public_settings(self) -> dict[str, Any]:
+        """Non-secret tunables for status and the Settings page. Never a credential."""
+        return {}
+
     # Shared helpers -----------------------------------------------------
     def _status(self, **overrides) -> ProviderStatus:
         base = dict(provider=self.kind, display_name=self.display_name, configured=self.configured(),
-                    model=self.model_id, credential=self.credential_status(), capabilities=self.capabilities())
+                    model=self.model_id, credential=self.credential_status(), capabilities=self.capabilities(),
+                    settings=self.public_settings(), timeouts=self.timeout_policy().model_dump())
         base.update(overrides)
         return ProviderStatus(**base)
 

@@ -126,6 +126,8 @@ export function reduce(prev, msg) {
         triage: msg.triage || prev.triage, lastEvent: { kind: "rejected", id: msg.equipment_id },
         eventLog: logged(prev, { kind: "rejected", id: msg.equipment_id, incidentId: a?.incident_id }) };
     }
+    case "triage":
+      return { ...prev, triage: msg.triage || prev.triage };
     case "failure": {
       const a = prev.alerts[msg.equipment_id];
       return { ...prev, alerts: a ? { ...prev.alerts, [msg.equipment_id]: { ...a, status: "FAILED", result: msg.result } } : prev.alerts,

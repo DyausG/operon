@@ -12,7 +12,10 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
-from .base import Capabilities, CredentialStatus, DISPLAY_NAMES, ModelOptions, ModelProvider, ProviderStatus, now_iso
+from .base import (
+    CLOUD_TIMEOUTS, Capabilities, CredentialStatus, DISPLAY_NAMES, ModelOptions, ModelProvider, ProviderStatus,
+    TimeoutPolicy, now_iso,
+)
 from .errors import ProviderError, normalize_exception
 
 DEFAULT_GEMINI_MODEL = "gemini-flash-latest"
@@ -67,6 +70,16 @@ class GeminiProvider(ModelProvider):
 
     def identity_locator(self) -> str:
         return GEMINI_ENDPOINT
+
+    def timeout_policy(self) -> TimeoutPolicy:
+        """Cloud bounds; the configured request timeout is the read / first-token bound."""
+        return CLOUD_TIMEOUTS.model_copy(update={
+            "first_token_seconds": self.settings.timeout_seconds,
+            "auxiliary_seconds": min(CLOUD_TIMEOUTS.auxiliary_seconds, self.settings.timeout_seconds)})
+
+    def public_settings(self) -> dict[str, Any]:
+        return {"model": self.settings.model, "timeout_seconds": self.settings.timeout_seconds,
+                "max_output_tokens": self.settings.max_output_tokens}
 
     def not_configured_reason(self) -> str:
         return "Gemini needs GEMINI_API_KEY (server-side) before it can be used"
@@ -138,7 +151,7 @@ class GeminiProvider(ModelProvider):
         except Exception as exc:  # noqa: BLE001
             raise ProviderError("provider_error", f"Strands Gemini model unavailable: {type(exc).__name__}",
                                 provider=self.kind) from exc
-        timeout = options.read_timeout_seconds or self.settings.timeout_seconds
+        timeout = self.timeout_policy().merged(options).first_token_seconds
         params = {"temperature": options.temperature if options.temperature is not None else self.settings.temperature,
                   "max_output_tokens": options.max_tokens or self.settings.max_output_tokens}
         return GeminiModel(client_args={"api_key": self.settings.key(),

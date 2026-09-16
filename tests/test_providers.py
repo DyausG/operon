@@ -487,6 +487,7 @@ def test_bedrock_generate_json_and_strands_model(monkeypatch):
 def test_provider_status_contract_has_no_secret_fields():
     fields = set(ProviderStatus.model_fields)
     assert fields == {"provider", "display_name", "configured", "reachable", "model", "models", "endpoint", "region",
+                      "settings", "timeouts",
                       "credential", "capabilities", "probe", "error", "checked_at", "detail"}
     for kind in PROVIDER_KINDS:
         status = ProviderRegistry(ProviderConfig()).status(kind)

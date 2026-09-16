@@ -104,7 +104,19 @@ API and never stored in the browser.
    Settings, type the model, save and **Test connection**.
 4. The connection test reports "Ollama is not running" or "model not installed" (with the
    installed list and the exact `ollama pull` hint) as normalized errors, and shows which
-   capabilities the pulled model declares (tool calling, vision).
+   capabilities the pulled model declares (tool calling, vision) and its trained context
+   length next to the context window Operon requests.
+5. Local inference is bounded by Ollama's own timeout policy (first token 300 s, one agent
+   invocation 900 s, one supervisor run 1800 s by default) and an explicit context window
+   (`num_ctx`, default 16384). Both are set in Settings → AI provider or with the
+   `OPERON_OLLAMA_*` variables in `.env.example`; cloud providers keep their short bounds.
+   Before each run Operon verifies the model is reachable, pulled and tool-capable and
+   refuses the run otherwise, and it rejects any reply Ollama produced from a truncated
+   prompt instead of accepting it.
+6. Expect minutes per model turn on a CPU-only machine: the supervisor packet is several
+   thousand tokens and a 7B model evaluates well under 50 tokens/s without a GPU. A
+   smaller tool-capable model (`qwen2.5:3b`, `qwen2.5:1.5b`) or a GPU host makes the
+   Guided Demo practical; the deterministic Guided Demo needs no model at all.
 
 ## AWS Bedrock
 

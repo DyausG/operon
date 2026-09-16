@@ -29,6 +29,8 @@ exact-hash approval and outcome verification apply.
 | `capabilities()` | capability chips (text, structured output, tool calling, streaming, image input, local/cloud) |
 | `credential_status()` | configured/masked status only; never a value |
 | `identity_locator()` | the non-secret endpoint/region frozen into a run's runtime identity |
+| `timeout_policy()` | the provider's connect / first-token / invocation / run / auxiliary bounds (see below) |
+| `preflight()` | pre-run capability check; local providers verify the pulled model, cloud providers are static |
 
 Construction performs no I/O. Clients, sessions and credential lookups happen inside a
 call, so importing Operon or selecting a provider never opens a socket.
@@ -50,6 +52,40 @@ call, so importing Operon or selecting a provider never opens a socket.
   `agentcore`) builds its Strands runtimes from the active provider. Unset resolves to
   `local` when a provider is configured and to `none` otherwise. `agentcore` is a remote
   runtime invoker with its own protocol and trust validation and remains Bedrock-only.
+
+## Timeouts are provider policy
+
+Every provider owns a `TimeoutPolicy` (`core/providers/base.py`) with five bounds:
+
+| Bound | Meaning | Gemini / Bedrock | Ollama (defaults; env / Settings) |
+|-------|---------|------------------|-----------------------------------|
+| `connect` | TCP/TLS connect | 3 s | 3 s (`OPERON_OLLAMA_CONNECT_TIMEOUT_SECONDS`) |
+| `first_token` | transport read timeout: on a streamed chat, the longest silence before the first token (prompt evaluation) and between chunks; on a non-streamed completion, the whole reply | 30 s | 300 s (`OPERON_OLLAMA_TIMEOUT_SECONDS`) |
+| `invocation` | one agent invocation: every model turn plus its tool calls | 90 s | 900 s (`OPERON_OLLAMA_INVOCATION_TIMEOUT_SECONDS`) |
+| `run` | one complete supervisor run including nested specialists | 240 s | 1800 s (`OPERON_OLLAMA_RUN_TIMEOUT_SECONDS`) |
+| `auxiliary` | one governance/monitoring peer completion, after which the deterministic engine answers | 20 s | 60 s (`OPERON_OLLAMA_PEER_TIMEOUT_SECONDS`) |
+
+`RuntimeSettings` (`core/agents/runtime.py`) carries no timeout of its own: its
+timeout fields default to `None`, meaning "the provider's policy", and a value set
+there is an explicit per-runtime override that always wins. The same holds for
+`SupervisorBounds.timeout_seconds`. The effective policy is frozen into every run
+snapshot under `runtime_identity.<runtime>.timeouts`.
+
+Ollama gets a structured HTTP timeout (short connect, long read) instead of one
+scalar, and sends an explicit context window (`num_ctx`, `OPERON_OLLAMA_NUM_CTX`,
+default 16384) with every request because the server's own default of 4096 would
+silently truncate Operon's packet, dropping the system prompt and the tool
+definitions from the head of the prompt. A prompt estimated not to fit is refused
+before it is sent, and a reply whose reported prompt size filled the window is
+rejected rather than accepted. Before a durable run starts, the Ollama provider
+also verifies that the server is reachable, the model is pulled and it advertises
+tool calling (`preflight`); a failing check refuses the run with that reason
+instead of recording a doomed run.
+
+The governance and monitoring peers call `generate_json` with the `auxiliary`
+bound and are never invoked on the event loop: the engine runs them in a worker
+thread, caches the answer per active alert set and serves the deterministic
+correlation engine's answer (marked `pending`) until the model's lands.
 
 ## Errors
 

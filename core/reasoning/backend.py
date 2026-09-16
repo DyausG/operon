@@ -8,6 +8,7 @@ Importing this module creates no client, session or agent.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import asyncio
 import json
 
 from core import config
@@ -31,6 +32,7 @@ def runtime_identity(value: StrandsRuntime) -> dict:
     """Legacy snapshot shape for one Strands runtime; injected configuration is hashed."""
     model = value._model
     return {"settings": value.settings.model_dump(mode="json"),
+            "timeouts": value.timeouts().model_dump(mode="json"),
             "implementation": value.model_implementation(),
             "injected_configuration_hash": content_hash(model.get_config()) if model else None}
 
@@ -47,6 +49,25 @@ class ReasoningBackend(ABC):
     async def supervise(self, service, context: SpecialistContext, *, bounds: SupervisorBounds,
                         snapshot=None, cancellation_result_handler=None) -> SupervisorResult:
         """Produce the advisory result for the frozen ``context`` of ``snapshot``."""
+
+    async def preflight(self) -> None:
+        """Fail before a durable run starts when the configured model cannot serve it.
+
+        Raises ``RuntimeConfigurationError``. Remote backends validate on their own side.
+        """
+        return None
+
+    def run_timeout(self) -> float:
+        """The run bound this backend's provider policy prescribes (frozen into the snapshot)."""
+        from core.providers.base import CLOUD_TIMEOUTS
+        return CLOUD_TIMEOUTS.run_seconds
+
+
+async def _preflight_runtimes(runtime: StrandsRuntime, specialist_runtime: StrandsRuntime | None) -> None:
+    """Provider capability checks off the event loop (a local provider talks to its server)."""
+    for candidate in (runtime, specialist_runtime):
+        if candidate is not None:
+            await asyncio.to_thread(candidate.preflight)
 
 
 def _runtimes(runtime, specialist_runtime):
@@ -67,6 +88,12 @@ class LocalStrandsBackend(ReasoningBackend):
     def identity(self) -> dict:
         return {"backend": self.name, "supervisor": runtime_identity(self.runtime),
                 "specialists": runtime_identity(self.specialist_runtime or self.runtime)}
+
+    async def preflight(self) -> None:
+        await _preflight_runtimes(self.runtime, self.specialist_runtime)
+
+    def run_timeout(self) -> float:
+        return self.runtime.run_timeout()
 
     async def supervise(self, service, context, *, bounds, snapshot=None, cancellation_result_handler=None):
         # Call-time import: the application test seam patches this module attribute.
@@ -98,6 +125,12 @@ class InProcessPacketBackend(ReasoningBackend):
                 "specialists": runtime_identity(self.specialist_runtime or self.runtime),
                 "expected_identity": self.expected_identity().model_dump(mode="json"),
                 "session_id_scheme": SESSION_PREFIX + "{run_id}"}
+
+    async def preflight(self) -> None:
+        await _preflight_runtimes(self.runtime, self.specialist_runtime)
+
+    def run_timeout(self) -> float:
+        return self.runtime.run_timeout()
 
     async def supervise(self, service, context, *, bounds, snapshot=None, cancellation_result_handler=None):
         if snapshot is None:

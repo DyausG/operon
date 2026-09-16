@@ -15,7 +15,10 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .base import Capabilities, CredentialStatus, DISPLAY_NAMES, ModelOptions, ModelProvider, ProviderStatus, now_iso
+from .base import (
+    CLOUD_TIMEOUTS, Capabilities, CredentialStatus, DISPLAY_NAMES, ModelOptions, ModelProvider, ProviderStatus,
+    TimeoutPolicy, now_iso,
+)
 from .errors import ProviderError, normalize_exception
 
 DEFAULT_BEDROCK_MODEL = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
@@ -87,6 +90,19 @@ class BedrockProvider(ModelProvider):
     def identity_locator(self) -> str:
         return self.settings.region
 
+    def timeout_policy(self) -> TimeoutPolicy:
+        """Cloud bounds with this provider's configured connect/read timeouts."""
+        return CLOUD_TIMEOUTS.model_copy(update={
+            "connect_seconds": self.settings.connect_timeout_seconds,
+            "first_token_seconds": self.settings.read_timeout_seconds,
+            "auxiliary_seconds": min(CLOUD_TIMEOUTS.auxiliary_seconds, self.settings.read_timeout_seconds)})
+
+    def public_settings(self) -> dict[str, Any]:
+        return {"region": self.settings.region, "model_id": self.settings.model_id,
+                "connect_timeout_seconds": self.settings.connect_timeout_seconds,
+                "read_timeout_seconds": self.settings.read_timeout_seconds,
+                "request_attempts": self.settings.request_attempts, "max_tokens": self.settings.max_tokens}
+
     def not_configured_reason(self) -> str:
         return "Bedrock needs AWS credentials (AWS_PROFILE, access keys or a role) and Bedrock model access"
 
@@ -123,9 +139,10 @@ class BedrockProvider(ModelProvider):
     def client_config(self, options: ModelOptions | None = None):
         from botocore.config import Config
         options = options or ModelOptions()
+        policy = self.timeout_policy().merged(options)
         return Config(
-            connect_timeout=options.connect_timeout_seconds or self.settings.connect_timeout_seconds,
-            read_timeout=options.read_timeout_seconds or self.settings.read_timeout_seconds,
+            connect_timeout=policy.connect_seconds,
+            read_timeout=policy.first_token_seconds,
             retries={"mode": "standard", "total_max_attempts": options.request_attempts or self.settings.request_attempts},
         )
 

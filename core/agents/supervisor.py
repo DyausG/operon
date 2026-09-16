@@ -6,7 +6,6 @@ through disposable application guards; no Python pipeline drives specialist orde
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import Callable
 
@@ -22,6 +21,7 @@ from .contracts import (
 )
 from core.providers.errors import normalize_exception
 from .invocation import GROUNDING_PROMPT, trace_attributes
+from .rendering import model_message
 from .runtime import StrandsRuntime
 
 logger = logging.getLogger(__name__)
@@ -137,13 +137,15 @@ async def supervise_reliability(runtime: StrandsRuntime, service: EvidenceServic
     run = SupervisorRun(runtime, specialist_runtime or runtime, service, scope, bounds)
     agent = create_supervisor_agent(run)
     decision, reason = None, "MODEL_COMPLETED"
+    # An explicit bound wins; otherwise the provider's run policy (local inference is slow).
+    run_timeout = bounds.timeout_seconds if bounds.timeout_seconds is not None else runtime.run_timeout()
     try:
         result = await asyncio.wait_for(
             agent.invoke_async(
-                json.dumps({"context": scope.model_dump(mode="json"), "bounds": bounds.model_dump(mode="json")}),
+                model_message({"context": scope, "bounds": bounds}),
                 invocation_state=run.invocation_state(),
                 limits=runtime.settings.invocation_limits() | {"turns": bounds.max_iterations},
-            ), timeout=bounds.timeout_seconds,
+            ), timeout=run_timeout,
         )
         if result.stop_reason.startswith("limit_"):
             run.exhausted.add(f"supervisor_{result.stop_reason}")

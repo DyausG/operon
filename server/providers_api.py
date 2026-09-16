@@ -39,6 +39,13 @@ class UpdateCommand(BaseModel):
     model_id: str | None = Field(default=None, max_length=300)
     base_url: str | None = Field(default=None, max_length=300)
     region: str | None = Field(default=None, max_length=100)
+    # Ollama tunables (validated by OllamaSettings; see core/providers/ollama.py).
+    num_ctx: int | None = Field(default=None, ge=1, le=1_000_000)
+    timeout_seconds: float | None = Field(default=None, gt=0, le=100_000)
+    connect_timeout_seconds: float | None = Field(default=None, gt=0, le=100_000)
+    invocation_timeout_seconds: float | None = Field(default=None, gt=0, le=100_000)
+    run_timeout_seconds: float | None = Field(default=None, gt=0, le=100_000)
+    peer_timeout_seconds: float | None = Field(default=None, gt=0, le=100_000)
     api_key: SecretStr | None = None
 
     def fields(self) -> dict[str, Any]:

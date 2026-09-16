@@ -7,6 +7,10 @@ export const PROVIDER_KINDS = [
   { id: "bedrock", label: "AWS Bedrock", hint: "Cloud model. AWS credentials come from the server's AWS configuration." },
 ];
 
+/** Non-secret Ollama tunables the engine accepts on PUT /api/providers/ollama (see OllamaSettings). */
+export const OLLAMA_TUNABLES = ["num_ctx", "timeout_seconds", "connect_timeout_seconds", "invocation_timeout_seconds",
+  "run_timeout_seconds", "peer_timeout_seconds"];
+
 export const CAPABILITY_LABELS = [
   ["text_generation", "Text"], ["structured_output", "Structured output"], ["tool_calling", "Tool calling"],
   ["streaming", "Streaming"], ["image_input", "Image input"],
@@ -54,6 +58,13 @@ export function changedFields(kind, draft, status) {
   } else if (kind === "ollama") {
     if (d.model != null && d.model !== (status?.model || "")) out.model = d.model;
     if (d.base_url != null && d.base_url !== (status?.endpoint || "")) out.base_url = d.base_url;
+    const current = status?.settings || {};
+    for (const key of OLLAMA_TUNABLES) {
+      if (d[key] == null || d[key] === "") continue;
+      const value = Number(d[key]);
+      if (!Number.isFinite(value) || value === Number(current[key])) continue;
+      out[key] = value;
+    }
   } else if (kind === "bedrock") {
     if (d.model_id != null && d.model_id !== (status?.model || "")) out.model_id = d.model_id;
     if (d.region != null && d.region !== (status?.region || "")) out.region = d.region;
