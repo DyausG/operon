@@ -19,7 +19,7 @@ export function LoginPage() {
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState(null);
   const [forgot, setForgot] = useState(false);
-  const dest = location.state?.from || ROUTES.dashboard;
+  const dest = location.state?.from || "/app/overview";
 
   useEffect(() => { document.title = "Sign in · Operon"; }, []);
   if (signedIn) return <Navigate to={dest} replace />;

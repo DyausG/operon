@@ -20,6 +20,16 @@ import { ActivityPage } from "./pages/ActivityPage.jsx";
 import { NotificationsPage } from "./pages/NotificationsPage.jsx";
 import { ProfilePage } from "./pages/ProfilePage.jsx";
 import { SettingsPage } from "./pages/SettingsPage.jsx";
+import { WbShell } from "./v2/shell/WbShell.jsx";
+import { WB_ROUTES } from "./v2/shell/routes.js";
+import { Overview } from "./v2/screens/Overview.jsx";
+import { MyActions } from "./v2/screens/MyActions.jsx";
+import { CaseWorkspace } from "./v2/screens/CaseWorkspace.jsx";
+import { Simulation } from "./v2/screens/Simulation.jsx";
+import { Specimen } from "./v2/screens/Specimen.jsx";
+
+// The design specimen is a development-only route (Phase 4A visual gate); never in production builds.
+const DEV = !!import.meta.env?.DEV;
 
 function RequireAuth({ children }) {
   const { signedIn } = useSession();
@@ -46,8 +56,16 @@ export function AppRoutes() {
   return (
     <Routes>
       <Route path={ROUTES.login} element={<LoginPage />} />
+      {/* V2 workbench (Phase 4A visual gate). Legacy pages below stay reachable and unchanged. */}
+      <Route element={<RequireAuth><WbShell /></RequireAuth>}>
+        <Route path={WB_ROUTES.overview} element={<Overview />} />
+        <Route path={WB_ROUTES.actions} element={<MyActions />} />
+        <Route path="/app/cases/:incidentId" element={<CaseWorkspace />} />
+        <Route path={WB_ROUTES.simulation} element={<Simulation />} />
+        {DEV ? <Route path={WB_ROUTES.specimen} element={<Specimen />} /> : null}
+      </Route>
       <Route path={ROUTES.app} element={<RequireAuth><AppShell /></RequireAuth>}>
-        <Route index element={<Navigate to={ROUTES.dashboard} replace />} />
+        <Route index element={<Navigate to={WB_ROUTES.overview} replace />} />
         <Route path="dashboard" element={<DashboardPage />} />
         <Route path="machines" element={<MachinesPage />} />
         <Route path="machines/:id" element={<MachineDetailPage />} />

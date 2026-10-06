@@ -1,0 +1,185 @@
+/* V2 design tokens (07 §3–§11). Semantic tokens only; components never use raw values.
+ * Scoped to .wb-root so the V2 workbench and the legacy pages can coexist during Phase 4.
+ * Values marked "starting value" are Phase 4A gate items (07 §4.2, R-9 / R-25): do not retune
+ * without re-measuring (src/v2/test/contrast.test.js parses this file). */
+
+.wb-root {
+  /* ---- typography (07 §6) ---- */
+  --font-sans: "IBM Plex Sans Var", "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  --type-display: 500 28px/36px var(--font-sans);
+  --type-title: 600 22px/28px var(--font-sans);
+  --type-heading: 600 16px/24px var(--font-sans);
+  --type-subheading: 600 14px/20px var(--font-sans);
+  --type-body: 400 14px/20px var(--font-sans);
+  --type-body-compact: 400 13px/18px var(--font-sans);
+  --type-label: 500 12px/16px var(--font-sans);
+  --type-eyebrow: 600 11px/16px var(--font-sans);
+  --type-caption: 400 12px/16px var(--font-sans);
+  --type-table: 400 13px/18px var(--font-sans);
+  --type-readout: 500 24px/28px var(--font-sans);
+  --type-mono: 400 13px/18px var(--font-mono);
+  --type-mono-small: 400 12px/16px var(--font-mono);
+  --type-button-sm: 500 13px/16px var(--font-sans);
+  --type-button-md: 500 14px/20px var(--font-sans);
+  --type-nav: 500 13px/20px var(--font-sans);
+  --type-badge: 500 12px/16px var(--font-sans);
+  --tracking-title: -0.005em;
+  --tracking-label: 0.01em;
+  --tracking-eyebrow: 0.06em;
+
+  /* ---- space (07 §7.1) ---- */
+  --space-0: 0; --space-1: 2px; --space-2: 4px; --space-3: 6px; --space-4: 8px; --space-5: 12px;
+  --space-6: 16px; --space-7: 20px; --space-8: 24px; --space-9: 32px; --space-10: 40px;
+  --space-11: 48px; --space-12: 64px;
+  --space-inline-xs: 4px; --space-inline-sm: 6px; --space-inline-md: 8px; --space-inline-lg: 12px;
+  --space-stack-xs: 4px; --space-stack-sm: 8px; --space-stack-md: 12px; --space-stack-lg: 16px;
+  --space-stack-xl: 24px; --space-section: 32px;
+  --space-gutter: 24px;
+  --space-region-pad: 24px;
+
+  /* ---- size (07 §7.3) ---- */
+  --size-control-sm: 28px; --size-control-md: 32px; --size-control-lg: 40px; --size-control-touch: 48px;
+  --size-hit-min: 24px;
+  --size-icon-xs: 12px; --size-icon-sm: 16px; --size-icon-md: 20px; --size-icon-lg: 24px;
+  --size-mark: 10px;           /* provenance marks only */
+  --size-status: 14px;         /* status shapes in cells and inline (R-4) */
+  --size-status-lg: 16px;      /* plant band and title block (R-4) */
+  --size-rail-nav: 224px; --size-rail-nav-collapsed: 56px;
+  --size-rail-context: 320px;
+  --size-rail-index: 184px;
+  --size-rail-inspector: 380px;   /* docked preview (CH-2, Phase 4A prototype) */
+  --size-drawer: 420px;           /* modal drawer below 1280 (CH-2) */
+  --size-header-shell: 48px;
+
+  /* ---- density (07 §7.2); comfortable is the default for V2 representative screens ---- */
+  --row-height: 40px; --row-height-two-line: 56px;
+  --cell-pad-y: 10px; --cell-pad-x: 12px;
+
+  /* ---- radius (07 §9.5): nothing exceeds 4 px ---- */
+  --radius-none: 0; --radius-xs: 2px; --radius-sm: 4px;
+
+  /* ---- border (07 §9.2) ---- */
+  --border-width-hairline: 1px;
+  --border-width-emphasis: 2px;
+
+  /* ---- motion (07 §11) ---- */
+  --motion-instant: 0ms; --motion-fast: 120ms; --motion-base: 160ms; --motion-slow: 200ms;
+  --motion-highlight: 1200ms;
+  --easing-standard: cubic-bezier(0.2, 0, 0, 1);
+  --easing-exit: cubic-bezier(0.4, 0, 1, 1);
+
+  /* ---- z-index (07 §9.6) ---- */
+  --z-base: 0; --z-sticky: 100; --z-rail: 200; --z-drawer: 300; --z-popover: 400;
+  --z-dialog: 500; --z-toast: 600; --z-tooltip: 700;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wb-root { --motion-fast: 0ms; --motion-base: 0ms; --motion-slow: 0ms; --motion-highlight: 0ms; }
+}
+
+@media (max-width: 1279px) {
+  .wb-root { --space-gutter: 16px; --space-region-pad: 16px; }
+}
+
+/* ===================== Light: "The Drawing Sheet" (07 §4.2, §5.2) ===================== */
+.wb-root[data-theme="light"] {
+  color-scheme: light;
+  --color-surface-base: #F1F0EC;        /* Phase 4A starting value (R-9); brand Paper #F3F4F1 unchanged */
+  --color-surface-sheet: #FAFAF8;
+  --color-surface-sunken: #EBEDE9;
+  --color-surface-raised: #FFFFFF;
+  --color-surface-overlay: #FFFFFF;
+  --color-surface-hover: #F0F1EF;
+  --color-surface-selected: #E7E8E6;
+  --color-border-subtle: #D6DAD8;
+  --color-border-strong: #B9BFBF;
+  --color-border-control: #7C8386;
+  --color-border-focus: #0C1418;
+  --color-text-primary: #0C1418;
+  --color-text-secondary: #4A5154;
+  --color-text-tertiary: #5F6669;
+  --color-text-disabled: #9AA0A2;
+  --color-text-inverse: #F3F4F1;
+  --color-action-primary-bg: #0C1418;
+  --color-action-primary-bg-hover: #22303A;
+  --color-action-primary-fg: #F3F4F1;
+  --color-action-danger-fg: #C42B3A;    /* own token (R-24); never a reference to status.critical */
+
+  --color-status-critical-fg: #C42B3A;
+  --color-status-critical-tint: #F5E5E5;
+  --color-status-warning-fg: #7F5C00;
+  --color-status-warning-tint: #EEEADF;
+  --color-status-decision-fg: #674EB0;  /* CH-1 option A: person glyph and role word only */
+  --color-status-verified-fg: #1D7A4C;
+  --color-status-verified-tint: #E4EDE7;
+  /* Deadline emphasis aliases warning so its meaning can change independently (07 §3). */
+  --color-deadline-near-fg: var(--color-status-warning-fg);
+
+  --elevation-overlay: 0 1px 2px rgb(12 20 24 / .08), 0 8px 24px rgb(12 20 24 / .12);
+  --color-scrim: rgb(12 20 24 / .40);
+  --viz-series-context-opacity: .6;
+  --viz-prediction-opacity: .10;
+  --viz-work-opacity: .06;
+}
+
+/* ===================== Dark: "The Instrument" (07 §4.2, §5.1) ===================== */
+.wb-root[data-theme="dark"] {
+  color-scheme: dark;
+  --color-surface-base: #0F1415;
+  --color-surface-sheet: #1A1F21;       /* Phase 4A starting value (R-25) */
+  --color-surface-sunken: #121719;
+  --color-surface-raised: #1F2426;
+  --color-surface-overlay: #202527;
+  --color-surface-hover: #202527;
+  --color-surface-selected: #282D2F;
+  --color-border-subtle: #272C2E;
+  --color-border-strong: #34393B;
+  --color-border-control: #6B7275;
+  --color-border-focus: #DDE2E4;
+  --color-text-primary: #DDE2E4;        /* Phase 4A starting value (R-25) */
+  --color-text-secondary: #B5BCBE;
+  --color-text-tertiary: #868D90;
+  --color-text-disabled: #5C6366;
+  --color-text-inverse: #0C1418;
+  --color-action-primary-bg: #DDE2E4;
+  --color-action-primary-bg-hover: #FFFFFF;
+  --color-action-primary-fg: #0C1418;
+  --color-action-danger-fg: #F0564B;
+
+  --color-status-critical-fg: #F0564B;
+  --color-status-critical-tint: #352223;
+  --color-status-warning-fg: #EBAA3C;
+  --color-status-warning-tint: #342E20;
+  --color-status-decision-fg: #AA95E8;
+  --color-status-verified-fg: #4CB782;
+  --color-status-verified-tint: #1E302A;
+  --color-deadline-near-fg: var(--color-status-warning-fg);
+
+  --elevation-overlay: 0 8px 24px rgb(0 0 0 / .40);
+  --color-scrim: rgb(0 0 0 / .55);
+  --viz-series-context-opacity: .6;
+  --viz-prediction-opacity: .12;
+  --viz-work-opacity: .08;
+}
+
+/* Status roles that resolve to neutrals (07 §4.3 "Neutral states"). */
+.wb-root {
+  --color-status-nominal-fg: var(--color-text-secondary);
+  --color-status-info-fg: var(--color-text-secondary);
+  --color-status-active-fg: var(--color-text-primary);
+  --color-status-offline-fg: var(--color-text-tertiary);
+  --color-status-stale-fg: var(--color-text-tertiary);
+  --color-status-unknown-fg: var(--color-text-tertiary);
+
+  /* Data visualisation (07 §4.6). No categorical palette. */
+  --viz-series: var(--color-text-secondary);
+  --viz-series-focus: var(--color-text-primary);
+  --viz-grid: var(--color-border-subtle);
+  --viz-axis: var(--color-border-strong);
+  --viz-threshold-warning: var(--color-status-warning-fg);
+  --viz-threshold-critical: var(--color-status-critical-fg);
+  --viz-stale: var(--color-surface-sunken);
+  --viz-event: var(--color-text-tertiary);
+}

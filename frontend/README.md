@@ -17,6 +17,22 @@ npm run fixtures     # drives the real engine (no provider) through the Guided D
 npm run test:smoke   # server-renders every route for every fixture frame, both themes, every artifact type
 ```
 
+## V2 workbench (Phase 4A visual gate)
+
+`src/v2/` holds the V2 design system and the Phase 4A representative screens, specified by
+`design/v2/07-product-design-system.md` and `08-screen-specifications.md`. It mounts beside the current
+pages (which stay reachable and unchanged) under its own shell and scoped `.wb-root` tokens:
+`/app/overview`, `/app/actions`, `/app/cases/:incidentId`, `/app/system/simulation`, and the
+development-only `/app/dev/specimen`. It reads the same engine connection; no backend change.
+
+```
+npm run test:unit       # Vitest: status model, freshness (X8 fallback), token contrast, V2 routes over fixture frames
+npm run test:e2e        # Playwright: preview docked / modal (CH-2), decision surface, theme, landmarks
+npm run capture:phase4a # screenshots from the running app (see design/v2/review/phase4a/README.md)
+```
+
+`dist/` is not rebuilt in Phase 4A; FastAPI keeps serving the current bundle until a later slice.
+
 ## Routes
 
 `/login` is the only public route. Everything else lives under `/app` inside the shell

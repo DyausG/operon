@@ -1,0 +1,88 @@
+/* V2 base (07 §6, §17). Everything is scoped under .wb-root; legacy global styles are neutralised
+ * where they would leak (button reset, focus outline, scrollbars). */
+
+.wb-root {
+  position: fixed;
+  inset: 0;
+  background: var(--color-surface-base);
+  color: var(--color-text-primary);
+  font: var(--type-body);
+  font-feature-settings: normal;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+/* Resets use :where() so they carry zero specificity and never override component classes. */
+:where(.wb-root) *, :where(.wb-root) *::before, :where(.wb-root) *::after { box-sizing: border-box; }
+:where(.wb-root) :where(h1, h2, h3, h4, p, dl, dd, figure) { margin: 0; }
+:where(.wb-root) :where(ul, ol) { margin: 0; padding: 0; list-style: none; }
+:where(.wb-root) a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: 2px; }
+:where(.wb-root) button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+.wb-root ::selection { background: var(--color-surface-selected); color: var(--color-text-primary); }
+
+/* Focus (07 §17): 2 px ring + 2 px offset, ink in light, paper in dark. Never removed, never status-coloured. */
+.wb-root :focus { outline: none; }
+.wb-root :focus-visible,
+.wb-root button:focus-visible,
+.wb-root [tabindex]:focus-visible {
+  outline: var(--border-width-emphasis) solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+.wb-root ::-webkit-scrollbar { width: 10px; height: 10px; }
+.wb-root ::-webkit-scrollbar-thumb { background: var(--color-border-strong); border-radius: 0; border: 3px solid transparent; background-clip: padding-box; }
+.wb-root ::-webkit-scrollbar-track { background: transparent; }
+
+/* ---- type utilities ---- */
+.wb-mono, .wb-root code { font: var(--type-mono); font-feature-settings: "zero" 1; letter-spacing: 0; }
+.wb-mono-sm { font: var(--type-mono-small); font-feature-settings: "zero" 1; }
+.wb-num { font-variant-numeric: tabular-nums; font-weight: 500; }
+.wb-eyebrow { font: var(--type-eyebrow); letter-spacing: var(--tracking-eyebrow); text-transform: uppercase; color: var(--color-text-tertiary); }
+.wb-label { font: var(--type-label); letter-spacing: var(--tracking-label); color: var(--color-text-secondary); }
+.wb-caption { font: var(--type-caption); color: var(--color-text-tertiary); }
+.wb-secondary { color: var(--color-text-secondary); }
+.wb-tertiary { color: var(--color-text-tertiary); }
+.wb-muted { color: var(--color-text-tertiary); }
+.wb-sr {
+  position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+.wb-skip {
+  position: absolute; left: 8px; top: -40px; z-index: var(--z-tooltip);
+  background: var(--color-action-primary-bg); color: var(--color-action-primary-fg);
+  padding: 8px 12px; border-radius: var(--radius-sm); font: var(--type-label); text-decoration: none;
+}
+.wb-skip:focus { top: 8px; }
+.wb-dot-sep { color: var(--color-text-tertiary); padding: 0 2px; }
+.wb-header-fill { flex: 1 1 auto; }
+
+/* ---- status tones (07 §4.3): colour only on glyphs and the short status / role word ---- */
+.wb-shape { flex: none; display: inline-block; vertical-align: -2px; }
+.wb-tone-nominal { color: var(--color-status-nominal-fg); }
+.wb-tone-warning { color: var(--color-status-warning-fg); }
+.wb-tone-critical { color: var(--color-status-critical-fg); }
+.wb-tone-decision { color: var(--color-status-decision-fg); }
+.wb-tone-verified { color: var(--color-status-verified-fg); }
+.wb-tone-active, .wb-tone-ink { color: var(--color-text-primary); }
+.wb-tone-stale, .wb-tone-unknown, .wb-tone-offline { color: var(--color-text-tertiary); }
+.wb-shape-blank { display: inline-block; width: 14px; height: 14px; }
+.wb-prov { flex: none; color: var(--color-text-secondary); vertical-align: 0; }
+.wb-sev { flex: none; vertical-align: -1px; }
+.wb-sev-on { fill: var(--color-text-primary); }
+.wb-sev-off { fill: none; stroke: var(--color-border-control); stroke-width: 1; }
+.wb-icon { flex: none; vertical-align: -3px; }
+
+.wb-marker { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.wb-marker-word { font-weight: 500; }
+.wb-cond-normal .wb-marker-word { color: var(--color-text-secondary); font-weight: 400; }
+.wb-cond-critical .wb-marker-word, .wb-cond-elevated .wb-marker-word { color: var(--color-text-primary); }
+.wb-cond-stale .wb-marker-word, .wb-cond-unknown .wb-marker-word { color: var(--color-text-secondary); }
+/* Decision cue (CH-1): the short role word may take violet; sentences, headings and containers never do. */
+.wb-role-word { color: var(--color-status-decision-fg); font-weight: 500; }
+
+.wb-deadline-near { color: var(--color-text-primary); font-weight: 500; display: inline-flex; gap: 6px; align-items: center; }
+
+@media (prefers-reduced-motion: reduce) {
+  .wb-root *, .wb-root *::before, .wb-root *::after { transition-duration: 0ms !important; animation: none !important; }
+}

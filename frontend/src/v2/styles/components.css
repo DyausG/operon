@@ -1,0 +1,260 @@
+/* V2 shared components (07 §18). Radius ≤ 4 px, no pills, no shadows on in-flow content. */
+
+/* ---- Buttons ---- */
+.wb-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: var(--size-control-md); padding: 0 14px;
+  border-radius: var(--radius-sm); border: 1px solid transparent;
+  font: var(--type-button-md); text-decoration: none; white-space: nowrap; cursor: pointer;
+  transition: background-color var(--motion-fast) var(--easing-standard), border-color var(--motion-fast) var(--easing-standard);
+}
+.wb-btn-sm { min-height: var(--size-control-sm); padding: 0 10px; font: var(--type-button-sm); }
+.wb-btn-lg { min-height: var(--size-control-lg); padding: 0 18px; }
+.wb-btn-primary { background: var(--color-action-primary-bg); color: var(--color-action-primary-fg); border-color: var(--color-action-primary-bg); }
+.wb-btn-primary:hover { background: var(--color-action-primary-bg-hover); border-color: var(--color-action-primary-bg-hover); }
+.wb-btn-secondary { background: transparent; color: var(--color-text-primary); border-color: var(--color-border-control); }
+.wb-btn-secondary:hover { background: var(--color-surface-hover); }
+.wb-btn-ghost { background: transparent; color: var(--color-text-primary); padding: 0 8px; }
+.wb-btn-ghost:hover { background: var(--color-surface-hover); }
+/* Danger (R-24): its own action token; provisional emphasis for Reject (G2 / G4 open). */
+.wb-btn-danger { background: transparent; color: var(--color-action-danger-fg); border-color: var(--color-action-danger-fg); }
+.wb-btn-danger:hover { background: var(--color-surface-hover); }
+.wb-btn:active { background-color: var(--color-surface-selected); }
+.wb-btn-primary:active, .wb-btn-primary.is-busy { background: var(--color-action-primary-bg-hover); }
+/* No motion moves a control (07 §11): presses change tone only. */
+/* Inactive (R-3): focusable, aria-disabled, reason linked. Reads as blocked, stays legible. */
+.wb-btn.is-inactive { cursor: not-allowed; }
+.wb-btn-primary.is-inactive { background: transparent; color: var(--color-text-secondary); border: 1px dashed var(--color-border-control); }
+.wb-btn-secondary.is-inactive, .wb-btn-ghost.is-inactive { color: var(--color-text-secondary); border-style: dashed; }
+.wb-btn-danger.is-inactive { color: var(--color-text-secondary); border: 1px dashed var(--color-border-control); }
+.wb-btn.is-inactive:hover { background: transparent; }
+.wb-btn.is-busy { cursor: progress; }
+.wb-btn-busy { font-weight: 400; opacity: .85; }
+.wb-btn-busy::before { content: "· "; }
+.wb-btn:disabled { color: var(--color-text-disabled); border-color: var(--color-border-subtle); background: transparent; cursor: default; }
+
+.wb-iconbtn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: var(--size-control-md); height: var(--size-control-md); border-radius: var(--radius-sm);
+  color: var(--color-text-secondary); text-decoration: none;
+}
+.wb-iconbtn:hover { background: var(--color-surface-hover); color: var(--color-text-primary); }
+.wb-iconbtn-sm { width: 24px; height: 24px; }
+
+/* ---- Tags ---- */
+.wb-tag {
+  display: inline-flex; align-items: center; height: 20px; padding: 0 6px;
+  border: 1px solid var(--color-border-strong); border-radius: var(--radius-xs);
+  font: var(--type-mono-small); font-feature-settings: "zero" 1; color: var(--color-text-primary);
+}
+.wb-simtag, .wb-demotag {
+  display: inline-flex; align-items: center; height: 18px; padding: 0 6px;
+  border: 1px solid var(--color-text-tertiary); border-radius: var(--radius-xs);
+  font: var(--type-eyebrow); letter-spacing: var(--tracking-eyebrow); color: var(--color-text-secondary);
+  background-image: repeating-linear-gradient(135deg, transparent 0 3px, color-mix(in srgb, var(--color-text-tertiary) 28%, transparent) 3px 4px);
+}
+.wb-copyid { display: inline-flex; align-items: center; gap: 4px; }
+
+/* ---- Title block (07 §9.4): ≤ 6 cells, eyebrow labels, vertical hairlines ---- */
+.wb-titleblock {
+  display: flex; flex-wrap: wrap; align-items: stretch;
+  border-top: 1px solid var(--color-border-strong); border-bottom: 1px solid var(--color-border-strong);
+}
+.wb-tb-cell { padding: 8px 16px 9px; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.wb-tb-cell:first-child { padding-left: 0; }
+.wb-tb-cell + .wb-tb-cell { border-left: 1px solid var(--color-border-subtle); }
+.wb-tb-value { font: var(--type-body); font-weight: 500; color: var(--color-text-primary); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.wb-tb-end { margin-left: auto; display: flex; align-items: center; padding: 8px 0 8px 16px; }
+
+/* ---- Section heading: mono index · title · meta · rule ---- */
+.wb-section-head {
+  display: flex; align-items: baseline; gap: 12px;
+  padding: 10px 0 8px; border-bottom: 1px solid var(--color-border-subtle); margin-bottom: 12px;
+}
+.wb-section-head.is-sticky { position: sticky; top: 0; z-index: 2; background: var(--color-surface-sheet); }
+.wb-section-index { font: var(--type-mono-small); color: var(--color-text-tertiary); min-width: 18px; }
+.wb-section-title { font: var(--type-heading); color: var(--color-text-primary); }
+.wb-section-meta { margin-left: auto; font: var(--type-caption); color: var(--color-text-tertiary); display: inline-flex; gap: 6px; align-items: center; }
+.wb-section-action { margin-left: 12px; }
+
+/* ---- Ledger (label column, sentence case keys) ---- */
+.wb-ledger { display: grid; grid-template-columns: minmax(120px, 168px) 1fr; column-gap: 20px; }
+.wb-ledger-row { display: contents; }
+.wb-ledger-key { font: var(--type-label); letter-spacing: var(--tracking-label); color: var(--color-text-tertiary); padding: 7px 0; }
+.wb-ledger-val { padding: 6px 0; min-width: 0; color: var(--color-text-primary); }
+.wb-ledger-row + .wb-ledger-row .wb-ledger-key, .wb-ledger-row + .wb-ledger-row .wb-ledger-val { border-top: 1px solid var(--color-border-subtle); }
+.wb-ledger.is-compact { grid-template-columns: minmax(96px, 120px) 1fr; column-gap: 12px; font: var(--type-body-compact); }
+.wb-ledger.is-compact .wb-ledger-key, .wb-ledger.is-compact .wb-ledger-val { padding: 5px 0; }
+
+/* ---- Freshness ---- */
+.wb-fresh { display: inline-flex; align-items: center; gap: 6px; font: var(--type-caption); color: var(--color-text-secondary); white-space: nowrap; }
+.wb-fresh-word { font-weight: 500; color: var(--color-text-primary); }
+.wb-fresh-detail { color: var(--color-text-tertiary); }
+.wb-fresh.is-disconnected .wb-fresh-word { color: var(--color-text-primary); }
+
+/* ---- Alerts and banners ---- */
+.wb-alert {
+  display: flex; gap: 10px; align-items: flex-start;
+  border-left: 2px solid var(--color-text-secondary); padding: 8px 12px; background: var(--color-surface-sunken);
+}
+.wb-alert-critical { border-left-color: var(--color-status-critical-fg); }
+.wb-alert-warning { border-left-color: var(--color-status-warning-fg); }
+.wb-alert-decision { border-left-color: var(--color-text-primary); }
+.wb-alert .wb-shape { margin-top: 3px; }
+.wb-alert-dot { width: 14px; height: 14px; flex: none; margin-top: 3px; border: 1.5px solid var(--color-text-secondary); border-radius: 50%; }
+.wb-alert-title { font: var(--type-subheading); }
+.wb-alert-text { color: var(--color-text-secondary); max-width: 100ch; font: var(--type-body-compact); }
+
+.wb-empty-line { color: var(--color-text-secondary); padding: 4px 0 2px; max-width: 72ch; }
+
+/* ---- Form controls ---- */
+.wb-field { display: flex; flex-direction: column; gap: 4px; max-width: 640px; }
+.wb-hint { font: var(--type-caption); color: var(--color-text-tertiary); }
+.wb-textarea, .wb-input, .wb-select {
+  font: var(--type-body); color: var(--color-text-primary);
+  background: var(--color-surface-raised); border: 1px solid var(--color-border-control); border-radius: var(--radius-sm);
+  padding: 7px 10px; width: 100%; resize: vertical;
+}
+.wb-select { width: auto; min-height: var(--size-control-md); padding: 0 8px; }
+.wb-root[data-theme="dark"] .wb-textarea, .wb-root[data-theme="dark"] .wb-input, .wb-root[data-theme="dark"] .wb-select { background: var(--color-surface-sunken); }
+.wb-textarea.is-error { border-color: var(--color-status-critical-fg); }
+.wb-textarea.is-warning { border-color: var(--color-status-warning-fg); }
+.wb-field-msg { display: flex; gap: 6px; align-items: center; font: var(--type-caption); color: var(--color-text-primary); }
+
+.wb-check { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; position: relative; min-height: 24px; }
+.wb-check input { position: absolute; opacity: 0; width: 24px; height: 24px; margin: 0; left: -4px; cursor: pointer; }
+.wb-check-box {
+  width: 16px; height: 16px; flex: none; border: 1.5px solid var(--color-border-control); border-radius: var(--radius-xs);
+  background: var(--color-surface-raised); display: inline-grid; place-items: center;
+}
+.wb-check input:checked + .wb-check-box { background: var(--color-action-primary-bg); border-color: var(--color-action-primary-bg); }
+.wb-check input:checked + .wb-check-box::after {
+  content: ""; width: 9px; height: 5px; border-left: 2px solid var(--color-action-primary-fg); border-bottom: 2px solid var(--color-action-primary-fg);
+  transform: rotate(-45deg) translate(1px, -1px);
+}
+.wb-check input:focus-visible + .wb-check-box { outline: 2px solid var(--color-border-focus); outline-offset: 2px; }
+
+.wb-seg { display: inline-flex; border: 1px solid var(--color-border-control); border-radius: var(--radius-sm); overflow: hidden; }
+.wb-seg-opt { padding: 0 12px; min-height: var(--size-control-sm); font: var(--type-button-sm); color: var(--color-text-secondary); }
+.wb-seg-opt + .wb-seg-opt { border-left: 1px solid var(--color-border-control); }
+.wb-seg-opt:hover { background: var(--color-surface-hover); color: var(--color-text-primary); }
+.wb-seg-opt.is-on { background: var(--color-surface-selected); color: var(--color-text-primary); box-shadow: inset 0 -2px 0 var(--color-text-primary); }
+.wb-seg-opt:focus-visible { outline-offset: -3px; }
+
+.wb-disclosure { display: inline-flex; align-items: center; gap: 6px; font: inherit; color: inherit; }
+.wb-details summary { cursor: pointer; font: var(--type-caption); color: var(--color-text-secondary); padding: 2px 0; }
+.wb-bullets { list-style: none; display: flex; flex-direction: column; gap: 4px; }
+.wb-bullets li { position: relative; padding-left: 14px; }
+.wb-bullets li::before { content: ""; position: absolute; left: 2px; top: 9px; width: 5px; height: 1.5px; background: var(--color-text-tertiary); }
+
+/* ---- Tables (compact, ruled; header rule OR sunken band, never both: R-8) ---- */
+.wb-table-wrap { overflow-x: auto; }
+.wb-table { width: 100%; border-collapse: collapse; font: var(--type-table); }
+.wb-table-caption { caption-side: top; text-align: left; font: var(--type-caption); color: var(--color-text-tertiary); padding: 0 0 6px; }
+.wb-table th, .wb-table td { text-align: left; padding: var(--cell-pad-y) var(--cell-pad-x); vertical-align: top; border-bottom: 1px solid var(--color-border-subtle); }
+.wb-table thead th { font: var(--type-label); letter-spacing: var(--tracking-label); color: var(--color-text-tertiary); border-bottom: 1px solid var(--color-border-strong); padding-top: 4px; padding-bottom: 6px; white-space: nowrap; }
+.wb-table tbody th { font-weight: 500; }
+.wb-table.is-compact th, .wb-table.is-compact td { padding: 6px 8px; }
+.wb-table th:first-child, .wb-table td:first-child { padding-left: 0; }
+.wb-table .is-num { text-align: right; }
+.wb-col-glyph { width: 28px; }
+.wb-cell-case a { font-weight: 500; text-decoration: none; white-space: nowrap; }
+.wb-table td.is-nowrap, .wb-table .wb-nowrap { white-space: nowrap; }
+.wb-cell-case a:hover { text-decoration: underline; }
+.wb-cell-sub { display: block; font: var(--type-caption); color: var(--color-text-secondary); font-weight: 400; }
+
+/* ---- Chart ---- */
+.wb-chart { margin-top: 20px; }
+.wb-chart-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.wb-chart-title { font: var(--type-subheading); }
+.wb-chart-scope { font: var(--type-caption); color: var(--color-text-tertiary); flex: 1 1 auto; }
+.wb-chart-plot { background: var(--color-surface-sunken); padding: 4px 0 0; }
+.wb-chart.is-compact { margin-top: 8px; }
+.wb-chart.is-compact .wb-chart-head { margin-bottom: 4px; }
+.wb-chart.is-compact .wb-chart-title { font: var(--type-label); color: var(--color-text-secondary); }
+.wb-chart.is-compact .wb-chart-scope { flex-basis: 100%; }
+.wb-chart-svg { display: block; overflow: visible; }
+.wb-chart-foot { font: var(--type-caption); color: var(--color-text-tertiary); padding: 6px 8px; }
+.wb-viz-grid { stroke: var(--viz-grid); stroke-width: 1; }
+.wb-viz-axis { stroke: var(--viz-axis); stroke-width: 1; }
+.wb-viz-series { fill: none; stroke: var(--viz-series-focus); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.wb-viz-point, .wb-viz-last { fill: var(--viz-series-focus); }
+.wb-viz-th { stroke-width: 1; stroke-dasharray: 4 3; }
+.wb-viz-th-warn { stroke: var(--viz-threshold-warning); }
+.wb-viz-th-crit { stroke: var(--viz-threshold-critical); }
+.wb-viz-stale { fill: var(--color-surface-base); }
+.wb-viz-label { font: var(--type-caption); fill: var(--color-text-tertiary); }
+.wb-viz-value { font: 500 12px/16px var(--font-sans); fill: var(--color-text-primary); }
+.wb-viz-cursor { stroke: var(--viz-event); stroke-width: 1; }
+.wb-chart-table { max-height: 240px; overflow: auto; }
+
+/* ---- Stage track (07 §13.2): 1 px line, 10 px square nodes, hold-point bar ---- */
+.wb-track { padding: 14px 0 4px; }
+.wb-track-list { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); position: relative; }
+.wb-track-list::before { content: ""; position: absolute; left: 5px; right: calc(12.5% - 5px); top: 5px; height: 1px; background: var(--color-border-strong); }
+.wb-track-stage { position: relative; display: flex; flex-direction: column; gap: 6px; padding-right: 8px; min-width: 0; }
+.wb-track-node {
+  position: relative; z-index: 1; width: 11px; height: 11px; background: var(--color-surface-sheet);
+  border: 1px solid var(--color-border-control); display: grid; place-items: center; color: var(--color-action-primary-fg);
+}
+.wb-track-stage.is-done .wb-track-node { background: var(--color-text-primary); border-color: var(--color-text-primary); }
+.wb-track-stage.is-current .wb-track-node { background: var(--color-text-primary); border-color: var(--color-text-primary); box-shadow: 0 0 0 2px var(--color-surface-sheet), 0 0 0 4px var(--color-text-primary); }
+.wb-track-label { font: var(--type-caption); color: var(--color-text-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wb-track-stage.is-done .wb-track-label { color: var(--color-text-secondary); }
+.wb-track-stage.is-current .wb-track-label { color: var(--color-text-primary); font-weight: 600; }
+.wb-track-hold { position: absolute; left: -10px; top: -2px; width: 2px; height: 15px; background: var(--color-text-primary); }
+.wb-track-loop { display: inline-flex; align-items: center; gap: 6px; font: var(--type-caption); color: var(--color-text-primary); font-weight: 500; margin-top: 2px; }
+.wb-track-loop-node { width: 9px; height: 9px; transform: rotate(45deg); border: 1.5px solid var(--color-text-primary); }
+.wb-track-exception { font: var(--type-caption); color: var(--color-text-primary); margin-top: 6px; }
+.wb-track-caption { display: flex; gap: 16px; align-items: baseline; margin-top: 10px; flex-wrap: wrap; }
+.wb-track-current { font: var(--type-subheading); }
+.wb-track-next { font: var(--type-caption); color: var(--color-text-secondary); }
+
+/* ---- Preview pane (docked) and modal drawer (CH-2) ---- */
+.wb-pane {
+  width: var(--size-rail-inspector); flex: none; border-left: 1px solid var(--color-border-strong);
+  background: var(--color-surface-raised); display: flex; flex-direction: column; min-height: 0; height: 100%;
+}
+.wb-pane-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px 10px 20px; border-bottom: 1px solid var(--color-border-subtle); }
+.wb-pane-title { font: var(--type-subheading); }
+.wb-pane-body { overflow-y: auto; padding: 16px 20px 24px; flex: 1 1 auto; }
+.wb-drawer-layer { position: fixed; inset: 0; z-index: var(--z-drawer); }
+.wb-scrim { position: absolute; inset: 0; background: var(--color-scrim); }
+.wb-drawer {
+  position: absolute; top: 0; right: 0; bottom: 0; width: min(var(--size-drawer), 100vw);
+  background: var(--color-surface-overlay); box-shadow: var(--elevation-overlay); border-left: 1px solid var(--color-border-strong);
+  display: flex; flex-direction: column;
+  animation: wb-drawer-in var(--motion-slow) var(--easing-standard);
+}
+@keyframes wb-drawer-in { from { transform: translateX(16px); opacity: .6; } to { transform: none; opacity: 1; } }
+.wb-dialog {
+  position: absolute; left: 50%; top: 18vh; transform: translateX(-50%); width: min(480px, calc(100vw - 32px));
+  background: var(--color-surface-overlay); border: 1px solid var(--color-border-strong); border-radius: var(--radius-sm);
+  box-shadow: var(--elevation-overlay); padding: 20px; display: flex; flex-direction: column; gap: 10px;
+}
+.wb-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+
+/* ---- Menu ---- */
+.wb-menu {
+  position: absolute; right: 0; top: calc(100% + 6px); min-width: 260px; z-index: var(--z-popover);
+  background: var(--color-surface-overlay); border: 1px solid var(--color-border-strong); border-radius: var(--radius-sm);
+  box-shadow: var(--elevation-overlay); padding: 6px 0; display: flex; flex-direction: column;
+}
+.wb-menu-head { padding: 8px 14px 10px; border-bottom: 1px solid var(--color-border-subtle); }
+.wb-menu-name { font: var(--type-subheading); }
+.wb-menu-meta { font: var(--type-caption); color: var(--color-text-tertiary); }
+.wb-menu-group { padding: 10px 14px; display: flex; flex-direction: column; gap: 6px; border-bottom: 1px solid var(--color-border-subtle); }
+.wb-menu-item { padding: 8px 14px; text-align: left; text-decoration: none; font: var(--type-body); }
+.wb-menu-item:hover { background: var(--color-surface-hover); }
+
+/* ---- Actor marks ---- */
+.wb-actor {
+  display: inline-grid; place-items: center; width: 22px; height: 22px; flex: none;
+  border: 1px solid var(--color-border-strong); border-radius: var(--radius-xs);
+  font: 600 10px/1 var(--font-sans); letter-spacing: .02em; color: var(--color-text-secondary); background: var(--color-surface-sheet);
+}
+.wb-actor-role { width: 34px; font: 500 11px/1 var(--font-mono); }
+.wb-actor-system { border-style: solid; }
+
+/* Programmatic focus target for dialogs: the heading receives focus without a ring (07 §17 dialogs). */
+.wb-pane-title[tabindex="-1"]:focus-visible { outline: none; }
