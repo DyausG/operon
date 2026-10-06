@@ -1,7 +1,9 @@
 # OPERON V2: Screen specifications & Phase 4 handoff (Phase 3)
 
-Status: Phase 3 specification. Documentation only. No application code changed. This document
-uses the tokens, components and status grammar in
+Status: Phase 3 specification, **reconciled with the reviewed Phase 3.1 findings** (`09 §22`).
+Together with `07` this is the **implementation baseline for Phase 4A**. The Phase 4A scope is frozen
+in §11. Documentation only. No application code changed. This document uses the tokens, components
+and status grammar in
 [`07-product-design-system.md`](07-product-design-system.md) (cited as `07 §n`).
 
 **Conventions:**
@@ -65,7 +67,7 @@ redefinition.
 | **G10** | Work-order status lifecycle / Written once, never updated | 9, 10, 15 | "Field completion not reported" |
 | **G11** | Approval renewal after expiry / Requirement EXPIRED → decisions refused; no caller re-issues; case stuck in AWAITING_APPROVAL | 8, 22, §7 | "Expired: nothing executed; renewal not available yet" |
 | **G12** | Ownership & acknowledgement / No human owner or assignee on `incident`; backend `alert.ACKNOWLEDGED` unused | 1–4 | Waiting-on role only; no fake assignee, no acknowledge control |
-| **G13** *(new, proposed)* | Structured inspection result: **Pass / Flag / Fail** per check, mechanism *not confirmed / undetermined*, free-text notes / `PerformedCheck.passed` is `Literal[True]`; a confirmation can only *confirm* a mechanism | 21 | Pass-only submission maps exactly to the current contract. Flag / Fail and "not confirmed" are shown but submission is blocked with the reason. |
+| **G13** *(new, proposed)* | Structured inspection result: **Pass / Flag / Fail** per check, mechanism *not confirmed / undetermined*, free-text notes. **Roll-up rule** (R-23, MaintainX-style): the inspection result is **Fail** if any check fails; **Flag** if any check is flagged and none fail; otherwise **Pass** / `PerformedCheck.passed` is `Literal[True]`; a confirmation can only *confirm* a mechanism | 21 | Pass-only submission maps exactly to the current contract. Flag / Fail and "not confirmed" are shown, but submission is blocked with the reason and a **Copy result** hand-off. |
 | **G14** *(new, proposed; Phase 2 noted "attachments" without a number)* | Evidence attachments (photos) / No attachment store | 21, Evidence | Camera control not rendered; listed as "coming later" in the inspection help text only |
 
 **Projection exposures** (read-only; no new behaviour; each has a fallback):
@@ -79,6 +81,7 @@ redefinition.
 | X5 | Global, paginated incident-event journal query (plus system events) | Audit log = journals of projected cases (last 80 events each) + PRISM events + this session's system events, labelled as such |
 | X6 | `EvidenceRequest` artifacts in `read_model` | Open requests from `EVIDENCE_REQUESTED` events; text via `GET /api/demo/artifacts/{request_id}` |
 | X7 | Capability flags in `/api/health` (trusted submissions enabled) | Inspection and resource forms shown as unavailable until a submit attempt proves otherwise (not acceptable long-term) |
+| X8 *(new, found in reconciliation)* | **Server wall-clock timestamp** on tick / snapshot messages and history points, plus the configured tick interval. Today messages carry only `tick` and `plant_time_min` (simulated plant minutes); history points carry tick index `t`; `POC_TICK_SECONDS` isn't exposed. | Freshness from message **receipt** time and tick continuity; expected interval measured from arrivals; telemetry axes in samples / ticks, never invented clock times (`07 §15.1`, `§16`) |
 
 ---
 
@@ -169,7 +172,7 @@ System sits at the rail foot, never among operational items.
 
 - The rail collapses to 56 px icons with tooltips; group headers become hairline separators.
 - The header keeps the status indicator in compact form ("● Live · Det.").
-- The inspector opens as an overlay drawer (420 px) with a scrim.
+- The preview and inspector open as a **modal drawer** (420 px, scrim, focus trapped; §4).
 
 ### 3.4 Phone (< 768)
 
@@ -196,15 +199,17 @@ System sits at the rail foot, never among operational items.
 
 | Aspect | Specification |
 |---|---|
-| Desktop ≥ 1440 | Selecting a row (click / `Enter`) opens the **preview** docked right (420 px). The queue keeps its scroll position and selection (2 px ink bar). |
-| 1024–1439 | Preview overlays the right of the sheet; queue remains visible behind (no scrim) |
+| ≥ 1280 (CH-2, *Phase 4A prototype hypothesis*) | Selecting a row (click / `Enter`) opens the **preview docked** right (about 380 px; the queue keeps ≥ 900 px at 1280). The queue keeps its scroll position and selection (2 px ink bar), stays fully interactive and is never covered. The preview has an explicit **Close** control and `role="complementary"`; focus enters it only on `Tab`. |
+| 768–1279 | The preview opens as a **modal drawer** (420 px, scrim, focus moves to the drawer heading and is trapped; `Esc`, Close and Back close it and return focus to the originating row). The queue behind is inert. |
+| Never | An "overlay but not modal, no scrim, queue still interactive" state. Every preview is either docked (non-modal) or modal. |
 | Preview content (case) | Title block (compact: asset, condition, stage, waiting on, deadline) · next-step sentence · the 3 most recent evidence items · leading hypothesis or diagnosis · plan summary when present · record (last 5 events) · **Open case** (primary) and **Go to decision** (when awaiting decision) |
 | Never in preview | The decision controls (`07 §20`; one approval surface) |
-| Keyboard | `↑` / `↓` changes the previewed item while the preview stays open · `Shift+Enter` or `O` opens the workspace · `Esc` closes the preview and returns focus to the row · focus enters the preview only on `Tab` |
+| Keyboard | Docked: `↑` / `↓` (aliases `J` / `K`) change the previewed item while the preview stays open · `Shift+Enter` or `O` opens the workspace · `Esc` closes the preview and returns focus to the row. Modal drawer: focus trapped; `Esc` closes and returns focus to the row. |
 | URL | `?preview=<id>`: reload restores it; Back closes it before leaving the page |
 | Transition to workspace | Navigates to `/app/cases/<id>`; the queue position is restored on Back (scroll and selection stored in history state) |
-| Phone | Tap opens the workspace directly (no preview); Back returns to the list at the same position |
-| Artifact inspector | Same panel slot; opened by any artifact link (`#artifact=<id>`); shows full record, provenance (expanded), identifiers (copy) and JSON payload (collapsed, mono) |
+| Phone | One pane at a time: tap opens the workspace directly (no preview); Back returns to the list at the same position |
+| Artifact inspector | Same panel slot and the same docked / modal rule; opened by any artifact link (`#artifact=<id>`); shows full record, provenance (expanded), identifiers (copy) and JSON payload (collapsed, mono). Model self-reported `confidence` fields are **omitted** from the payload view (`07 §18.6`). Also hosts the **full record** and **"View all" evidence** (R-12, R-13) with filters. |
+| Prototype test (Phase 4A, §11) | At 1024, 1280 and 1440: focus order, screen-reader reading order, selected-row occlusion (must be none), `Esc` and Back behaviour |
 
 ---
 
@@ -265,7 +270,7 @@ elevated without a case; one case verifying.
 │ 01  Requires attention                     2         │ 03  Watch                        2    │
 │  ACTION REQUIRED                                     │  □ ▲ HYD-PUMP-03 Elevated 0.52 since  │
 │  ■ Approve work package · AC-COMP-01                 │      13:58 · no case (below gate)     │
-│    Risk score 0.86 ≥ gate 0.80 · bearing wear        │  □ ◇ GRIND-04 · Verifying · 4 samples │
+│    Risk score 0.86 ≥ gate 0.80 · bearing wear        │  □ ◇ GRIND-04 · Verifying since 12:05 │
 │    confirmed · Waiting on Approver · by 15:12 (2h41) │ 04  Work in progress             1    │
 │  AT RISK                                             │  WO-1043 · GRIND-04 · committed 12:05 │
 │  ◧ ⬣ CNC-MILL-07 · Investigating (automated) · 14:02│      · field completion not reported   │
@@ -278,7 +283,7 @@ elevated without a case; one case verifying.
 | | |
 |---|---|
 | Controls | Attention items open the preview (desktop) or the case section (phone). "Go to decision" on approval items. No inline approve. |
-| States | Flood: more than 5 same-kind items in 10 min collapse into a group row (`07 §12.5`) |
+| States | Burst grouping is **not used here today**: at most one case per asset is projected (G5). Grouping, if ever used, follows the safe rule in `07 §12.5` (presentation-only, always expandable, never hides an item). Mixed staleness is stated, e.g. "7 of 8 assets current · CNC-MILL-07 stale since 14:18" (R-18). |
 | Responsive | Phone: Action required and At risk only, then "3 active cases"; band as a list with abnormal first |
 | Data | As screen 1, plus `alerts[].lifecycle.phase`; expiry via X1 or fallback fetch |
 | Gaps | X1, X2, G12 (no owner shown) |
@@ -308,8 +313,8 @@ elevated without a case; one case verifying.
 
 | | |
 |---|---|
-| Item anatomy | Line 1: attention glyph, response glyph, **verb + object** (`type.subheading`), deadline (right). Line 2: asset tag, name, stage. Line 3 (`text.secondary`): one-line reason from backend facts. |
-| Grouping | **"Requires you (role)"** then **"Waiting on other roles"** (collapsed by role). *Now / Soon / Waiting* is **not** used: only approvals carry a real deadline, and "what I'm waiting on" requires knowing what *I* did (G8). |
+| Item anatomy | Line 1: response glyph (person-square, ≥ 14 px), **verb + object** (`type.subheading`), deadline (right). Line 2: asset tag, name, stage word. Line 3 (`text.secondary`): one-line reason from backend facts. The attention glyph is omitted because the group header carries attention (R-14). |
+| Grouping | **"Requires you (role)"** then **"Waiting on other roles"** (collapsed by role, expandable). **Group headers name the reason** (R-21), e.g. "Requires you · Maintenance approver: approvals and dispatch failures". Other-role rows are read-only: **no verb buttons**. *Now / Soon / Waiting* is **not** used: only approvals carry a real deadline, and "what I'm waiting on" requires knowing what *I* did (G8). No read / unread state (G7). |
 | Sorting | Attention level → deadline ascending (only `expires_at` or window start) → severity (or criticality) → age |
 | Response types (today) | Approve work package (Awaiting decision) · Inspect asset (Awaiting inspection; G1) · Confirm resources (Diagnosed; G1) · Resolve escalation (Escalated; G2) · Resolve dispatch failure (Dispatch failed; G3) · Approval expired (G11) |
 | Quick actions | "Go to decision", "Start inspection" (task route), "Open case". **No inline approve or reject.** Items whose resolution is unavailable show the reason in line 3. |
@@ -333,10 +338,10 @@ elevated without a case; one case verifying.
 ├────┬──────────────────────────────┬────────────┬───────────────────┬──────────────┬───────┬──────────┬────────┤
 │    │ Case                         │ Condition  │ Stage             │ Waiting on   │ Crit. │ Deadline │ Updated│
 ├────┼──────────────────────────────┼────────────┼───────────────────┼──────────────┼───────┼──────────┼────────┤
-│ ■  │ AC-COMP-01 · 05 Oct 13:02    │ ⬣ Critical │ ■ Awaiting decis. │ ◈ Approver   │ High  │ 15:12    │ 14:31  │
+│ ■  │ AC-COMP-01 · 05 Oct 13:02    │ ⬣ Critical │ Awaiting decision │ ◈ Approver   │ High  │ 15:12    │ 14:31  │
 │    │ Instrument Air Compressor 01 │   0.86     │   5/8             │              │       │          │        │
-│ ◧  │ CNC-MILL-07 · 05 Oct 14:01   │ ⬣ Critical │ ■ Investigating   │ ⚙ Analysis   │ High  │ —        │ 14:02  │
-│ □  │ GRIND-04 · 05 Oct 11:40      │ ○ Normal   │ ■ Verifying 4 smp │ ⚙ Verificat. │ Med.  │ —        │ 14:30  │
+│ ◧  │ CNC-MILL-07 · 05 Oct 14:01   │ ⬣ Critical │Investigating · 2/8│ ⚙ Analysis   │ High  │ None     │ 14:02  │
+│ □  │ GRIND-04 · 05 Oct 11:40      │ ○ Normal   │ Verifying · 7/8   │ ⚙ Verificat. │ Med.  │ No deadline │ 14:30│
 └────┴──────────────────────────────┴────────────┴───────────────────┴──────────────┴───────┴──────────┴────────┘
 ```
 
@@ -356,32 +361,35 @@ elevated without a case; one case verifying.
 ```text
 ┌ Cases / AC-COMP-01 · 05 Oct 13:02                                              ● Live 14:32:05 ┐
 │ Failure risk above action gate · Instrument Air Compressor 01                 [ Next-step CTA ]│
-│ CASE AC-COMP-01·05 Oct 13:02 │ ASSET ⬣ Critical 0.86 │ SEVERITY ▮▮▮▯ High │ STAGE ■ … │ WAITING ON … │
-│ DEADLINE … │ REVISION R33 │ ANALYSIS Deterministic · run 3                                         │
+│ ASSET CONDITION ⬣ Critical 0.86 │ SEVERITY ▮▮▮▯ High │ STAGE Awaiting decision · 5/8 │          │
+│ WAITING ON ◈ Approver │ DEADLINE 15:12 · in 2 h 41 │ REVISION R33      (≤ 6 cells, R-6)       │
 │ ▣──▣──■──□──┃──□──□──□   (stage track, caption: what happens next)                             │
 ├ index ─────┬ document ───────────────────────────────────────────────┬ context rail ───────────┤
-│ 01 Summary │ 01 SUMMARY & NEXT STEP                                  │ ┌ NEXT STEP ─────────┐ │
-│ 02 Evidence│  What happened · Current finding · Recommended action · │ │ verb · owner · by   │ │
-│  7 · 1 req │  Done so far (milestone list with times)                │ │ [action]            │ │
-│ 03 Invest. │ 02 EVIDENCE  (open requests first, then table, chart)   │ └─────────────────────┘ │
-│ 04 Plan &  │ 03 INVESTIGATION                                        │ Asset condition +      │
-│  decision  │ 04 PLAN & DECISION                                      │  risk mini-chart       │
-│ 05 Work &  │ 05 WORK & VERIFICATION                                  │ Open requests          │
-│  verif.    │ 06 RECORD                                               │ Identifiers (copy)     │
-│ 06 Record  │                                                         │                         │
+│ 01 Summary │ 01 Summary & next step                                  │ ▌Next step (tint + ink  │
+│ 02 Evidence│  What happened · Current finding · Recommended action · │ ▌left rule, not framed) │
+│  7 · 1 req │  Done so far (milestone list with times)                │ ▌verb · owner · by      │
+│ 03 Invest. │ 02 Evidence  (open requests first, then table, chart)   │ ▌[action]               │
+│ 04 Plan &  │ 03 Investigation                                        │ Asset condition +      │
+│  decision  │ 04 Plan & decision                                      │  risk mini-chart       │
+│ 05 Work &  │ 05 Work & verification                                  │ Open requests          │
+│  verif.    │ 06 Record                                               │                        │
+│ 06 Record  │  (section headings sentence case; index numbers mono)   │ Identifiers: case ref,  │
+│            │                                                         │ UUID, run, hash (copy)  │
 └────────────┴─────────────────────────────────────────────────────────┴─────────────────────────┘
 ```
 
 | Rule | Specification |
 |---|---|
 | Header | Sticky. On scroll it condenses to one 48 px line (title · stage · waiting on · deadline · CTA). |
-| CTA | The single next-step primary button: "Go to decision", "Open inspection task", or none (when waiting on the system). Never "Approve". |
+| CTA | The single next-step button: "Go to decision", "Open inspection task", or none (when waiting on the system). Never "Approve". **It is primary only while the decision surface is not on screen; whenever the decision surface is visible, the header CTA and the next-step action are secondary** (one primary per view, R-5). |
+| Title block | At most six cells, in this order: Asset condition · Severity (or Asset criticality until X2) · Stage · Waiting on · Deadline · Revision. Inapplicable cells are dropped. The case reference, analysis run and incident UUID live in the context rail's Identifiers (R-6). |
 | Sections | One scrollable document, not tabs. Index highlights the section in view. Not-yet-reached sections render one line: "Not started · begins after diagnosis." No empty boxes. |
 | Section order | Fixed. Evidence precedes Investigation, which precedes Plan & decision (`07 §2`). |
-| Context rail (≥ 1280) | Next-step block (framed) · asset condition with a 0–1 risk mini-chart and thresholds · open evidence requests · identifiers (incident UUID, revision, hash prefix: copy buttons). Below 1280 the rail content appears at the top of Summary. |
+| Context rail (≥ 1280) | Next-step block (**tint plus 2 px ink left rule, not framed**; R-11) · asset condition with a 0–1 risk mini-chart and thresholds · open evidence requests · **Identifiers** (case reference, incident UUID, analysis run, revision, hash prefix: copy buttons, middle-truncated). The rail is separated by tint and a hairline, not a frame. Below 1280 the rail content appears at the top of Summary. |
+| Evidence and record length | Evidence shows up to 10 rows inline, then "View all n" opens the full filterable list in the inspector (R-13). The Record shows a curated inline record (about 10 authoritative entries) plus "Open full record" in the inspector (R-12, §8). |
 | Phone | Top bar (asset tag) → summary block (what's wrong, stage n/8, waiting on, deadline) → next-step block → accordion sections (one open) → record (last 10). |
 | Data | WS alert for the header (immediate); `GET /api/incidents/{id}` for sections (partial-loading pattern, `07 §15`) |
-| Emphasis | Title (`type.title`), then title block, then next-step block. The document body is quiet ink. Hue appears only in condition, waiting-on, the decision surface rule and verification. |
+| Emphasis | Title (`type.title`), then title block, then next-step block. The document body is quiet ink. Hue appears only in condition, the waiting-on glyph (and role word), and verification. The decision surface rule is ink. |
 
 ### Screen 5: Case, early investigation
 
@@ -399,7 +407,7 @@ elevated without a case; one case verifying.
 **Investigation section (applies to 5–8):**
 
 ```text
-03 INVESTIGATION                                    Revision 3 · deterministic advisory · 14:31
+03 Investigation                                    Revision 3 · deterministic advisory · 14:31
    Hypotheses
    ● Supported    Bearing wear (drive end) · PWF   supports 3  contradicts 0   basis: torque deviation…
    ○ Open         Tool wear limit                  supports 1  contradicts 1   basis: …
@@ -415,7 +423,7 @@ elevated without a case; one case verifying.
 | Element | Rule |
 |---|---|
 | Hypothesis outcome vocabulary | **Supported** (filled dot) · **Refuted** (slashed circle; row stays, `text.secondary`) · **Unresolved / inconclusive** (dashed circle) · **Open** (hollow) |
-| What hypotheses show | Each shows supporting / contradicting counts linking to evidence rows, the basis text (`confidence_basis`) and falsification tests (expand). **No percentages** (inspector only, labelled "uncalibrated model self-report"). |
+| What hypotheses show | Each shows supporting / contradicting counts linking to evidence rows, the basis text (`confidence_basis`) and falsification tests (expand). **No model self-reported confidence value anywhere**: not in rows, not in the inspector (product-owner correction A, `07 §18.6`). |
 | Advisory vs authoritative | Hypotheses and reviews carry the dashed advisory rule. The **Diagnosis** row carries the solid authoritative rule and states that the *application* accepted it. |
 | Reviews | Rows with role abbreviation (DX, ENG, OPS, CRT, PLN), verdict, one finding, run link. Raw outputs and delegation trees are in the inspector only. **No chain-of-thought text.** |
 | Run completion | Run completion other than MODEL_COMPLETED is stated plainly: "Run stopped: limit reached / timed out / model failed / invalid output". |
@@ -428,9 +436,9 @@ elevated without a case; one case verifying.
 | State | Stage Awaiting inspection (loop under Investigating). Waiting on **Technician**. Attention: Action required. |
 | Summary | **Current finding:** "Leading hypothesis: bearing wear (supported by 3, contradicted by 0). Physical confirmation required before diagnosis."<br>**Next step:** "Technician inspection: check drive-end bearing temperature and play." |
 | Next-step block | Verb "Inspect AC-COMP-01", owner Technician, requested 14:33. CTA "Open inspection task" → `/inspect`. **If submissions are disabled (X7 / G1):** CTA replaced by "Inspection submission isn't available in this deployment. The case stays here until an inspection is recorded." |
-| Evidence | The open request is pinned at the top of Evidence: question, capability, requested by (role), since. |
+| Evidence | The open request is pinned at the top of Evidence with a 2 px ink left rule (not a frame): question, capability, requested by (role), since. |
 | Data / gaps | Requests via X6 fallback; G1, G8, G13 |
-| Emphasis | Violet person glyph in Waiting on and the next-step block; nothing else coloured |
+| Emphasis | Violet person glyph (and role word) in Waiting on and the next-step block; nothing else coloured |
 
 ### Screen 7: Case, recommendation ready
 
@@ -440,15 +448,15 @@ elevated without a case; one case verifying.
 | Summary | Recommendation block (below), plus "Decision opens when governance completes." |
 
 ```text
-04 PLAN & DECISION
-   FINDING        Bearing wear, drive end (diagnosis accepted 14:36 · 4 evidence)
-   CONSEQUENCE    Risk score 0.86 above gate; continued operation risks unplanned stop (model output)
-   RECOMMENDED    Replace drive-end bearing · PRT-BRG × 1 · TECH-201 · window 13:12–15:12 · 50 min downtime
-   BASIS          torque deviation since 02:10 (Measured) · inspection confirmed wear (Human-entered)
-   STEPS          1 Create work package  2 Notify technician  3 Verify recovery   (preconditions, criteria ▸)
-   ESTIMATES      Cost $1,840 · avoided loss $101,150  — estimates · assumption set v3 (Model-generated)
-   REVIEWS        ENG feasible · OPS resources available · CRT accepted · PLN reversible, not safety-relevant
-   REVISION       Plan R2 (supersedes R1 · changes: window moved +2 h)
+04 Plan & decision
+   Finding        Bearing wear, drive end (diagnosis accepted 14:36 · 4 evidence)
+   Consequence    Risk score 0.86 above gate; continued operation risks unplanned stop (model output)
+   Recommended    Replace drive-end bearing · PRT-BRG × 1 · TECH-201 · window 13:12–15:12 · 50 min downtime
+   Basis          torque deviation since 02:10 (Measured) · inspection confirmed wear (Human-entered)
+   Steps          1 Create work package  2 Notify technician  3 Verify recovery   (preconditions, criteria ▸)
+   Estimates      Cost $1,840 · avoided loss $101,150  — estimates · assumption set v3 (Model-generated)
+   Reviews        ENG feasible · OPS resources available · CRT accepted · PLN reversible, not safety-relevant
+   Revision       Plan R2 (supersedes R1 · changes: window moved +2 h)
 ```
 
 | | |
@@ -456,35 +464,36 @@ elevated without a case; one case verifying.
 | Rules | Finding and recommended action are separate labelled rows. Estimates appear only here and in the decision surface, always labelled "estimate" with the assumption version, never aggregated or shown as a headline. Revision differences are listed when a plan supersedes another. |
 | Data | `intervention`, `binding`, `verdicts`, `agent_runs` (INTERVENTION_REVIEW), `diagnosis` |
 | Gaps | G1 (resource confirmation) |
-| Emphasis | Recommendation block at `type.body` weight with label column in `type.eyebrow`. No colour. |
+| Emphasis | Recommendation block at `type.body` weight with a sentence-case label column (`type.label`, R-7). No colour. |
 
 ### Screen 8: Case, awaiting approval (the decision surface)
 
 **The only authoritative approval surface** (desktop; phone in screen 22).
 
 ```text
-┌━━ DECISION REQUIRED ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ by 15:12 · in 2 h 41 min ┐
+┌━━ ◈ Decision required ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ by 15:12 · in 2 h 41 min ┐  ← 2 px INK rule
 │ Approve the exact work package for AC-COMP-01 · Instrument Air Compressor 01                       │
 │                                                                                                    │
-│ WHAT WILL HAPPEN IF YOU APPROVE (immediately)                                                     │
+│ What will happen if you approve (immediately)                                                     │
 │   • Creates work order (local CMMS adapter) · reserves PRT-BRG × 1 · books TECH-201 13:12–15:12  │
 │   • Records a technician notification (delivery not tracked)                                       │
 │   • Starts post-work verification against the outcome policy (operon-outcome-1)                    │
 │   Cannot be undone from this application: the dispatched work order and reservations.             │
-│ IF NOT APPROVED      The requirement expires at 15:12; nothing is dispatched. Risk score is 0.86. │
-│ WHY                  Diagnosis: bearing wear (accepted 14:36) · 4 evidence · critic: accepted      │
-│ REVIEWS              ENG feasible · OPS available · PLN reversible, not safety-relevant           │
-│ CONTRADICTING        1 evidence item contradicts the diagnosis ▸   (acknowledgement required)     │
-│ CONDITIONS           Exact human approval of this promoted work package is required.             │
-│ ESTIMATES            Cost $1,840 · downtime 50 min · avoided loss $101,150 (estimates · v3)       │
-│ BOUND TO             requirement 7f2c…e01 · intervention 3b9a…77d · hash a046ef…39ab · R33        │
+│ If not approved      The requirement expires at 15:12; nothing is dispatched. Risk score is 0.86. │
+│ Why                  Diagnosis: bearing wear (accepted 14:36) · 4 evidence · critic: accepted      │
+│ Reviews              ENG feasible · OPS available · PLN reversible, not safety-relevant           │
+│ Contradicting        1 evidence item contradicts the diagnosis ▸   (acknowledgement required)     │
+│ Conditions           Exact human approval of this promoted work package is required.             │
+│ Estimates            Cost $1,840 · downtime 50 min · avoided loss $101,150 (estimates · v3)       │
+│ Bound to             requirement 7f2c…e01 · intervention 3b9a…77d · hash a046ef…39ab · R33        │
 │                      Any change to the case or plan voids this approval.                          │
-│ DECIDER              Required role: maintenance approver · recorded as: J. Doe, approver          │
+│ Decider              Required role: maintenance approver · recorded as: J. Doe, approver          │
 │                      (declared, not verified: G8)                                                  │
 │                                                                                                    │
 │ ☐ I have reviewed the contradicting evidence (1 item)                                             │
 │ Rationale  [ optional for approval · required for rejection                              ]        │
 │                                                                                                    │
+│ Binding  a046ef · R33                                                                              │
 │ [ Approve and dispatch ]   [ Reject and escalate… ]                                               │
 │ Request changes isn't available in this version (G4). Rejecting escalates this case; automated   │
 │ progress stops until an engineer resolves it, which isn't available yet (G2).                    │
@@ -493,16 +502,18 @@ elevated without a case; one case verifying.
 
 | Element | Rule |
 |---|---|
-| Container | Framed (`radius.sm`), `surface.raised`, **2 px violet top rule** while pending. Full document width inside section 04. Never in a modal or drawer. |
+| Container | Framed (`radius.sm`), `surface.raised`, **2 px Ink top rule** (CH-1: never violet). The heading carries the violet person glyph only. Full document width inside section 04. Never in a modal or drawer. Keys are sentence case (R-7). It is the only framed object in its viewport region. |
 | Order | Action → what will happen → if not approved → why → reviews → contradicting evidence → conditions → estimates → bound identifiers → decider → acknowledgement → rationale → controls. Phase 2 §7 elements 1–13 are all present (13, the execution re-check, appears after approval as the dispatch result). |
-| Forcing function | The acknowledgement checkbox appears **only** when contradicting evidence or unresolved critic challenges exist. Approve stays disabled until it is checked, with the reason stated next to the button. |
-| Controls | **Approve and dispatch:** primary ink button; no keyboard shortcut; label never shortened.<br>**Reject and escalate…:** danger outline; opens an inline expansion (not a modal) requiring a reason (≥ 10 characters) and restating the consequence, with **Confirm rejection** / Cancel.<br>**Request changes:** not rendered (G4); a text line states it. |
+| Forcing function | The acknowledgement checkbox appears **only** when contradicting evidence or unresolved critic challenges exist. Until it is checked, Approve is **inactive** (focusable, `aria-disabled`, reason linked; activating it moves focus to the checkbox; R-3). |
+| Binding token (R-10) | A short token ("Binding a046ef · R33") sits **directly above the controls** so the decider sees exactly what the click binds to. |
+| Changed since opened (R-10) | If the case revision or plan changes while the surface is open, a notice replaces the controls' area before submission: "Changed since you opened this (R33 → R34): {what changed}. Review before deciding." It shows the new binding. Approve stays inactive until the decider acknowledges the change. |
+| Controls | **Approve and dispatch:** primary ink button (the only primary in view); no keyboard shortcut; label never shortened.<br>**Reject and escalate…:** `danger` style via the `action.danger` token (provisional while G2 / G4 are open; R-24). Opens an inline expansion (not a modal) requiring a reason (≥ 10 characters; a shorter reason gets a **warning**, an empty one an error; R-16) and restating the consequence, with **Confirm rejection** / Cancel.<br>**Request changes:** not rendered (G4); a text line states it.<br>While submitting, the pressed control is **busy** (never `disabled`). |
 | After Approve | The surface is replaced by the recorded decision ("Approved by J. Doe at 14:52 · dispatching…") and then the receipt state (screen 9). Refusals (stale revision, expired, mismatch) show the backend's refusal message inline and reload the bound identifiers. |
 | Deadline | §7 |
-| Connection | Disconnected → controls disabled: "Reconnect to make decisions" |
+| Connection | Disconnected → controls **inactive** with the reason "Reconnect to make decisions"; activating them moves focus to the connection banner (R-3) |
 | Data | `requirement` (X1), `intervention`, `binding`, `verdicts`, `evidence` (contradicting via `hypotheses[].contradicting_evidence_ids`), `approval_decisions` |
 | Gaps | G4, G8, G11; G2 for post-reject handling |
-| Emphasis | The heaviest region in the product: the violet rule and the Decision required heading. Inside it, ink text and no colour except the deadline glyph when near. Approve has no colour. |
+| Emphasis | The heaviest region in the product: the ink rule, the Decision required heading and its violet person glyph. Inside it, ink text and no colour except the deadline glyph when near. Approve has no colour. |
 
 ### Screen 9: Case, approved / work scheduled
 
@@ -511,13 +522,13 @@ elevated without a case; one case verifying.
 | State | Stage In work (READY → EXECUTING; seconds), then Work order committed while verification begins. Waiting on Dispatch (system), then Verification (system). |
 
 ```text
-05 WORK & VERIFICATION
-   DECISION       Approved by J. Doe (declared) at 14:52 · hash a046ef…39ab · R33              ▸ record
-   DISPATCH       ◐ Dispatching (claim 14:52:03) → ▤ Work order committed 14:52:05
-   WORK ORDER     WO-1043 · TECH-201 · window 13:12–15:12 · PRT-BRG × 1 reserved · labour booked
+05 Work & verification
+   Decision       Approved by J. Doe (declared) at 14:52 · hash a046ef…39ab · R33              ▸ record
+   Dispatch       ◐ Dispatching (claim 14:52:03) → ▤ Work order committed 14:52:05
+   Work order     WO-1043 · TECH-201 · window 13:12–15:12 · PRT-BRG × 1 reserved · labour booked
                   Technician notification recorded (delivery not tracked)
-   FIELD STATUS   Not reported to this system (G10)
-   VERIFICATION   ◇ Observing since 14:52:06 · 0 samples · needs last 3 < 0.45 (operon-outcome-1)
+   Field status   Not reported to this system (G10)
+   Verification   ◇ Observing since 14:52:06 · needs last 3 < 0.45 (operon-outcome-1)
 ```
 
 | | |
@@ -532,9 +543,9 @@ elevated without a case; one case verifying.
 | | |
 |---|---|
 | State | Stage Verifying. Inconclusive so far. |
-| Content | Verification panel: observation start, samples observed (count of history points after `observation_start`: **derived in the UI** from `histories`, labelled Derived), policy requirement, current risk score, chart (risk trajectory with baseline, thresholds, work span, observation start event, post-start samples as markers). "Inconclusive so far" with the watch (outline diamond) glyph. |
+| Content | Verification panel: observation start (`ObservationPlan.observation_start`, a real timestamp), policy requirement, current risk score, chart (risk trajectory with baseline and thresholds; post-start samples as markers **only when they can be placed truthfully**). "Inconclusive so far" with the watch (outline diamond) glyph. **No "n samples observed" count** until X8: history points carry tick indices, not timestamps, so samples can't yet be reliably placed after `observation_start`. Until then the panel says "Observing since 14:52:06" and shows the outcome when the backend records it. |
 | Next-step block | "Nothing required. Verification (system) continues; a case returns to investigation if recovery isn't observed." |
-| Gaps | G10 (field completion), G9 (history beyond 90 samples) |
+| Gaps | G10 (field completion), G9 (history beyond 90 samples), X8 (timestamped samples for a post-start count) |
 | Emphasis | The chart is the focal element: series focus, thresholds labelled, nothing else coloured |
 
 ### Screen 11: Case, verified recovery
@@ -558,7 +569,7 @@ Two variants share the layout.
 | Blocked | "This asset can't open a new case until this case is resolved." | Same, while active |
 | Resolution | "Resume investigation / Cancel: not available in this version (G2)." | "Retry / Reinvestigate / Cancel: not available in this version (G3)." |
 | Interim guidance | "Coordinate the resolution outside the application; the record will show it once G2 exists." | Same, with G3 |
-| Emphasis | Exception banner at the top of Summary (critical or decision rule, glyph, plain sentence); the unavailable actions are listed as text, not disabled buttons | Same |
+| Emphasis | Exception banner at the top of Summary (2 px ink or critical rule plus status glyph plus plain sentence; never a violet rule); the unavailable actions are listed as text, not disabled buttons | Same |
 
 ### Screen 13: Asset list
 
@@ -571,9 +582,9 @@ Two variants share the layout.
 │ Jump to asset [ tag or name… ]   [Condition ▾] [Class ▾] [Has case ▾]       Clear filters │
 ├─────┬──────────────┬─────────────────────────────┬─────────────┬──────────────┬──────────┬───────────────────┬──────────┤
 │ cls │ Tag          │ Name                        │ Condition   │ Risk (90 smp)│ Crit.    │ Active case       │ Last rdg │
-│ ⚙   │ AC-COMP-01   │ Instrument Air Compressor 01│ ⬣ Critical  │ 0.86 ╱╲╱▔    │ High     │ ■ Awaiting decis. │ 14:32:05 │
-│ ⚙   │ HYD-PUMP-03  │ Hydraulic Power Unit 03     │ ▲ Elevated  │ 0.52 ▁▂▃▅    │ Medium   │ —                 │ 14:32:05 │
-│ ⚙   │ CONV-02      │ Main Transfer Conveyor 02   │ ○ Normal    │ 0.04 ▁▁▁▁    │ Low      │ —                 │ 14:32:05 │
+│ ⚙   │ AC-COMP-01   │ Instrument Air Compressor 01│ ⬣ Critical  │ 0.86 ╱╲╱▔    │ High     │ Awaiting decision │ 14:32:05 │
+│ ⚙   │ HYD-PUMP-03  │ Hydraulic Power Unit 03     │ ▲ Elevated  │ 0.52 ▁▂▃▅    │ Medium   │ No active case    │ 14:32:05 │
+│ ⚙   │ CONV-02      │ Main Transfer Conveyor 02   │ ○ Normal    │ 0.04 ▁▁▁▁    │ Low      │ No active case    │ 14:32:05 │
 ```
 
 | | |
@@ -592,10 +603,10 @@ Two variants share the layout.
 | View | Content |
 |---|---|
 | **Condition** | Risk trajectory (thresholds labelled) · predicted failure mode (model-generated, "not a probability") · latest readouts for the 5 channels (`type.readout`, units, time, Measured mark) · health score as secondary (`1 − risk`, labelled derived) · data freshness |
-| **Telemetry** | Small multiples of the 5 channels (shared time axis, last 90 samples), table toggle |
+| **Telemetry** | Small multiples of the 5 channels (shared sample axis in ticks until X8, synchronised crosshair, last 90 samples), stale region and gap rule (`07 §16`), table toggle |
 | **Cases** | Today: the latest case only ("Latest case per asset in this build: G5"). After G5: chronological list with diagnosis, action, outcome ("what was tried"). |
 | **Work** | Work orders from this asset's projected case(s) plus the seeded historical PREVENTIVE record if exposed; field status G10 |
-| **Missing data** | Readouts "No data", condition "No data", chart gap |
+| **Missing data** | Readouts "No data", condition "No data", chart gap labelled with start and end (`07 §16`); a stale asset shows "Stale" (never Normal) |
 | **Model health** | Model identity and version from signal evidence (source system, version) when a case exists; otherwise "Model: GradientBoosting (AI4I), version from configuration" (System → Analysis link). No accuracy metrics (none exist). |
 | **Never** | A Critical condition because a case exists; re-rendering the case's evidence or decision (one summary row links to the case) |
 
@@ -605,7 +616,7 @@ Two variants share the layout.
 ┌ WORK ORDERS │ COMMITTED 2 │ VERIFYING 1 │ SOURCE Local CMMS adapter (in-process) │ FIELD STATUS Not reported (G10) ┐
 ├──────────┬────────────┬─────────────────────┬──────────┬───────────────┬───────────────────┬─────────────────────┤
 │ WO       │ Asset      │ Case                │ Tech     │ Window        │ Work state        │ Verification        │
-│ WO-1043  │ GRIND-04   │ 05 Oct 11:40 ▸      │ TECH-202 │ 12:00–13:30   │ ▤ Committed 12:05 │ ◇ Observing · 4 smp │
+│ WO-1043  │ GRIND-04   │ 05 Oct 11:40 ▸      │ TECH-202 │ 12:00–13:30   │ ▤ Committed 12:05 │ ◇ Observing since 12:05 │
 │ WO-1042  │ AC-COMP-01 │ 05 Oct 09:15 ▸      │ TECH-201 │ 10:00–11:00   │ ▤ Committed 09:40 │ ✓ Verified 10:20    │
 ```
 
@@ -709,7 +720,7 @@ Simulation.
 | Purpose | One task, legible in a glance, on the plant floor |
 | Content | Asset identity (largest), the question (`EvidenceRequest.question`, X6), checks (falsification tests), why (2 facts with provenance), 3 key evidence items (expand), requested by and since |
 | Touch | Touch density (16 / 24 text, 48 primary, 44 targets). Light theme recommended outdoors (user choice). |
-| Offline | Banner "Offline: read only"; Start disabled ("Inspection needs a connection to submit"). **Offline capture is future.** |
+| Offline | Banner "Offline: read only"; Start is **inactive** with the reason "Inspection needs a connection to submit" (R-3). **Offline capture is future.** |
 | Gaps | G1, G8, X6, X7 |
 
 ### Screen 21: Technician inspection submission
@@ -717,29 +728,31 @@ Simulation.
 Sequential flow (one screen per step, progress "Step 2 of 4"):
 
 1. **Confirm asset:** tag shown large. Optional QR scan; a mismatch shows "This is HYD-PUMP-03, not AC-COMP-01".
-2. **Checks:** each falsification test is a row with a **Pass / Flag / Fail** segmented control
-   (48 px) and an optional note.
+2. **Checks:** each falsification test is a row with a **Pass / Flag / Fail** labelled **radio
+   group** (styled as 48 px segments; R-16) and an optional note. Required checks are marked.
 3. **Mechanism:** "Bearing wear confirmed / Not confirmed / Can't determine", plus supporting
    evidence selection (pre-selected from the hypothesis).
-4. **Review & submit:** lists exactly what is recorded:
+4. **Review & submit:** lists **Flag and Fail answers first** (R-23), then exactly what is recorded:
    - actor (declared, G8);
    - observed at;
    - provenance Observed;
-   - bound case revision.
+   - bound case revision;
+   - the rolled-up result (G13 rule: Fail if any fail; Flag if any flag and none fail).
 
-   **Submit** (48 px primary).
+   **Submit** (48 px primary; **inactive** with its reason when offline, disconnected or when
+   trusted submissions are off; R-3).
 
 | Backend mapping | Rule |
 |---|---|
 | All checks **Pass** and mechanism **confirmed** | Maps exactly to `TrustedTechnicalConfirmation` (`performed_checks[].passed = true`): **submittable** when trusted submissions are enabled (G1) |
-| Any **Flag / Fail**, or mechanism not confirmed / can't determine | **Not representable today (G13).** Submit is replaced by: "This result can't be recorded yet (G13). Tell the reliability engineer directly; the case remains Awaiting inspection." The application never converts it into a "pass". |
+| Any **Flag / Fail**, or mechanism not confirmed / can't determine | **Not representable today (G13).** Submit is replaced by: "This result can't be recorded yet (G13). Tell the reliability engineer directly; the case remains Awaiting inspection." A **Copy result** action copies the checks, notes and rolled-up result as plain text for hand-off (R-23). The application never converts it into a "pass". |
 | Photo | Not rendered (G14) |
 
 | | |
 |---|---|
 | Result screen | "Inspection recorded at 10:41. The case returns to investigation." or the backend refusal verbatim (stale revision: "The case changed since you started (R33 → R34). Review and submit again."). |
-| States | Submitting (button busy, no spinner overlay), success, refusal, offline (blocked), disabled deployment (blocked) |
-| Errors | Field-level for unanswered checks; summary at top |
+| States | Submitting (button busy, no spinner overlay), success, refusal, offline (Submit **inactive**, reason linked; R-3), submissions turned off in this deployment (Submit **inactive** with the X7 explanation) |
+| Errors | Validated on blur after change and on submit (R-16). Field-level for unanswered required checks; summary at top. |
 | Draft | Kept in the tab (session storage) until submitted or discarded. Not synced. |
 | Gaps | G1, G8, G13, G14 |
 
@@ -752,27 +765,28 @@ renders**; otherwise hand off.
 ┌──────────────────────────────┐
 │ ‹ AC-COMP-01   Decision      │
 ├──────────────────────────────┤
-│ DECISION REQUIRED            │
+│ ◈ Decision required          │  ← ink top rule
 │ by 15:12 · in 2 h 41 min     │
 │ Approve the exact work       │
 │ package for AC-COMP-01       │
-├ WHAT WILL HAPPEN ────────────┤
+├ What will happen ────────────┤
 │ • Work order, PRT-BRG ×1,    │
 │   TECH-201 13:12–15:12       │
 │ • Notification recorded      │
 │ • Verification starts        │
 │ Can't be undone here: WO,    │
 │ reservation.                 │
-├ WHY ─────────────────────────┤
+├ Why ─────────────────────────┤
 │ Bearing wear (accepted) ·    │
 │ 4 evidence ▸ · critic ok     │
-├ CONTRADICTING (1) ▸ ─────────┤
-├ BOUND TO ────────────────────┤
+├ Contradicting (1) ▸ ─────────┤
+├ Bound to ────────────────────┤
 │ a046ef…39ab · R33 · req 7f2c │
-├ DECIDER ─────────────────────┤
+├ Decider ─────────────────────┤
 │ approver (declared · G8)     │
 │ ☐ Reviewed contradicting (1) │
 │ Rationale [               ]  │
+│ Binding a046ef · R33         │
 │ [ Approve and dispatch ]     │
 │ [ Reject and escalate… ]     │
 └──────────────────────────────┘
@@ -783,6 +797,7 @@ renders**; otherwise hand off.
 | Order | Identical to desktop. The controls come **last**, after all content (not sticky). No swipe, and no approval from a notification or the queue. |
 | Evidence access | Each summary expands in place or opens the evidence list sheet; returning keeps the scroll position |
 | Handoff | When any element failed to load, the device is offline or disconnected, or the expiry has passed, the controls are replaced by "Review on a larger screen" + "Copy link" + an explanation |
+| Binding and changes | The binding token sits directly above the controls; a change of revision while open shows the same "changed since you opened this" notice as desktop (R-10) |
 | Expiry | §7 (same states) |
 | Gaps | G4, G8, G11 |
 
@@ -790,8 +805,9 @@ renders**; otherwise hand off.
 
 | Trigger | Presentation (applies on every page) |
 |---|---|
-| WebSocket disconnected | Shell banner (`07 §15`). All live values gain the stale glyph and age. Decision controls disabled. Overview statement changes to: "Live data lost at 14:32:05. Condition below is as of that time." |
-| Asset stale (no new reading > threshold) | Band cell: clock glyph + "Stale 14 min" replaces the condition dot (**never hollow-dot normal**). Asset rows and title blocks show the same. |
+| Freshness states | Live / Delayed / Stale / Disconnected per `07 §15.1` (thresholds 2× and 5× the measured expected interval; time basis per X8 note) |
+| WebSocket disconnected | One shell banner for the cause (`07 §15.3`). Title blocks show "as of 14:32:05"; value-level glyphs only where a value's freshness differs from its region. Decision and submission controls **inactive** (R-3). Overview statement changes to: "Live data lost at 14:32:05. Condition below is as of that time." On reconnect, the missed interval is marked as a backfilled gap. |
+| Asset stale (> 5 × expected interval behind) | Band cell: 16 px clock glyph + "Stale since tick 1,204" (or time with X8) replaces the condition dot (**never hollow-dot normal**). Asset rows and title blocks show the same. Mixed staleness is stated: "7 of 8 assets current · CNC-MILL-07 stale". |
 | Missing evidence / quality SUSPECT | Evidence row quality column "Suspect" / "Missing" with the explanation from `summary`; Missing has no observed time ("No observation") |
 | Engine paused (`running = false`) | Status "Simulation paused at tick 1,204" (System link). Values marked as of pause time. |
 
@@ -811,15 +827,19 @@ nothing needs attention: data is stale since 14:18."
 
 ## 6. Empty-state catalogue
 
+Copy rules (R-20): headings state the situation without "yet"; the body says what would change it.
+"Permission" states **what is needed**, not what is denied. Error codes go in the secondary text,
+never the heading.
+
 | Kind | Rule | Example |
 |---|---|---|
 | Clear (nothing requires attention) | State the fact **and the evidence for it** (counts, last reading, analysis state); only valid when data is fresh | "No case needs a person right now. 8 of 8 assets below the warning band · last reading 14:32:05." |
-| None yet | Say what will create items | Cases: "No cases yet. A case opens when an asset's model risk score reaches the action gate (0.80)." |
+| None (initial) | Say what will create items | Cases: heading "No open cases", body "A case opens when an asset's model risk score reaches the action gate (0.80)." |
 | Filtered | Name the filters, offer Clear | "No cases match Stage: Verifying · Asset: PRESS-08. Clear filters." |
 | Data not arrived | Never zeros | "Waiting for plant data. No readings received since the page opened." |
 | Provider unavailable | Screen 24 | — |
-| Backend error | The refusal or error verbatim, plus retry | "Couldn't load the case record (HTTP 404: unknown incident). It may have been reset. Back to Cases." |
-| Permission / not enabled | Who can change it | "Inspection submission is turned off in this deployment. An administrator can enable trusted submissions." |
+| Backend error | The refusal or error verbatim in secondary text, plus retry | Heading "Couldn't load the case record"; secondary "HTTP 404: unknown incident. It may have been reset." Action "Back to Cases". |
+| Permission / not enabled | What is needed and who can change it | "Trusted submissions are needed to record inspections. An administrator can enable them for this deployment." |
 | Not configured | What configuring does | "No external CMMS is connected. Work orders are recorded by the local adapter." |
 
 Per surface:
@@ -828,10 +848,10 @@ Per surface:
 |---|---|
 | Overview | Clear / data-not-arrived |
 | My actions | "Nothing is waiting on {role}" + other-role counts |
-| Cases | None yet / filtered / "No exceptions" (Exceptions tab: "No escalated or failed cases.") |
+| Cases | Initial ("No open cases") / filtered / Exceptions tab: "No escalated or failed cases" |
 | Assets | Filtered only (8 always exist); "No data" per asset |
-| Work orders | "No work orders yet. They are created when an approved package is dispatched." |
-| Reliability | "No outcomes in this run yet." (scope label kept) |
+| Work orders | Heading "No work orders"; body "Work orders are created when an approved package is dispatched." |
+| Reliability | Heading "No outcomes in this run"; body states the scope (G9) |
 | Audit log | Filtered / "No events in the selected period" |
 | System → Analysis | "No provider configured. Analysis runs deterministically." |
 | Updates | "No updates in this session." (G7 note) |
@@ -851,7 +871,7 @@ window start)".
 | Approaching | ≤ 60 min | Warning glyph + "Expires in 42 min", in the queue row and the decision heading. The relative time updates **once a minute** (no seconds ticking). |
 | Final minutes | ≤ 5 min | "Expires at 15:12 (in 4 min). Decide now or let it expire." No animation. |
 | Expired | `expires_at ≤ now`, or backend status EXPIRED | The decision surface is replaced by "Approval request expired at 15:12. Nothing was dispatched." Controls removed. "Renewal isn't available in this version (G11). The case remains in Awaiting decision." My actions item becomes "Approval expired" (Action required). |
-| Action unavailable | Disconnected, or expiry unknown (fetch failed) | Controls disabled with the reason; never a guessed countdown |
+| Action unavailable | Disconnected, or expiry unknown (fetch failed) | Controls **inactive** with the reason (R-3); never a guessed countdown. While disconnected, the deadline line states that it is computed against the server's `expires_at` and that the view is disconnected. |
 | Future (G11) | Backend renewal exists | "Request renewal" action (approver) and a renewal record in the timeline. **Not rendered until G11.** |
 
 Clock source: the browser clock against the server's absolute `expires_at`. The absolute time is
@@ -863,11 +883,11 @@ always primary, so skew can't mislead.
 
 | Aspect | Specification |
 |---|---|
-| Form | Dense ruled list (Compact): time (HH:MM:SS, mono-aligned) · type glyph · plain-language summary · actor mark · revision `R33` · provenance mark · expand ▸ |
+| Form | Dense ruled list (Compact): time (HH:MM:SS from event `created_at`, mono-aligned) · type glyph · plain-language summary · actor mark · revision `R33` · provenance mark · expand ▸. **Date separators** when events span days; the time zone stated once at the top (R-12). Optional relative-to-detection time ("+00:11"). |
 | Event types → copy | INCIDENT_OPENED "Case opened" · SIGNAL_RECORDED "Model signal recorded" · EVIDENCE_REQUESTED / COLLECTED / REQUEST_RESOLVED · ARTIFACT_ADDED (typed: hypothesis, diagnosis, verdict, intervention, run report) · PHASE_CHANGED "Stage: Planning → Awaiting decision" (user stages, internal phase in expansion) · APPROVAL_REQUESTED · APPROVAL_RECORDED ("Approved / Rejected by …, rationale") · EXECUTION_CLAIMED / RECORDED · OBSERVATION_PLANNED · OUTCOME_RECORDED · INCIDENT_ESCALATED · INCIDENT_CLOSED |
-| Density | Default shows authoritative transitions and human acts. "Show all" adds artifacts and evidence collection. Group consecutive evidence collection ("6 evidence items collected 14:30:01–14:30:04"). |
+| Density | **Inline in the case:** a curated record of about 10 authoritative transitions and human acts, then "Open full record". **Full record** opens in the inspector (docked or modal per §4) with **event-type filters** and search (R-12). Consecutive evidence collection may display as one row ("6 evidence items collected 14:30:01–14:30:04") that **expands in place to every event** (the safe grouping rule, `07 §12.5`); the authoritative events themselves are never merged or dropped. |
 | Expansion | Payload summary plus links to the artifact inspector; identifiers in mono with copy |
-| Visual | 1 px vertical rule at the left with square glyph nodes (not circles or avatars). Authoritative events carry a solid node; advisory a dashed one. No bubbles, reactions or relative-only times. |
+| Visual | 1 px vertical rule at the left with square glyph nodes (not circles or avatars). Authoritative events carry a solid node; advisory a dashed one, plus the word "Advisory" in the row's accessible name and on hover. No bubbles, reactions or relative-only times. |
 | Limit today | The last 80 events per case (`events[-80:]`); "Earlier events aren't loaded in this build" (X5) |
 
 ---
@@ -875,8 +895,12 @@ always primary, so skew can't mislead.
 ## 9. Phase 4 implementation plan (not started)
 
 Short-lived branches off `overhaul/v2`, merged back in order. **No backend changes in Phase 4.**
-X1–X7 and G1–G14 are Phase 6 work; Phase 4 implements the fallbacks and the honest
+X1–X8 and G1–G14 are Phase 6 work; Phase 4 implements the fallbacks and the honest
 "unavailable" states.
+
+**Phase 4 starts with the Phase 4A visual gate (§11).** Phase 4A takes the visual foundations from
+slices 1–3 plus a thin representative cut of slices 4–5, then **stops for screenshot review**.
+The slices below proceed only after that review; they then complete the remaining scope.
 
 ```mermaid
 flowchart LR
@@ -901,11 +925,11 @@ flowchart LR
 
 | # | Branch | Scope | Depends on | Routes / components | Backend assumptions | Tests | Visual regression targets |
 |---|---|---|---|---|---|---|---|
-| 1 | `v2/design-foundations` | Tokens as CSS custom properties (both themes, density). IBM official Plex variable and Mono files. Base typography. Focus. Status and provenance SVG shapes. Tabler integration. Primitive restyle (Button, Input, Select, Checkbox, Tabs, Segmented, Tooltip, Menu, Dialog, Drawer, Toast, Inline alert). OS theme with override. | — | `styles/tokens.css` rewrite, `primitives/*` | None | Add Vitest. Token contrast check script (asserts `07 §4` ratios). Unit tests for theme and density resolution. | Primitives gallery page (dev-only route) × light / dark × compact / comfortable / touch |
+| 1 | `v2/design-foundations` | Tokens as CSS custom properties (both themes, density). IBM official Plex variable and Mono files. Base typography. Focus. Status and provenance SVG shapes. Tabler integration. Primitive restyle (Button, Input, Select, Checkbox, Tabs, Segmented, Tooltip, Menu, Dialog, Drawer, Toast, Inline alert). OS theme with override. | — | `styles/tokens.css` rewrite, `primitives/*` | None | Add Vitest. Token contrast check script (asserts the reconciled `07 §4` ratios, incl. violet `#674EB0` / `#AA95E8`, `action.danger`, the `#F1F0EC` / `#1A1F21` / `#DDE2E4` starting values). Unit tests for theme and density resolution. | Primitives gallery page (dev-only route) × light / dark × compact / comfortable / touch |
 | 2 | `v2/app-shell` | Nav rail (2 groups + System), header with system status indicator, account menu, Preferences, Updates (session), phone bottom bar, redirects (§2). **Moves Engine menu and Guided Demo controls to `/app/system/simulation`** (screen 19, functional, minimal styling), so demo use is never broken. | 1 | `AppShell`, `routes.js`, new `/app/system/*`, `/app/preferences` | None | Route and redirect tests. Shell keyboard navigation. Smoke test (`test/smoke.mjs`) updated for the new routes. | Shell at 1440 / 1024 / 768 / 390 × both themes; disconnected banner; demo strip |
-| 3 | `v2/status-model` | Pure derivations: condition from risk (ignoring the override), stage mapping (14 phases → 8 + exceptions), waiting-on, attention, provenance mapping, interim case reference, expiry state. Status / attention / severity / provenance / freshness components, title block, stage track. | 1 | `state/selectors.js` (new modules), components | WS shape as in §1.1; X1–X4 fallbacks | **Exhaustive unit tests:** every phase → stage / waiting-on / attention; condition never from case; expiry boundaries (60 min, 5 min, expired); provenance mapping | Status-grammar sheet (all combinations, §12.3 example) |
+| 3 | `v2/status-model` | Pure derivations: condition from risk (ignoring the override), stage mapping (14 phases → 8 + exceptions), waiting-on, attention, provenance mapping, interim case reference, expiry state. Status / attention / severity / provenance / freshness components, title block, stage track. | 1 | `state/selectors.js` (new modules), components | WS shape as in §1.1; X1–X4 fallbacks | **Exhaustive unit tests:** every phase → stage / waiting-on / attention; condition never from case; expiry boundaries (60 min, 5 min, expired); provenance mapping; freshness Live / Delayed / Stale / Disconnected from receipt time and tick continuity (X8 fallback); aggregate worst-member rule; no confidence fields surfaced | Status-grammar sheet (all combinations, §12.3 example) |
 | 4 | `v2/case-workspace` | Case page: header, stage track, section index, six sections, context rail, decision surface (screen 8), work & verification, record, artifact inspector, PRISM composer. Retires `/app/agent` (redirect). | 2, 3 | `/app/cases/:id`, `/decide` (desktop focus), Operation / Record / Inspector features | `GET /api/incidents/{id}`, approval POST, PRISM endpoints; X6 fallback | Decision surface: sends exact identifiers; reject requires reason; acknowledgement gating; expiry states; refusal handling (mocked responses). Lifecycle fixture walkthrough via `test/make_fixtures.py`. | Screens 5–12 from fixtures × both themes × 1440 / 1024 |
-| 5 | `v2/overview-actions-cases` | Overview (1, 2), My actions (3), Cases (4), queue → preview pattern, filters in URL, empty states | 3, 4 | `/app/overview`, `/app/actions`, `/app/cases` | Snapshot only; X1 / X2 fallbacks (per-case fetch) | Sorting / grouping, flood collapse, filter persistence, preview keyboard behaviour | Screens 1–4: nominal / active / stale / provider error |
+| 5 | `v2/overview-actions-cases` | Overview (1, 2), My actions (3), Cases (4), queue → preview pattern, filters in URL, empty states | 3, 4 | `/app/overview`, `/app/actions`, `/app/cases` | Snapshot only; X1 / X2 fallbacks (per-case fetch) | Sorting / grouping, filter persistence, preview keyboard behaviour (docked ≥ 1280 / modal < 1280). Burst grouping is **not** implemented (G5: one case per asset; `07 §12.5`). | Screens 1–4: nominal / active / stale / provider error |
 | 6 | `v2/assets-work` | Assets list and detail (13, 14), Work orders (15), telemetry small multiples, chart container with table toggle | 3, 4 | `/app/assets*`, `/app/work-orders` | Snapshot `histories`; receipts / binding from case fetch | Condition independent of case; chart table alternative; missing-data gaps | Screens 13–15 |
 | 7 | `v2/reliability-audit-system` | Reliability (16, current version only), Audit log (17), System sections (18) with the provider UI restyled, Simulation & Demo finished (19). Retires Analytics, Activity, Settings, Profile pages (redirects). | 2, 3 | `/app/reliability`, `/app/audit`, `/app/system/*` | Providers API; X5 fallback | Provider state words (configured / reachable / error / deterministic); no `business` constants rendered (assert); destructive reset confirmation | Screens 16–19 |
 | 8 | `v2/mobile-operational` | Phone layouts: My actions, technician task (20), inspection flow (21) behind G1 / X7 checks, approver mobile decision (22) with handoff rules, offline banner | 4, 5 | `/inspect`, `/decide` (phone), bottom bar | Trusted endpoints only when enabled; G13 blocking | Inspection mapping (Pass-only submits; Flag / Fail blocked); handoff conditions; touch target sizes (≥ 44) | Screens 20–22 at 390 / 360 × both themes |
@@ -937,10 +961,100 @@ flowchart LR
 | Approval consequences | Yes. Screen 8 / 22: what happens, what can't be undone, if not approved, bound identifiers, expiry |
 | Evidence and provenance | Yes. `07 §14`, screens 5–7, record |
 | Simulated data | Yes. Hatching, `SIMULATED` tag, demo strip, simulated outcome |
-| Backend gaps labelled | Yes. G1–G14 and X1–X7 with fallbacks |
+| Backend gaps labelled | Yes. G1–G14 and X1–X8 with fallbacks (X8 added in the Phase 3.1 reconciliation) |
 | No invented data | Yes. Every value is mapped to §1.1. `business` constants are excluded. Estimates are labelled with their assumption set. Copy uses real channels (no vibration). |
 | Naming unresolved | Yes. `07 §1.4`; one text label, neutral placeholder icon |
 | No final logo selected | Yes |
 | Render not listed as unresolved | Yes. Recorded as resolved (zero services) |
 | Phase 4 sequence | Yes. §9 |
 | Cross-checks | Phase 0 tracks (PRODUCT / HYBRID) respected · Phase 1 model and gaps preserved verbatim · Phase 2 decision surface 1–13, terminology and anti-patterns · Phase 2.5 territory, Plex, Tabler, voice, motion (deviations R1–R12 recorded in `07 §24`) · Phase 2.6–2.8 name unresolved |
+| Phase 3.1 reconciliation | R-1–R-8, R-10–R-23 incorporated; R-9, R-25 as Phase 4A starting values; R-24 `action.danger` (Reject emphasis provisional); CH-1 option A with recognition gate; CH-2 docked ≥ 1280 / modal < 1280 as a prototype hypothesis; no model confidence values; safe burst-grouping rule; X8 added. Record: `07 §24`, `09 §22`. |
+
+---
+
+## 11. Phase 4A implementation freeze (visual gate)
+
+**Status:** frozen scope for the next step. **Not started.** Phase 4A is a **visual implementation
+gate**, not the frontend overhaul. It ends with screenshot review; the remaining Phase 4 slices
+(§9) proceed only after the product owner reviews it.
+
+**Branch:** `v2/phase4a-visual-gate`, a short-lived branch off `overhaul/v2` per
+`design/V2_WORKFLOW.md`. It is merged back only after review. `main` is never touched.
+
+### 11.1 In scope
+
+| # | Area | Scope | Governing spec |
+|---|---|---|---|
+| 1 | Design foundations / tokens | CSS custom properties for every semantic token in both themes: colour (incl. `action.danger`, reconciled violet, `viz.*`), space, size (incl. `size.status` ≥ 14), radius 0 / 2 / 4, border, elevation, motion, z-index, breakpoints, density modes | `07 §3–§11` |
+| 2 | Typography | IBM's official `@ibm/plex-sans-variable` and `@ibm/plex-mono` files, unmodified. Full type scale; tabular figures; slashed zero in mono; uppercase budget | `07 §6` |
+| 3 | Themes | Light "Drawing Sheet" (shell `#F1F0EC`, sheet `#FAFAF8`) and dark "Instrument" (sheet `#1A1F21`, text `#DDE2E4`) as **starting values**; OS-driven default plus Preferences override | `07 §4–§5` |
+| 4 | Status primitives | Owned SVG shapes (≥ 14 px; 16 px in band and title block), all eight status dimensions as markers, attention rank glyph, severity bars, provenance marks (10 px), freshness indicator (Live / Delayed / Stale / Disconnected), stage track with hold point (not a stepper), title block (≤ 6 cells) | `07 §10`, `§12–§15` |
+| 5 | Spacing / radius / rule system | Rule budget, framed-object rule (≤ 1 per region), tint-plus-ink-rule bounded elements, sticky section headings | `07 §5.2`, `§9` |
+| 6 | Application shell | 48 px header (name text, plant, system status indicator, Updates icon (session only), account menu with theme), nav rail (Operate / Review groups, System at the foot; count on My actions only), routes and redirects for the four representative screens. Engine and Guided Demo controls leave the header; a **minimal functional** `/app/system/simulation` page keeps the demo operable (not a review target) | `08 §2–§3`, screen 19 |
+| 7 | Representative shared components | Button (primary / secondary / ghost / danger; inactive, busy states), IconButton, Input / Textarea (validation timing and levels), Checkbox, Radio group, Segmented control, Tooltip, Menu, **modal Drawer**, docked preview pane, Inline alert, Banner, Empty state, static Skeleton, compact Table, List row, Section heading, Section index, Evidence item, Hypothesis row (**no confidence values**), Review row, Recommendation block, Next-step block, Decision surface, Chart container with the risk-trajectory chart (thresholds from backend only, stale region, gap rule, table toggle) | `07 §16–§18` |
+| 8 | Representative screens | See §11.2 | `08` screens 2, 3, 5, 8 |
+
+### 11.2 Representative screen set and capture matrix
+
+All screens are rendered from **backend-shaped fixtures** produced by the real engine and lifecycle
+(`test/make_fixtures.py`), with honest unavailable states (X1 / X2 / X6 / X8 fallbacks; G-labels).
+No illustrative values from these documents or reference screenshots become application data.
+
+| Screen | States | Light | Dark | Viewports |
+|---|---|---|---|---|
+| **Overview, active problem** (screen 2) | Active; plus one disconnected / stale variant to check the §15.3 message hierarchy | ✓ | ✓ | 1440 |
+| **My actions** (screen 3) with case preview | Docked preview; modal-drawer preview | ✓ | ✓ (one) | **1440 and 1280 (docked), 1024 (modal)**: CH-2 |
+| **Case: investigation** (screen 5 / 6) | Investigating with hypotheses, reviews and requests; Awaiting inspection | ✓ | ✓ (one) | 1440, 1024 |
+| **Case: awaiting approval** (screen 8) | Decision surface incl. contradicting-evidence acknowledgement, binding token, inactive Approve, expiry "approaching" | ✓ | ✓ | 1440, 1024 |
+| Status-primitives sheet (dev-only route) | All eight dimensions, §12.3 combination, aggregates | ✓ | ✓ | 1440 |
+
+Phone layouts are **not** in Phase 4A, except where the shell must not break at 390 px (a smoke
+check, not a review target).
+
+### 11.3 Gate checks (must be reported with the screenshots)
+
+1. **Contrast script:** every reconciled token pair passes `07 §4` and `§17` in both themes.
+2. **CH-1 recognition test:** the violet person glyph and role word on My actions and Case awaiting
+   approval, shown to plant-role reviewers for 5 seconds. Ask "what does this mark mean?".
+   - If **≥ 20 %** read it as "AI", "automation" or "done", switch to the neutral Ink fallback.
+   - Record the result either way.
+3. **CH-2 interaction test** at 1024, 1280 and 1440:
+   - focus order;
+   - screen-reader reading order;
+   - selected-row occlusion (must be none);
+   - `Esc` and Back behaviour;
+   - that no non-modal overlay state exists.
+
+   Confirm or adjust the 1280 boundary.
+4. **R-9 / R-25 starting values:** confirm or adjust after viewing light and dark on the captures.
+   Any change is re-measured.
+5. **Reject emphasis:** confirm the provisional `action.danger` treatment in context, or record an
+   alternative for after G2 / G4.
+6. **Backend truth assertions:**
+   - no `business` constants rendered;
+   - no confidence fields rendered;
+   - no burst grouping;
+   - no invented deadlines, owners, thresholds, channels, completion states, history or identities;
+   - field completion reads "Not reported (G10)" where shown.
+
+### 11.4 Out of scope for Phase 4A
+
+- Cases list, Assets, Work orders, Reliability, Audit log, System beyond the minimal simulation
+  move.
+- Technician and approver mobile flows.
+- Command palette.
+- Retiring or redesigning the remaining legacy pages: they stay reachable and unchanged, and are
+  not review targets.
+- Any backend change.
+- X1–X8 and G1–G14 implementation.
+- Burst grouping.
+- Global search.
+- Logo or wordmark.
+- Public rename.
+- Deployment.
+
+New dependencies are limited to IBM Plex (official), Tabler icons, and dev-only Vitest / Playwright
+tooling.
+
+**Stop condition:** after the captures and gate checks in §11.2–§11.3 are produced, Phase 4A
+stops and waits for review.

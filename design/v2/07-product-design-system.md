@@ -1,7 +1,11 @@
 # OPERON V2: Product design system (Phase 3)
 
-Status: Phase 3 specification. Documentation only. No application code, CSS, routes or backend
-behaviour changed. No logo or wordmark is created or selected. Companion document:
+Status: Phase 3 specification, **reconciled with the reviewed Phase 3.1 findings** (see
+[`09-visual-reference-validation.md`](09-visual-reference-validation.md) §22 for the product-owner
+resolution). This document plus `08` is the **implementation baseline for Phase 4A**. Values marked
+*Phase 4A starting value* remain subject to the Phase 4A screenshot gate (`08 §11`). Documentation
+only. No application code, CSS, routes or backend behaviour changed. No logo or wordmark is created
+or selected. Companion document:
 [`08-screen-specifications.md`](08-screen-specifications.md) (screens, backend reality, Phase 4
 plan). Text diagrams live in [`diagrams/`](diagrams/).
 
@@ -58,15 +62,16 @@ state. Each element does exactly one job.
 These are deliberate, specified in later sections, and the product's identity. Phase 4 must
 implement all of them.
 
-1. **Title-block headers.** Page and case headers are a row of labelled cells separated by vertical
-   hairlines: 11 px eyebrow label above a 14 px value, like an engineering drawing's title block
-   (§9.4). This replaces stat cards.
+1. **Title-block headers.** Page and case headers are a single row of **at most six** labelled cells
+   separated by vertical hairlines: 11 px eyebrow label above a 14 px value, like an engineering
+   drawing's title block (§9.4). This replaces stat cards.
 2. **Ruled document sections, not cards.** Content regions are separated by 1 px rules and spacing.
    Section headings carry a mono index (`02`), a title and right-aligned metadata on one line, with
    a rule beneath. Panels are flat. The only framed objects are those acted on as a unit (§9.3).
 3. **The stage track.** Lifecycle position is a single 1 px line through eight square nodes, with a
    **hold-point bar** before *Awaiting decision* (the governed gate). Exceptions drop below the line
-   (§13). The track is the product's most distinctive mark.
+   (§13). The track is the product's most distinctive mark. It is a **position display, never a
+   stepper**: it is not clickable and never advances anything.
 4. **Instrument tags.** Asset tags, case references, revisions and hashes are set in Plex Mono inside
    2 px-radius hairline frames (`AC-COMP-01`, `R33`, `a046ef…39ab`), like nameplate tags on
    equipment.
@@ -109,11 +114,11 @@ The Phase 2 §16 anti-patterns plus this brief's §51 are binding. Visual conseq
 |---|---|
 | Attention before analytics | Overview and My actions lead with the attention queue. Analytics live on Reliability only. No metric appears above the attention list. |
 | Evidence before recommendation | In the case document, Evidence and Investigation precede Plan & decision. Every recommendation and hypothesis row links its supporting and contradicting evidence counts. |
-| Human authority explicit | One decision surface (§ screens 8, 22), bound identifiers always visible, the *decision* role colour (violet) used only where a person must act |
+| Human authority explicit | One decision surface (`08` screens 8, 22), bound identifiers always visible, the *decision* cue (violet person glyph plus role word, §4.3) used only where a person must act |
 | Done ≠ verified | Separate work-state and verification-state vocabularies and glyphs (§12). "Work order committed" never uses the verified hue or check-circle. |
 | Unknown ≠ healthy | `unknown` / `stale` / `offline` have their own glyphs (dashed, clock, plug-off) and are never rendered as hollow-dot normal (§12, §15) |
 | Normal recedes | Normal uses secondary text and hollow glyphs. Colour budget: ≤ 4 hues, none of them for normal. |
-| No invented certainty | Numbers come only from backend fields (`08` §1). Model scores are labelled as model output and never as probability or confidence. Estimates carry their assumption set. |
+| No invented certainty | Numbers come only from backend fields (`08` §1). Model scores are labelled as model output and never as probability or confidence. **Model self-reported confidence values are never displayed** (§18.6). Estimates carry their assumption set. |
 | AI is workflow, not metaphor | Analysis appears as typed records: runs, hypotheses, reviews, requests. Waiting-on uses "Analysis (automated)", never "Agent". |
 
 ---
@@ -150,11 +155,11 @@ motion, z-index, breakpoint, density.
 | Primitive | Value | Notes |
 |---|---|---|
 | `ink` | `#0C1418` | Brand Ink. Light-theme primary text and ink controls. |
-| `paper` | `#F3F4F1` | Brand Paper. Light-theme base surface (the "desk") and inverse text. |
+| `paper` | `#F3F4F1` | Brand Paper (unchanged brand colour, `03`). Inverse text on ink controls. The product's light shell surface is a separate token (§4.2). |
 | `graphite.*` | ramp at oklch hue ≈ 222, chroma ≈ 0.008 | Neutral family. Values listed in §4.2 per use. |
 | `red.dark` / `red.light` | `#F0564B` / `#C42B3A` | Critical |
 | `amber.dark` / `amber.light` | `#EBAA3C` / `#7F5C00` | Warning and watch |
-| `violet.dark` / `violet.light` | `#A98BF5` / `#6B47CC` | A person must act |
+| `violet.dark` / `violet.light` | `#AA95E8` / `#674EB0` | A person must act (lowered chroma, Phase 3.1 CH-1) |
 | `green.dark` / `green.light` | `#4CB782` / `#1D7A4C` | Verified |
 
 ### 4.2 Semantic neutrals (both themes)
@@ -163,35 +168,39 @@ All ratios are WCAG 2.x, computed in Phase 3 with the Phase 2.5 colour tool.
 
 | Token | Dark: "The Instrument" | Light: "The Drawing Sheet" | Use |
 |---|---|---|---|
-| `color.surface.base` | `#0F1415` | `#F3F4F1` (Paper) | Shell background and nav rail |
-| `color.surface.sheet` | `#161A1C` | `#FAFAF8` | The working area: full-bleed content region, tables, the case document |
+| `color.surface.base` | `#0F1415` | `#F1F0EC` (*Phase 4A starting value*, R-9; brand Paper `#F3F4F1` unchanged) | Shell background and nav rail |
+| `color.surface.sheet` | `#1A1F21` (*Phase 4A starting value*, R-25) | `#FAFAF8` | The working area: full-bleed content region, tables, the case document |
 | `color.surface.sunken` | `#121719` | `#EBEDE9` | Table header band, identifier wells, code-like blocks |
-| `color.surface.raised` | `#1C2123` | `#FFFFFF` | Inputs (light), inspector rail, sticky headers over scrolled content |
-| `color.surface.overlay` | `#22282A` | `#FFFFFF` | Menus, popovers, dialogs, drawers (with elevation, §9.5) |
-| `color.surface.hover` | `#1E2224` | `#F0F1EF` | Row and option hover |
-| `color.surface.selected` | `#23282A` | `#E7E8E6` | Selected row (plus a 2 px ink left bar) |
+| `color.surface.raised` | `#1F2426` | `#FFFFFF` | Inputs (light), inspector rail, sticky headers over scrolled content |
+| `color.surface.overlay` | `#202527` | `#FFFFFF` | Menus, popovers, dialogs, drawers (with elevation and `border.strong`, §9.5) |
+| `color.surface.hover` | `#202527` | `#F0F1EF` | Row and option hover |
+| `color.surface.selected` | `#282D2F` | `#E7E8E6` | Selected row (plus a 2 px ink left bar) |
 | `color.border.subtle` | `#272C2E` | `#D6DAD8` | Decorative rules between rows and regions (structure only) |
 | `color.border.strong` | `#34393B` | `#B9BFBF` | Region boundaries, title-block dividers, table header rule |
 | `color.border.control` | `#6B7275` | `#7C8386` | **Interactive boundaries** (inputs, checkboxes, segmented control, secondary buttons) |
-| `color.border.focus` | `#E8ECEE` | `#0C1418` | Focus ring (2 px + 2 px offset) |
-| `color.text.primary` | `#E8ECEE` | `#0C1418` (Ink) | Primary text, values, focal series |
+| `color.border.focus` | `#DDE2E4` | `#0C1418` | Focus ring (2 px + 2 px offset) |
+| `color.text.primary` | `#DDE2E4` (*Phase 4A starting value*, R-25) | `#0C1418` (Ink) | Primary text, values, focal series |
 | `color.text.secondary` | `#B5BCBE` | `#4A5154` | Secondary text, normal-state labels |
 | `color.text.tertiary` | `#868D90` | `#5F6669` | Metadata, units, timestamps, eyebrow labels |
 | `color.text.disabled` | `#5C6366` | `#9AA0A2` | Disabled only (exempt from contrast; never for information) |
 | `color.text.inverse` | `#0C1418` | `#F3F4F1` | Text on ink controls |
-| `color.action.primary.bg` | `#E8ECEE` | `#0C1418` | Primary button (ink control) |
+| `color.action.primary.bg` | `#DDE2E4` | `#0C1418` | Primary button (ink control) |
 | `color.action.primary.bg-hover` | `#FFFFFF` | `#22303A` | |
 | `color.action.primary.fg` | `#0C1418` | `#F3F4F1` | |
+| `color.action.danger.fg` | `#F0564B` | `#C42B3A` | Danger / consequential-stop actions: text and border of the `danger` button (R-24). **Its own token**: it currently shares the red value with `status.critical` but must never be implemented as a reference to the status token. |
 
 Measured contrast:
 
+Re-measured for the reconciled values (Phase 3.1, WCAG 2.x):
+
 | Pair | Dark (base / sheet / raised) | Light (base / sheet / raised) |
 |---|---|---|
-| text.primary | 15.62 / 14.74 / 13.68 | 16.85 / 17.80 / 18.60 |
-| text.secondary | 9.64 / 9.09 / 8.44 | 7.33 / 7.74 / 8.09 |
-| text.tertiary | 5.50 / 5.19 / 4.82 | 5.30 / 5.60 / 5.85 |
-| border.control (non-text, needs ≥ 3:1) | 3.79 / 3.58 / 3.32 | 3.49 / 3.69 / 3.85 |
-| ink control vs its surface | 15.62 (dark base) | 16.85 (light base) |
+| text.primary | 14.21 / 12.74 / 12.01 | 16.31 / 17.80 / 18.60 |
+| text.secondary | 9.64 / 8.64 / 8.14 | 7.09 / 7.74 / 8.09 |
+| text.tertiary | 5.50 / 4.93 / 4.65 | 5.13 / 5.60 / 5.85 |
+| border.control (non-text, needs ≥ 3:1) | 3.79 / 3.40 / 3.20 | 3.38 / 3.69 / 3.85 |
+| ink control vs its surface | 14.21 (dark base) | 16.31 (light base) |
+| tertiary on hover | 4.59 (`#202527`) | ≥ 5.3 |
 
 **Phase 2.5 obligations resolved:**
 - **Form-control borders ≥ 3:1:** `color.border.control` passes on every surface in both themes.
@@ -199,12 +208,12 @@ Measured contrast:
   interactive control.
 - **Light warning text on the page:** the Phase 2.5 light warning `#B36200` (4.50:1 on white
   only) is replaced by **`#7F5C00`**:
-  - 5.54:1 on Paper, 5.85 on sheet, 6.12 on white;
+  - 5.36:1 on the light shell (`#F1F0EC`), 5.85 on sheet, 6.12 on white;
   - it also separates better from critical under deuteranopia (ΔE 5.2 vs 1.9 for `#B36200`'s
     darkened variants).
 
-**Selected rows in dark:** tertiary text on `surface.selected` measures 4.24:1, below AA. Selected
-rows render secondary metadata in `text.secondary`.
+**Selected rows in dark:** tertiary text on `surface.selected` (`#282D2F`) measures 4.13:1, below
+AA. Selected rows render secondary metadata in `text.secondary` (7.24:1).
 
 ### 4.3 Operational status roles (the colour budget)
 
@@ -213,10 +222,23 @@ text.
 
 | Role token | Meaning (one only) | Dark fg | Light fg | Dark tint | Light tint | Contrast (dark sheet / light sheet) |
 |---|---|---|---|---|---|---|
-| `status.critical` | Condition or outcome at the action threshold; failure | `#F0564B` | `#C42B3A` | `#352223` | `#F5E5E5` | 5.12 / 5.35 |
-| `status.warning` | Abnormal but below the action threshold (Elevated); watch items use this hue in outline form | `#EBAA3C` | `#7F5C00` | `#342E20` | `#EEEADF` | 8.63 / 5.85 |
-| `status.decision` | **A person must act** (approve, inspect, confirm, resolve) | `#A98BF5` | `#6B47CC` | `#2B2A3A` | `#ECE8F4` | 6.42 / 5.91 |
-| `status.verified` | Recovery verified by the outcome policy | `#4CB782` | `#1D7A4C` | `#1E302A` | `#E4EDE7` | 7.01 / 5.10 |
+| `status.critical` | Condition or outcome at the action threshold; failure | `#F0564B` | `#C42B3A` | `#352223` | `#F5E5E5` | 4.86 / 5.35 |
+| `status.warning` | Abnormal but below the action threshold (Elevated); watch items use this hue in outline form | `#EBAA3C` | `#7F5C00` | `#342E20` | `#EEEADF` | 8.20 / 5.85 |
+| `status.decision` | **A person must act** (approve, inspect, confirm, resolve) | `#AA95E8` | `#674EB0` | *none: no decision tint in V2* | *none* | 6.48 / 6.10 |
+| `status.verified` | Recovery verified by the outcome policy | `#4CB782` | `#1D7A4C` | `#1E302A` | `#E4EDE7` | 6.66 / 5.10 |
+
+**Decision cue (CH-1, resolved for Phase 4A as option A):**
+- Violet appears **only** on the person / action glyph and, where useful, the short human-role word
+  ("Approver", "Technician"). It never colours sentences, headings, buttons, rules, borders or
+  containers.
+- The decision surface's top rule is **Ink** (§9.3), not violet.
+- **Never** violet adjacent to or framing model-generated content, and never for AI, automation,
+  loading, onboarding or empty states. No violet gradients, glow or decoration.
+- **Phase 4A gate:** a recognition test must show the cue reads as "a person must act", not "AI",
+  "automation" or "done". If it fails, the fallback is a neutral **Ink** person glyph plus the role
+  word (no hue). This is a prototype decision, not permanent policy.
+- **CVD (measured):** ≥ 14.5 ΔE from every other status hue and from secondary text under protan and
+  deutan simulation; ΔE 12.8 from Polaris' AI "magic" violet (was 8.8).
 
 Neutral states (no hue):
 
@@ -243,8 +265,12 @@ Rules:
 
    Both are always distinguished by shape and word (octagon vs check-circle vs triangle).
 4. **Colour budget per view.** On a typical operational screen, status colour should appear on no
-   more than the abnormal items and the single decision surface. If more than ~20 % of rows on a
-   screen carry a hue, the grouping is wrong (rationing, ISA-18.2).
+   more than the abnormal items and the decision cues. If more than ~20 % of rows on a screen carry
+   a hue, the grouping is wrong (rationing, ISA-18.2).
+5. **Actions never reuse status tokens.** Destructive or consequential-stop buttons use
+   `color.action.danger.*` (§4.2). Reject's danger emphasis is **provisional**: it reflects that
+   rejection currently ends in an unresolvable escalation (G2, G4). Re-evaluate it once Request
+   changes and escalation resolution exist.
 
 **Decision recorded (changes Phase 2.5 §12, D-C3):** the fifth hue, **"executing / in work" blue,
 is removed.**
@@ -280,12 +306,13 @@ simulated data.
 | `viz.threshold.warning` | `status.warning.fg`, dashed 4/3 | same | Warning band line (0.45) with label |
 | `viz.threshold.critical` | `status.critical.fg`, dashed 4/3 | same | Action gate (0.80) with label |
 | `viz.band.abnormal` | status tint, 100 % | status tint | Time span above a threshold, with text label |
-| `viz.prediction` | `text.secondary`, dashed 2/2 | same | Forecast line (none exists today, §16) |
-| `viz.prediction.band` | `text.secondary` at 12 % | at 10 % | Prediction interval |
-| `viz.event` | `text.tertiary` 1 px vertical | same | Event marker with glyph and label |
+| `viz.prediction.band` | `text.secondary` at 12 % | at 10 % | Prediction interval, drawn as a **band only** (no dashed forecast line, R-17). None exists in the backend today (§16). |
+| `viz.event` | `text.tertiary` 1 px vertical | same | Event marker: glyph in the **event lane** under the x-axis; label in the tooltip (R-17) |
 | `viz.work.span` | `text.primary` at 8 % | at 6 % | Work window, labelled |
 | `viz.simulated` | 45° hatch, `text.tertiary` at 35 %, 1 px / 4 px | same | Simulated spans and points |
-| `viz.missing` | No mark. A gap plus a "No data" label. | same | Missing samples are never interpolated. |
+| `viz.missing` | No mark. A gap plus a labelled start–end ("No data 14:18–14:26"). | same | Missing samples are never interpolated (gap rule, §16). |
+| `viz.stale` | `surface.sunken` region from the last sample to server *now*, labelled "No data since 14:18" | same | Staleness made visible on the time axis (R-2) |
+| `viz.sample.suspect` | Hollow marker in `viz.series` colour, excluded from the line | same | Samples with quality SUSPECT (R-17) |
 
 **No categorical palette ships in V2.**
 - Comparisons use focus + context or small multiples.
@@ -303,8 +330,12 @@ simulated data.
   dialogs (§9.5).
 - **Character:** low glare for long monitoring sessions. Normal content sits at `text.secondary`;
   abnormal content earns `text.primary` weight plus a status glyph.
+- **Starting values (R-25, Phase 4A gate):** sheet `#1A1F21` (step 1.12 over base, up from
+  1.06), primary text `#DDE2E4` (12.7:1 on the sheet: lower glare than the original 14.7:1).
+  The surfaces are numerically close to Grafana's, so the identity must come from structure
+  (title blocks, stage track, ink controls), not surface colour.
 - **Status:** status hues use the bright steps, with chroma held so nothing glows. No colour
-  appears on large areas except subtle tints behind abnormal rows and the decision surface.
+  appears on large areas except subtle tints behind abnormal rows.
 - **What prevents "hacker terminal":**
   - text is Plex Sans, not mono (mono only for identifiers);
   - no pure black and no green-on-black;
@@ -313,7 +344,9 @@ simulated data.
 ### 5.2 Light: "The Drawing Sheet"
 
 - **Surface logic:** **a sheet on a desk, not cards on grey.**
-  - The shell and nav rail sit on warm Paper (`#F3F4F1`).
+  - The shell and nav rail sit on a warm paper tone, `#F1F0EC` (*Phase 4A starting value*, R-9:
+    step 1.09 to the sheet so the two never merge on tablets and projectors; chroma capped at about
+    OKLCH 0.006 to avoid an archival look). Brand Paper `#F3F4F1` is unchanged.
   - The working area is one full-bleed sheet (`#FAFAF8`) separated from the shell by a single
     `border.strong` rule.
   - Inside the sheet, structure comes from ruled sections and title blocks.
@@ -323,6 +356,11 @@ simulated data.
   an approval, and legible in daylight on a tablet.
 - **Status:** status uses the dark, text-safe steps, which read like a drafting pen rather than a
   highlighter.
+- **Rule budget (R-8):** no vertical rules outside title blocks; a table uses **either** the sunken
+  header band **or** a header rule, never both; hierarchy comes from spacing and type before any
+  additional rule.
+- **Uppercase budget (R-7):** see §6.2. Too many uppercase eyebrows plus rules is what makes a
+  light UI read as a government form.
 - **Not an inversion.** Differences from dark:
 
   | Aspect | Light | Dark |
@@ -375,7 +413,7 @@ Base size is 14 px on desktop and tablet and 16 px in touch layouts (§7.2).
 | `type.body` | 14 / 20 (touch 16 / 24) | 400 | 0 | Default text |
 | `type.body.compact` | 13 / 18 | 400 | 0 | Dense lists, inspector body |
 | `type.label` | 12 / 16 | 500 | +0.01 em | Form labels, column headers (sentence case) |
-| `type.eyebrow` | 11 / 16 | 600 | +0.06 em, UPPERCASE | Title-block labels and section eyebrows only; ≤ 3 words; never running text |
+| `type.eyebrow` | 11 / 16 | 600 | +0.06 em, UPPERCASE | **Only** title-block cell labels and nav-rail group labels (R-7); ≤ 3 words; never running text |
 | `type.caption` | 12 / 16 | 400 | 0 | Helper text, chart captions, freshness lines |
 | `type.table` | 13 / 18 compact · 14 / 20 comfortable | 400 (values 500) | 0 | Table cells |
 | `type.readout` | 24 / 28 | 500 | −0.01 em | Key values in asset detail and verification (risk score, latest torque) |
@@ -391,7 +429,9 @@ Rules:
   `text.tertiary` or better).
 - **Casing:**
   - sentence case everywhere;
-  - UPPERCASE only for eyebrows and the `SIMULATED` provenance tag;
+  - UPPERCASE only for title-block cell labels, nav-rail group labels and the `SIMULATED`
+    provenance tag. Decision-surface keys, context-rail headings, section metadata and queue group
+    headers are sentence case (`type.label` 12 px, weight 500);
   - no capitals for emphasis.
 - **Units** follow the value in `text.tertiary`, one size step smaller in readouts
   (`24` + `13`, e.g. "42.1 Nm").
@@ -454,10 +494,11 @@ tablet and 16 on phone.
 | `size.control.sm` / `md` / `lg` / `touch` | 28 / 32 / 40 / 48 |
 | `size.hit.min` | 24 × 24 (pointer, WCAG 2.5.8); **44 × 44** touch; 48 × 48 for primary touch actions; ≥ 8 px between adjacent touch targets |
 | `size.icon.xs` / `sm` / `md` / `lg` | 12 / 16 / 20 / 24 |
-| `size.mark` | 10 (status and provenance marks inline) |
+| `size.mark` | 10 (**provenance marks only**; status shapes are ≥ 14, §10) |
+| `size.status` | 14 in cells and inline · 16 in the plant band and title block (R-4) |
 | `size.rail.nav` | 224 expanded · 56 collapsed |
 | `size.rail.context` | 320 (case context rail) |
-| `size.rail.inspector` | 420 (min 360, max 480) |
+| `size.rail.inspector` | 380 docked (min 360, max 420); modal drawer width 420 below 1280 (CH-2, *Phase 4A prototype*) |
 | `size.header.shell` | 48 (desktop) · 56 (touch) |
 
 ---
@@ -470,10 +511,10 @@ tablet and 16 on phone.
 |---|---|---|
 | `bp.phone` | 0 (designed from 360) | Touch task layouts, bottom bar |
 | `bp.phone-lg` | 600 | Touch, two-column forms allowed |
-| `bp.tablet` | 768 | Workbench minus multi-pane: collapsed nav rail, inspector as overlay |
+| `bp.tablet` | 768 | Workbench minus multi-pane: collapsed nav rail, preview / inspector as a **modal drawer** |
 | `bp.laptop` | 1024 | Workbench. Nav rail collapsible, case context rail folds into Summary. |
-| `bp.desktop` | 1280 | Full workbench with case context rail |
-| `bp.workstation` | 1440 | Inspector docks (pushes content) instead of overlaying |
+| `bp.desktop` | 1280 | Full workbench with case context rail; preview / inspector **docks** (pushes content, about 380 px). CH-2 *Phase 4A prototype hypothesis*. |
+| `bp.workstation` | 1440 | Same as desktop with more table columns |
 | `bp.wide` | 1920 | Additional columns in tables; no stretched prose |
 
 **Minimum useful viewports:**
@@ -488,11 +529,11 @@ tablet and 16 on phone.
 │ shell header 48: name · plant ▾ · ─────────── · system status · updates · acct│
 ├──────────┬────────────────────────────────────────────────────────┬───────────┤
 │ nav rail │ sheet (full-bleed working area; owns its scroll)       │ inspector │
-│ 224 / 56 │   page title block (sticky within sheet)               │ 420       │
-│          │   content regions (12-col fluid grid, 24 gutters)      │ (≥1440    │
+│ 224 / 56 │   page title block (sticky within sheet)               │ ≈380      │
+│          │   content regions (12-col fluid grid, 24 gutters)      │ (≥1280    │
 │          │                                                        │  docks;   │
-│          │                                                        │  else     │
-│          │                                                        │  overlay) │
+│          │                                                        │  <1280    │
+│          │                                                        │  modal)   │
 └──────────┴────────────────────────────────────────────────────────┴───────────┘
 ```
 
@@ -526,7 +567,10 @@ tablet and 16 on phone.
 header; nothing below the fold is required to understand the current state (`08` per screen).
 
 **Split views:**
-- *Queue + preview:* inspector at 420 px.
+- *Queue + preview:* docked preview of about 380 px at ≥ 1280; a **modal drawer** (scrim, focus
+  trap, `Esc` and Back return focus to the row) below 1280; one pane at a time on phones.
+  **There is never an "overlay but not modal, no scrim, queue still interactive" state** (CH-2).
+  The 1280 boundary is a Phase 4A prototype hypothesis, tested at 1024, 1280 and 1440 (`08 §11`).
 - *Document + context rail:* the rail collapses into Summary below 1280.
 
 No other splits. Users can't resize panes in V2.
@@ -561,18 +605,31 @@ No other splits. Users can't resize panes in V2.
 
 - Decorative borders (`subtle`, `strong`) define structure.
 - `border.control` defines interactive boundaries.
-- Status-coloured borders appear only on status tags and on the decision surface while a
-  decision is pending (violet top rule).
+- Status-coloured borders appear only on status tags. The decision surface's 2 px top rule is
+  **Ink** (CH-1); violet never draws a rule, border or container.
 
 ### 9.3 Cards: the only allowed framed objects
 
 | Framed object | Why it may be framed |
 |---|---|
-| **Decision surface** | Acted on as a unit. Ink or violet 2 px top rule, `surface.raised`. |
-| **Next-step block** in the case context rail and on mobile | One actionable unit |
+| **Decision surface** | Acted on as a unit. **Ink** 2 px top rule, `surface.raised`. |
 | **Technician task card** on mobile | One task, acted on as a unit |
-| **Preview / inspector panel** | An overlay |
+| **Preview / inspector panel** | Docked pane (≥ 1280) or modal drawer (< 1280) |
 | **Dialogs, menus, popovers, toasts** | Overlays |
+
+**Bounded but not framed (R-11).** These use a tint and / or a rule, never a full frame:
+
+| Element | Treatment |
+|---|---|
+| Next-step block (case context rail, mobile summary) | `surface.sunken` tint plus a 2 px **ink** left rule |
+| Context rail | Tint plus a hairline separator from the document |
+| Pinned open evidence request | 2 px left rule (ink) plus the waiting-on glyph |
+| Identifier / hash wells; chart plot areas | `surface.sunken` tint |
+| Exception banner | Rule plus status glyph plus text |
+
+- **At most one framed object per viewport region.** If the decision surface is visible, nothing
+  else in the same region is framed.
+- Long scrolls keep **sticky section headings** so region boundaries are never lost.
 
 Everything else (metrics, rows, evidence, hypotheses, events, assets) is **never** a card. Rows
 are rows, and the record is a ruled timeline.
@@ -580,19 +637,28 @@ are rows, and the record is a ruled timeline.
 ### 9.4 Title block (signature component)
 
 ```text
-┌──────────────┬─────────────┬───────────────┬──────────────┬───────────┬──────────┐
-│ CASE         │ ASSET       │ STAGE         │ WAITING ON   │ DEADLINE  │ REVISION │
-│ AC-COMP-01 · │ Instrument  │ ■ Awaiting    │ ◆ Approver   │ 15:12     │ R33      │
-│ 05 Oct 13:02 │ Air Comp 01 │   decision    │              │ in 2 h 41 │          │
-└──────────────┴─────────────┴───────────────┴──────────────┴───────────┴──────────┘
+┌─────────────────┬──────────────┬──────────────────┬──────────────┬───────────┬──────────┐
+│ ASSET CONDITION │ SEVERITY     │ STAGE            │ WAITING ON   │ DEADLINE  │ REVISION │
+│ ⬣ Critical 0.86 │ ▮▮▮▯ High    │ Awaiting         │ ◈ Approver   │ 15:12     │ R33      │
+│                 │              │ decision · 5/8   │              │ in 2 h 41 │          │
+└─────────────────┴──────────────┴──────────────────┴──────────────┴───────────┴──────────┘
 ```
+
+**Cell budget (R-6): at most six cells.** Canonical case set, in order: Asset condition ·
+Severity (or Asset criticality until X2) · Stage · Waiting on · Deadline · Revision.
+- The case reference, analysis run and incident UUID live in the context rail's **Identifiers**,
+  not the title block (no duplication).
+- **Cells that don't apply are dropped**, not shown empty (e.g. no Deadline cell when there is no
+  pending requirement).
+- Page title blocks (Overview, lists) use the same ≤ 6 rule.
 
 - **Cells:** `type.eyebrow` label in `text.tertiary` above a 14 px value; padding 8 / 12.
   - Vertical `border.subtle` dividers between cells.
   - The block is bounded above and below by `border.strong`.
 - **Overflow:** cells wrap to a second row on narrow widths; they never truncate a status value.
 - **Mobile:** a two-column definition list in the same order.
-- **Rules:** no icons except status glyphs, and no numbers that aren't backend fields.
+- **Rules:** no icons except status glyphs (≥ 16 px here, R-4), and no numbers that aren't
+  backend fields.
 
 ### 9.5 Radius and elevation
 
@@ -638,8 +704,8 @@ are rows, and the record is a ruled timeline.
 | Default sizes | 16 in tables and inline · 20 in navigation and section headings · 24 for touch actions |
 | Outline vs filled | Outline by default. **Filled only for status shapes** (octagon, triangle) and the active navigation item. |
 | Alignment | Optically centred on the text x-height in inline use. A 16 px icon with 13–14 px text aligns to the cap height. 8 px gap to its label. |
-| Status shapes | Drawn as Operon-owned 10 / 12 / 16 px SVGs (simple geometry), not library glyphs, so weight is consistent: hollow dot (normal), filled triangle (warning), outlined diamond (watch), filled octagon (critical), person-in-square (decision), half-filled circle (active), check-circle (verified), dashed square + "?" (unknown), clock (stale), plug-off (offline) |
-| Status overlay | Asset or case icon (16 / 20) with a 8 / 10 px status shape at the bottom-right, separated by a 1 px `surface` knockout. Always accompanied by the status word nearby. |
+| Status shapes | Drawn as Operon-owned 14 / 16 px SVGs (simple geometry), not library glyphs, so weight is consistent: hollow dot (normal), filled triangle (warning), outlined diamond (watch), filled octagon (critical), person-in-square (decision), half-filled circle (active), check-circle (verified), dashed square + "?" (unknown), clock (stale), plug-off (offline). **Minimum 14 px in cells and inline; 16 px in the plant band and title block (R-4).** At 10–12 px the octagon, dot and diamond become indistinguishable (Phase 3.1 render). 10 px marks are reserved for **provenance**, which never carries severity. |
+| Status overlay | **Not used in V2.** A status shape small enough to overlay an icon falls below the 14 px minimum. Status is always a standalone shape plus word (R-4). |
 | Custom industrial glyphs (Phase 4 deliverable) | **pump, valve, compressor, conveyor, bearing**, plus **press, grinder, spot-weld robot** for the seeded fleet classes (`PUMP`, `COMPRESSOR`, `CONVEYOR`, `PRESS`, `GRINDER`, `ROBOT`; `CNC_MACHINE` uses Tabler `engine` or a custom mill glyph). Drawn on Tabler's 24 grid at 2 px round stroke, outline only, recognisable at 16 px. Not brand marks. |
 | Action icons | Verb-specific and never alone for consequential actions:<br>• approve and dispatch: `square-check`<br>• reject and escalate: `square-x`<br>• request changes: `message-2-cog`<br>• inspect: `clipboard-check`<br>• attach: `camera` (future)<br>• open in workspace: `arrow-up-right` |
 | Navigation | One outline icon per area (Overview `layout-dashboard`, My actions `checklist`, Cases `folders`, Assets `building-factory-2`, Work orders `tool`, Reliability `chart-line`, Audit log `history`, System `adjustments`). Text labels always visible when the rail is expanded; tooltips when collapsed. |
@@ -674,7 +740,7 @@ are rows, and the record is a ruled timeline.
 **Forbidden:**
 - pulsing or breathing indicators;
 - "live" dots that animate while nothing changes;
-- skeleton shimmer beyond 2 s (it switches to a static "Still loading…" line);
+- skeleton shimmer of any duration (skeletons are static; timing in §15, R-19);
 - scanning or sweep effects;
 - glow;
 - motion that moves the Approve control or the bound identifiers;
@@ -697,9 +763,9 @@ never merged into one coloured badge.
 
 | Slot | Position in a row / header | Carries |
 |---|---|---|
-| A | Leading edge (24 px column) | **Attention** rank glyph |
+| A | Leading edge (24 px column) | **Attention** rank glyph. **Omitted inside lists already grouped under an attention header** (R-14). |
 | B | Asset cell | **Asset condition** glyph and word |
-| C | Stage cell | **Case stage** (square node and word) |
+| C | Stage cell | **Case stage** (word plus n/8 in rows; square node only in the stage track, R-14) |
 | D | Waiting-on cell | **Waiting on** role glyph and role |
 | E | Severity cell | **Severity** bars and word |
 | F | Inline, after a value or record | **Provenance** mark |
@@ -712,12 +778,12 @@ never merged into one coloured badge.
 |---|---|---|---|---|---|---|
 | **Asset condition** | Normal · Elevated · Critical · No data · Stale | hollow dot · filled triangle · filled octagon · dashed "?" square · clock | nominal · warning · critical · unknown · stale | Word always shown, except Normal in the plant band (glyph only, with an `aria-label`) | Glyph plus word | Plus model risk score, thresholds, sample time: "Critical · risk score 0.86 (gate 0.80) · 14:32:05" |
 | **Case stage** | Detected · Investigating · Awaiting inspection · Diagnosed · Planning · Awaiting decision · In work · Verifying · Closed · Escalated · Dispatch failed · Cancelled | Square node. Hollow = future, filled ink = current, ink with tick = completed, dashed = exception. | Neutral (ink). Exceptions add the critical octagon only for Dispatch failed and Regressed-escalation. | Stage word | Square plus word | Stage track (§13) |
-| **Waiting on** | Analysis (automated) · Technician · Approver · Reliability engineer · Dispatch (system) · Verification (system) · No one | Person-in-square for human roles (decision violet when the human is the current blocker); Tabler `settings` (gear) for system roles | decision (human blocker) · neutral (system) | "Waiting on Approver" | Glyph plus role | Plus what is needed: "Approve the work package · by 15:12" |
+| **Waiting on** | Analysis (automated) · Technician · Approver · Reliability engineer · Dispatch (system) · Verification (system) · No one | Person-in-square for human roles (decision violet glyph, plus violet role word where useful, when the human is the current blocker; §4.3); Tabler `settings` (gear) for system roles | decision (human blocker) · neutral (system) | "Waiting on Approver" | Glyph plus role | Plus what is needed: "Approve the work package · by 15:12" |
 | **Severity** | Critical · High · Medium · Low | Four ascending bars (filled count = level) | **Neutral ink.** Severity is consequence, not state. | Word | Bars plus word | Plus basis: "High · asset criticality High, model triage" |
 | **Attention** | Action required · At risk · Watch · Info | Rank glyph: ■ solid square · ◧ half square · □ outline square · none | **Neutral ink**, weight-coded | Group headers carry the words | Glyph in slot A | Group header with count |
 | **Provenance** | Measured · Derived · Model-generated · Human-entered · Simulated | 10 px square: solid · diagonal split · dashed outline · person dot · hatched (+ `SIMULATED` tag when consequential) | None | Word on hover or in expanded form | Mark | Mark, word, source, time (§14) |
 | **Work state** | Planned · Awaiting decision · Approved · Dispatching · Work order committed · Dispatch failed · *(field states: G10)* | Outline document · person-square · square-check · half circle · document-check · octagon | neutral · decision · neutral · active (neutral) · neutral · critical | Word plus work-order number | Glyph plus word | Plus WO number, technician, window, receipt time |
-| **Verification state** | Not started · Observing (n samples) · Inconclusive · Verified recovery · Not recovered · Regressed | dashed circle · outline diamond · outline diamond with "~" · check-circle · circle-x · filled octagon | neutral · warning (outline = watch) · warning (outline) · verified · critical · critical | Word plus count where real | Glyph plus word | Plus before / after metrics, policy, last samples |
+| **Verification state** | Not started · Observing (since {time}; a sample count only with X8) · Inconclusive · Verified recovery · Not recovered · Regressed | dashed circle · outline diamond · outline diamond with "~" · check-circle · circle-x · filled octagon | neutral · warning (outline = watch) · warning (outline) · verified · critical · critical | Word plus count where real | Glyph plus word | Plus before / after metrics, policy, last samples |
 
 Notes:
 - **Verified is the only green in the product.** "Work order committed", "Approved" and "Closed"
@@ -736,9 +802,11 @@ Notes:
 A critical asset whose case awaits approval, waiting on the supervisor, with action required:
 
 ```text
-A  B                         C                    D                     E        deadline
-■  ⬣ Critical  AC-COMP-01   ■ Awaiting decision  ◈ Waiting on Approver  ▮▮▮▯ High  15:12 · in 2 h 41
+A  B                         C                          D                     E        deadline
+■  ⬣ Critical  AC-COMP-01   Awaiting decision · 5/8    ◈ Waiting on Approver  ▮▮▮▯ High  15:12 · in 2 h 41
 ```
+
+(In a list already grouped under "Action required", slot A is omitted.)
 
 - **Read left to right:** "needs action · the asset is critical · the case is at the decision ·
   the approver is the blocker · high consequence · deadline".
@@ -755,8 +823,14 @@ A  B                         C                    D                     E       
 2. A row carries at most **two** hued glyphs: condition plus waiting-on, or verification.
 3. **Exceptions are never softened.** Escalated and Dispatch failed rows always show their
    waiting-on role and what is unavailable (G2 / G3).
-4. **Missing dimensions are stated.** If severity or deadline is unknown, the cell shows "—" with an
-   accessible name ("Severity not projected").
+4. **Missing dimensions are stated in words, never "—"** (R-15): "Not projected", "No deadline",
+   "No observation". The words are the accessible name too.
+5. **Aggregates take the worst member plus a count** (R-14). Any roll-up (plant band line summary,
+   grouped row, collapsed watch list) shows the most serious member's shape and word plus counts:
+   "⬣ 1 critical · ▲ 2 elevated · 5 normal". An aggregate never shows a softer state than its
+   worst member.
+6. **Glyph budget:** at most about five status glyphs per row (Carbon's ceiling). Stage renders as a
+   word in rows; attention glyphs are dropped inside attention-grouped lists.
 
 ### 12.5 Attention presentation
 
@@ -764,7 +838,7 @@ A  B                         C                    D                     E       
 |---|---|---|
 | **Action required** | A person is the blocker: Awaiting decision; Awaiting inspection; resource confirmation; Escalated; Dispatch failed; approval expired (G11) | Group 1. Solid square. Row text `text.primary`, weight 500 for the required response. Leads every queue. |
 | **At risk** | Critical condition with a case progressing without a person; Regressed; reasoning unavailable while cases are open | Group 2. Half square. Normal weight. |
-| **Watch** | Elevated condition without a case; Verifying; Inconclusive observation | Group 3. Outline square. `text.secondary`. Collapsed to a count when > 5. |
+| **Watch** | Elevated condition without a case; Verifying; Inconclusive observation | Group 3. Outline square. `text.secondary`. More than 5 items show the first 5 plus "Show all n" (expands in place; never hidden). |
 | **Info** | Closed and verified; routine updates | Not in queues. Updates only. |
 
 **Each attention item states (in this order):**
@@ -778,8 +852,17 @@ A  B                         C                    D                     E       
 6. Destination: the exact case section.
 
 There are no cards, no per-item colour backgrounds and no "new" badges that persist.
-**Flood control:** more than 5 items of the same kind created within 10 minutes collapse into one
-group row ("5 assets crossed the warning band · 14:20–14:28").
+**Burst grouping (safe rule, product-owner correction B).** Grouping repeated items is
+**presentation only**:
+- A group row ("5 assets crossed the warning band · 14:20–14:28") always takes the worst member's
+  shape and word (rule 5 above) and **expands in place** to the full list of members.
+- Every member stays individually accessible and inspectable, with its own asset, timestamp,
+  severity, evidence, state and link to the authoritative record. Grouping never merges, drops or
+  summarises away a member, and never applies to the case record or the audit log.
+- Grouping is computed from items the UI already holds individually. **If the data needed to expand
+  a group safely isn't available, grouping is not implemented.** Today the WebSocket projects at
+  most one case per asset (G5), so case bursts can't occur; grouping applies only to session-local
+  Updates and watch-list rows. It is **not in Phase 4A scope**.
 
 ---
 
@@ -825,7 +908,8 @@ group row ("5 assets crossed the warning band · 14:20–14:28").
 | Loops | Inspection and "Not recovered → Investigating" render as a return arc below the line, with the count ("Reinvestigated 1×") |
 | Exceptions | Drop below the track from the stage where they occurred, with a dashed node, the exception word and its waiting-on role |
 | Current-stage caption | Current stage word in `type.subheading`, plus one-line "what happens next" beneath the track |
-| Compact form (rows, mobile) | "Stage 5 of 8 · Awaiting decision" plus a 48 px mini-track of 8 ticks |
+| Compact form (rows, mobile) | "Awaiting decision · 5/8" (word plus position). Mobile summary may add a 48 px mini-track of 8 ticks. |
+| Not a stepper (R-22) | The track displays lifecycle position. It isn't clickable, doesn't navigate and never advances anything. It is not a progress indicator for a linear task, because the lifecycle loops. |
 | Accessibility | `<ol>` of stages with `aria-current="step"`; exceptions announced as "Exception: Escalated" |
 
 The full lifecycle diagram is in
@@ -868,24 +952,66 @@ frame band rather than per-value tags, to avoid badge noise.
 
 ## 15. Data-state pattern: freshness, loading, stale, error, offline
 
+### 15.1 Freshness states (R-1)
+
+One table per source (the stream as a whole, and each asset's readings).
+
+**Time basis (backend truth).** Stream messages carry a tick index (`tick`) and a simulated
+plant-minute counter (`plant_time_min`), but **no wall-clock server timestamp**. History points
+carry the tick index `t`. The tick interval (`POC_TICK_SECONDS`) is server configuration and isn't
+exposed.
+- **Until X8 exists (`08 §1.2`):**
+  - Stream age = time since the **last message was received** (browser clock).
+  - The **expected interval** is the median gap between recent message arrivals, measured over the
+    last 10 ticks and never hard-coded.
+  - Per-asset staleness = how many ticks behind the latest tick its last point is.
+  - Every age is labelled as "received …".
+- **With X8:** ages come from server timestamps.
+- Evidence and record times already use real backend timestamps (`observed_at`, `retrieved_at`,
+  event `created_at`).
+
+| Freshness | Condition | Presentation |
+|---|---|---|
+| **Live** | Stream connected and age ≤ 2 × expected interval | "Live · 14:32:05". Nothing animates. |
+| **Delayed** | Age > 2 × and ≤ 5 × expected interval | Values stay visible with their age: "Delayed · 25 s". Condition unchanged. |
+| **Stale** | Age > 5 × expected interval | Clock glyph plus "Stale since 14:18". Asset condition becomes **Stale**, never Normal. Charts draw the stale region (§16). |
+| **Disconnected** | WebSocket closed | Banner (below). All live regions show "as of 14:32:05". |
+
+**Stale never becomes Normal.** This is a deliberate departure from tools that treat missing series
+as "OK" (e.g. Grafana `Normal (MissingSeries)`, CloudWatch `notBreaching`). A derived value takes
+the **worst freshness of its inputs**.
+
+### 15.2 Data states
+
 | State | Trigger (real data) | Pattern |
 |---|---|---|
-| Live | WebSocket connected; last snapshot < 10 s old | System status shows "Live · 14:32:05". Nothing animates. |
-| Loading (initial) | No snapshot yet | Region skeletons with no shimmer, for up to 2 s, then the static text "Waiting for plant data…". Never zeros. |
+| Loading (initial) | No snapshot yet | Nothing for the first ~300–750 ms; then **static** region skeletons (no shimmer); after a few seconds a line with elapsed time: "Waiting for plant data · 12 s" (R-19). Never zeros. |
 | Partial loading | Snapshot present; `GET /api/incidents/{id}` pending | Case header from the snapshot renders immediately. Sections awaiting detail show "Loading case record…" in place. Expiry shows "Deadline loading" (never a fabricated countdown). |
-| Stale | No new tick for > 3 × the expected interval, or an asset's last reading older than the threshold | A `stale` glyph plus age on affected values. Asset condition becomes **Stale**, not Normal. Shell status shows "Stale · last data 14:18". |
+| Stale / Delayed | §15.1 | Shell status shows the worst stream freshness. **Mixed staleness** is stated, not averaged: "7 of 8 assets current · CNC-MILL-07 stale since 14:18". |
 | Unavailable | A sensor or feature is missing (evidence quality MISSING, no history) | "No data" with a dashed-square glyph. Charts show a gap and a label. |
-| Disconnected | WebSocket closed | Shell banner: "Live connection lost at 14:32:05. Showing last received data. Reconnecting…" All live values gain the stale treatment immediately. **Decision controls are disabled** with the reason "Reconnect to make decisions." |
-| Retrying | Reconnect attempts | Banner shows the attempt and the next try time; manual "Reconnect now" |
+| Disconnected | WebSocket closed | Shell banner: "Live connection lost at 14:32:05. Showing last received data. Reconnecting…" Decision and submission controls become **inactive** (focusable, `aria-disabled`, reason "Reconnect to make decisions", activating moves focus to the banner; R-3). Deadlines state that they are computed from server time and that the view is disconnected. |
+| Retrying / reconnected | Reconnect attempts; then a new snapshot | Banner shows the attempt and next try time, plus a manual "Reconnect now". After reconnection, the missed interval is **marked as a backfilled gap** on charts and noted in the case record where it overlaps a case. |
 | Request failure | REST error | Inline alert at the point of action, with the backend's refusal message verbatim when it is a typed lifecycle refusal (stale revision, expired requirement). Never a generic "Something went wrong". |
 | Provider failure | `reasoning_provenance.status = awaiting_runtime` or a provider error | Shell status shows "Analysis unavailable". Open cases in automated stages show "Analysis paused: provider unavailable" as an At-risk item (screen 24). |
-| Offline (device) | `navigator.onLine = false` | Phone top bar: "Offline: you can read the last data; actions need a connection." Actions disabled. (Offline capture is future.) |
+| Offline (device) | `navigator.onLine = false` | Phone top bar: "Offline: you can read the last data; actions need a connection." Actions inactive with that reason. (Offline capture is future.) |
+| Not configured | A capability exists but isn't set up (no provider, trusted submissions off, no external CMMS) | States what configuring does and who can do it, in place of the region (e.g. "No external CMMS is connected. Work orders are recorded by the local adapter.") |
 | Permission | Backend refusal (e.g. trusted submissions disabled, loopback-only secret entry) | States the exact reason and who can change it: "Inspection submission is turned off in this deployment (`OPERON_TRUSTED_SUBMISSIONS`). An administrator can enable it." |
+
+### 15.3 Message hierarchy (R-18)
+
+1. **One banner for the cause** (disconnected, analysis unavailable, demo mode). No more than one
+   banner per cause; never a toast for an outage.
+2. **"As of" in each title block** that shows live values (the freshness indicator).
+3. **Value-level glyphs only where a value's freshness differs from its region** (e.g. one stale
+   asset among live ones). A disconnect does not put a glyph on every value.
+4. **Announcements, once each:** Live → Delayed / Stale is announced politely; Disconnected is
+   announced assertively.
+5. **Print and export** stamp "Data as of {server time}".
 
 **Freshness indicator (component):**
 - `clock` glyph plus relative age plus absolute time on hover;
 - placed at the right end of every title block that shows live values;
-- turns to the stale glyph and `text.secondary` emphasis when stale.
+- shows the §15.1 state word (Live / Delayed / Stale / Disconnected) whenever it isn't Live.
 
 **Rule:** an interface that can't prove data is current must say so before showing it.
 
@@ -895,26 +1021,33 @@ frame band rather than per-value tags, to avoid badge noise.
 
 | Chart | Encoding | Rules |
 |---|---|---|
-| **Telemetry** (5 real channels: air temperature K, process temperature K, rotational speed rpm, torque Nm, tool wear min) | Line, `viz.series`. Focal channel `viz.series.focus`. | One y-axis per chart. Small multiples for several channels (shared x). Unit in the axis title. Latest value as a direct label. **No vibration channel exists in this fleet; never imply one.** |
+| **Telemetry** (5 real channels: air temperature K, process temperature K, rotational speed rpm, torque Nm, tool wear min) | Line, `viz.series`. Focal channel `viz.series.focus`. | One y-axis per chart. Small multiples for several channels (shared x, **synchronised crosshair**). Unit in the axis title. Latest value as a direct label. The y-axis may start above zero, with a **minimum visible span** per channel so noise doesn't read as a trend. **No vibration channel exists in this fleet; never imply one.** |
+| **Time axis and staleness** (R-2) | The x-axis always ends at **"now"**: the latest tick received (until X8) or server time (with X8). After an asset's last sample, a `viz.stale` region labelled "No data since tick 1,204" (until X8) or "since 14:18" (X8). | A stale chart can never look identical to a live one. Applies to sparklines too (a stale sparkline ends in the stale marker). Scope and time range sit next to the chart title. Until X8, telemetry axes are labelled in samples / ticks, never as invented clock times. |
+| **Gaps** (R-2) | Break the line when consecutive samples are more than **2 × the expected interval** apart (missing tick indices until X8). Label the gap with start and end. | Distinguish a **sensor gap** (an asset's missing points while the stream continued) from a **connection gap** (no messages received; marked after reconnect). Never interpolate. |
+| **Sample quality** | Samples with quality SUSPECT drawn as `viz.sample.suspect` hollow markers, excluded from the line | Missing samples follow the gap rule |
 | **Risk trajectory** (model risk score 0–1) | Line plus `viz.threshold.warning` at 0.45 and `viz.threshold.critical` at 0.80, labelled at the line end ("Warning band 0.45", "Action gate 0.80") | Y-axis 0–1, labelled "Model risk score" (not "probability"). Detection, decision, dispatch and observation-start events marked. |
-| **Thresholds / bands** | Dashed status lines; abnormal spans as tint bands **with text** | No colour-only bands |
+| **Thresholds / bands** | Dashed status lines; abnormal spans as tint bands **with text** | No colour-only bands. **Thresholds come only from backend values** (`warn_threshold`, `trigger_threshold`), labelled with their source. Never draw a default threshold; if a value is missing, draw none. Thresholds in view are always inside the y-domain. |
 | **Baselines** | `viz.baseline` dotted, labelled "Baseline (diagnosis)" from `ObservationPlan.baseline_metrics` | |
-| **Prediction intervals** | `viz.prediction` plus band, labelled with horizon and basis | **No forecast exists in the backend today.** Specified for the future; not drawn in V2. |
-| **Events** | `viz.event` vertical hairline plus glyph plus ≤ 2-word label: detection (signal), decision (person-square), dispatch (document-check), observation start (eye), outcome (check-circle / circle-x) | Labels collide-avoid; overflow lists in the tooltip |
+| **Prediction intervals** | `viz.prediction.band` only (no dashed forecast line), labelled with horizon and basis | **No forecast exists in the backend today.** Specified for the future; not drawn in V2. |
+| **Events** | Glyphs in an **event lane** under the x-axis, with a `viz.event` hairline up through the plot: detection (signal), decision (person-square, **neutral, never violet**), dispatch (document-check), observation start (eye), outcome (check-circle / circle-x) | Labels live in the tooltip, not inside the plot (R-17) |
 | **Maintenance** | `viz.work.span` over the work-order window, labelled "WO-… window" | Field completion is not drawn (G10) |
 | **Verification** | Post-observation-start samples as discrete markers. Outcome label at the end: "Verified recovery · last 3 scores < 0.45". | Before / after values from `Outcome.before_metrics` / `after_metrics` |
 | **Comparison** | Focus + context, or small multiples | No categorical colours (§4.6) |
 | **Reliability** | Counts as text and tables first. Bars only for comparing ≥ 3 categories. Time series only with real timestamps. | Scope label is mandatory ("This engine run · since 05 Oct 13:00", G9) |
 | **Simulated** | `viz.simulated` hatch on spans and points from simulated sources; legend entry "Simulated" | |
-| **Missing** | Gap plus "No data" label; never interpolated | |
+| **Missing** | Gap plus "No data" label; never interpolated | See Gaps |
+| **Chart states** (R-17) | Every chart container has loading, empty ("No samples in this window"), error (problem → cause → remedy, backend message verbatim) and partial ("3 of 5 channels available") states | No blank plot areas |
 
 **Interaction and accessibility:**
-- **Tooltip:** a crosshair on hover or focus shows time (HH:MM:SS), value plus unit and provenance
-  mark for every series at that x. It is keyboard-reachable: arrow keys step through samples.
+- **Tooltip:** a crosshair on hover or focus shows the sample's position (tick and plant time until
+  X8; HH:MM:SS with X8), value plus unit and provenance mark for every series at that x. It is
+  keyboard-reachable: arrow keys step through samples.
 - **Legend:**
   - direct labels for ≤ 4 series;
   - a legend for more;
-  - the legend uses the same line styles (solid, dashed, dotted, hatched).
+  - the legend uses the same line styles: solid series, dashed thresholds, dotted baseline,
+    banded predictions, hatched simulation. Provenance appears in the tooltip and legend, **not as
+    a line style on telemetry** (dash budget, R-17).
 - **Table alternative:** every chart has a "Table" toggle rendering the same data (time, value,
   unit, provenance) and an `aria-describedby` summary sentence ("Risk score rose from 0.31 to 0.86
   between 13:20 and 14:32; crossed the action gate at 14:30").
@@ -931,16 +1064,18 @@ frame band rather than per-value tags, to avoid badge noise.
 
 | Area | Decision |
 |---|---|
-| Standard | WCAG 2.2 AA throughout. AAA contrast for primary text (achieved: ≥ 13.6:1). |
+| Standard | WCAG 2.2 AA throughout. AAA contrast for primary text (achieved: ≥ 11.8:1 on every surface in both themes). |
 | Colour independence | Every status has glyph, shape and word (§12). Provenance is never colour. Charts use line styles plus labels. |
 | Contrast | Text ≥ 4.5:1 on its actual surface; non-text (control borders, focus, chart lines, status glyphs) ≥ 3:1. Verified per token in §4. |
 | Focus | 2 px `border.focus` ring with 2 px offset (ink in light, paper in dark), always visible on keyboard focus (`:focus-visible`). Never removed. Never coloured by status. |
-| Keyboard | All functions keyboard-operable. Queue lists:<br>• `↑` / `↓` move;<br>• `Enter` opens preview;<br>• `Shift+Enter` opens workspace;<br>• `Esc` closes preview and returns focus to the row.<br>Case sections: `g` + `1–6` jumps (documented in a `?` shortcut sheet). No single-key shortcuts for consequential actions. **Approve has no shortcut.** |
+| Keyboard | All functions keyboard-operable. Queue lists:<br>• `↑` / `↓` (aliases `J` / `K`, R-21) move;<br>• `Enter` opens preview;<br>• `Shift+Enter` opens workspace;<br>• `Esc` closes preview and returns focus to the row.<br>Case sections: `g` + `1–6` jumps (documented in a `?` shortcut sheet). No single-key shortcuts for consequential actions. **Approve has no shortcut.** |
 | Landmarks / names | `banner`, `navigation` (primary), `main`, `complementary` (inspector, context rail). Page title = `<h1>`. Sections `<h2>`. Status glyphs carry `aria-label` with the full meaning ("Asset condition: Critical"). Icon-only buttons have accessible names. |
-| Live regions | One polite region announces only Action-required changes and connection loss ("Connection lost at 14:32"). Telemetry is never announced. |
+| Live regions | Action-required changes and Live → Delayed / Stale are announced **politely**, once each; Disconnected is announced **assertively**, once (§15.3). Telemetry is never announced. Field validation errors are **not** announced through live regions (they're associated with their field). |
 | Tables | Semantic `<table>` with `<th scope>`, sortable headers as buttons with `aria-sort`, row headers for the asset or case. The data grid uses the ARIA grid pattern only where cell navigation is needed (Audit log). |
 | Charts | Summary sentence plus table alternative (§16) |
-| Forms and errors | Label above the field. Errors below the field, associated with `aria-describedby` and `aria-invalid`. Error summary at top for multi-field submission (inspection). No placeholder-as-label. |
+| Forms and errors | Label above the field. **Validate on blur after the user has changed a field, and on submit**; never on each keystroke (R-16). Errors below the field, associated with `aria-describedby` and `aria-invalid`. Two levels: **error** (blocks submit) and **warning** (allows submit, e.g. "rationale is short"). Error summary at top for multi-field submission (inspection). No placeholder-as-label. |
+| Inactive vs disabled (R-3) | A consequential control blocked by state (Approve before acknowledgement, any decision or submission while disconnected, Submit inspection while trusted submissions are off) is **inactive**: focusable, `aria-disabled="true"`, its reason linked via `aria-describedby`, and activating it moves focus to the blocker (the checkbox, the connection banner, the explanation). Plain `disabled` only for controls that are irrelevant in the current context. A **busy** (submitting) control is never `disabled`: it keeps its label plus progress text and `aria-busy`. |
+| Read-only | Bound identifiers, past decisions and recorded inspections are **read-only**: readable, selectable and copyable, never rendered as disabled inputs. |
 | Dialogs | Focus moves to the dialog title, is trapped inside and returns to the invoker. `Esc` closes non-destructive dialogs; destructive confirmations require explicit cancel or confirm. Never auto-focus the destructive button. |
 | Touch | Targets ≥ 44 px (48 px primary), ≥ 8 px apart. No gesture-only actions (no swipe-to-approve). |
 | Reduced motion | §11 |
@@ -959,22 +1094,24 @@ Families, not cosmetic variants. **Sizes:** sm = 28, md = 32, lg = 40, touch = 4
 - hover
 - active
 - focus-visible
-- disabled (with reason, where meaningful)
-- loading (where an action awaits the backend)
-- error (inputs)
+- **inactive** (blocked by state: focusable, `aria-disabled`, reason linked; R-3)
+- disabled (irrelevant in this context only)
+- **read-only** (perceivable and copyable, not editable)
+- busy (an action awaits the backend; never `disabled`)
+- error and warning (inputs)
 
 ### 18.1 Actions and inputs
 
 | Component | Variants | Sizes | Usage | Misuse |
 |---|---|---|---|---|
-| **Button** | `primary` (ink control) · `secondary` (`border.control` outline, text.primary) · `ghost` (text only, for low-emphasis row actions) · `danger` (critical fg text plus critical border; for reject and destructive admin) | sm, md, lg, touch | One primary per region. Label is a verb plus object ("Approve and dispatch", "Submit inspection"). | Coloured primary buttons; icon-only primary actions; two primaries in one region; "Approve" without object. A disabled button with no reason. |
+| **Button** | `primary` (ink control) · `secondary` (`border.control` outline, text.primary) · `ghost` (text only, for low-emphasis row actions) · `danger` (`action.danger.fg` text plus border; for Reject and escalate and destructive admin; R-24, provisional for Reject) | sm, md, lg, touch | **One primary per view** (R-5): when the decision surface is on screen, every other button (including the case-header CTA) is secondary. Label is a verb plus object ("Approve and dispatch", "Submit inspection"). | Coloured primary buttons; icon-only primary actions; two primaries in view; "Approve" without object; a blocked consequential button rendered `disabled` instead of inactive (R-3). |
 | **IconButton** | `ghost`, `secondary` | sm (28), md (32), touch (44) | Toolbar and row utilities (open in inspector, copy ID) with tooltip and accessible name | Consequential actions |
 | **Input / Textarea** | default, with prefix (unit or mono), read-only | md, touch | Labels above; unit suffix in `text.tertiary` | Placeholder-as-label |
 | **Select / Combobox** | single; combobox with search | md, touch | Combobox for ≥ 8 options (assets, actors) | Selects for ≤ 3 options (use segmented control) |
-| **Checkbox / Radio** | standard | 16 px box (pointer), 24 px (touch) in 44 px target | Acknowledgement of contradicting evidence (decision surface); filters | Checkbox as the confirmation of a consequential action without consequence text |
+| **Checkbox / Radio** | standard; radio group | 16 px box (pointer), 24 px (touch) in 44 px target | Acknowledgement of contradicting evidence (decision surface); filters; **any single choice inside a submitted form** (e.g. Pass / Flag / Fail, R-16) | Checkbox as the confirmation of a consequential action without consequence text |
 | **Switch** | standard | md, touch | Immediate, reversible settings (Preferences) | Anything that commits operational work |
 | **Tabs** | underline tabs (2 px ink indicator) | md | Switching views of the same object (Asset: Condition / Telemetry / Cases / Work) | Case workspace sections (those are a scrollable document with an index, not tabs) |
-| **Segmented control** | 2–4 options | sm, md | Filters with few states (Active / Resolved / All); chart table toggle | Navigation |
+| **Segmented control** | 2–4 options | sm, md | Choices that **apply immediately**: filters with few states (Active / Resolved / All); chart table toggle | Navigation; choices inside a submitted form (use a radio group, which may be *styled* as segments) |
 
 ### 18.2 Status and identity
 
@@ -985,7 +1122,7 @@ Families, not cosmetic variants. **Sizes:** sm = 28, md = 32, lg = 40, touch = 4
 | **Severity marker** | bars plus word | Case rows and header | Colouring by severity |
 | **Badge / tag** | `tag` (mono identifier, hairline frame, 2 px radius) · `count` (neutral number in a group header) · `simulated` (hatched border, uppercase) | Identifiers, counts, simulated label | Status pills; "New" badges that persist; counts on navigation items other than My actions |
 | **Provenance indicator** | mark (compact) · line (expanded) | Beside values and records | Giant badges on every datum |
-| **Freshness indicator** | live · stale · disconnected | Title blocks, values | Animated "live" dots |
+| **Freshness indicator** | live · delayed · stale · disconnected (§15.1) | Title blocks, values | Animated "live" dots |
 | **Actor mark** | human (initials in a 20 px square, 2 px radius, neutral) · system (Tabler `settings` gear) · analysis role (role abbreviation: DX, ENG, OPS, CRT, PLN) | Record rows, decisions, reviews | Avatars with photos or faces for analysis roles; chat-style bubbles |
 
 ### 18.3 Overlays and feedback
@@ -996,12 +1133,12 @@ Families, not cosmetic variants. **Sizes:** sm = 28, md = 32, lg = 40, touch = 4
 | **Popover** | anchored panel | Filter editors, identifier details (copy) | Decisions |
 | **Menu** | actions menu | Row overflow actions, account menu | Consequential actions hidden in a menu |
 | **Dialog** | `standard` · `destructive` (type-to-confirm for admin reset) | Destructive admin actions, unsaved-changes guard | **Approval** (the decision surface is in-page); routine confirmations |
-| **Drawer** | right (inspector on < 1440), bottom (phone filters) | Preview, filters on phone | Primary workflows |
-| **Toast** | neutral only, auto-dismiss 6 s (persist if it contains an action) | Confirmation of reversible actions ("Filter saved") | Errors, decisions, anything operational (those are inline or banners) |
+| **Drawer** | right **modal** drawer (preview / inspector below 1280, CH-2), bottom (phone filters) | Preview, filters on phone | Primary workflows; non-modal overlays that leave the page interactive behind them |
+| **Toast** | neutral only, auto-dismiss 6 s (persist if it contains an action); **pauses on hover and focus**; announced politely | Confirmation of reversible actions ("Filter saved") | Errors, outages, decisions, anything operational (those are inline or banners) |
 | **Inline alert** | info · warning · critical · decision (left 2 px rule plus glyph) | Request failures, refusals, conditions at a point of action | Decoration |
 | **Banner** | shell-level: disconnected, analysis unavailable, demo mode | Global states affecting everything | Marketing or tips |
 | **Empty state** | `clear` (nothing requires attention) · `none-yet` · `filtered` · `unavailable` (data / provider / backend) · `not-configured` · `not-permitted` | Every list and region (`08` §6) | Illustrations, cheerful copy |
-| **Skeleton** | text line, row, chart block (static) | < 2 s initial loads | Shimmer; skeleton for partial updates |
+| **Skeleton** | text line, row, chart block (static) | Initial loads: appears only after ~300–750 ms, then an elapsed-time line (R-19) | Shimmer; skeleton for partial updates; skeleton for data that exists but can't load (that is an error state) |
 
 ### 18.4 Navigation and structure
 
@@ -1019,7 +1156,7 @@ Families, not cosmetic variants. **Sizes:** sm = 28, md = 32, lg = 40, touch = 4
 
 | Component | Variants | Usage | Misuse |
 |---|---|---|---|
-| **Table** | compact / comfortable; sortable; selectable rows (single) | Comparable flat records | Heterogeneous items (use list rows) |
+| **Table** | compact / comfortable; sortable; selectable rows (single) | Comparable flat records. **The active sort is shown on load**, including a default multi-key sort ("Sorted by attention, then deadline"). One datum per column. Identifier cells `nowrap` with middle truncation and full value on hover / copy (R-13). Sticky header. Unknown values in words, never "—" (R-15). | Heterogeneous items (use list rows); whole-row status tinting |
 | **Data grid** | cell-navigable, column chooser | Audit log only | Elsewhere |
 | **List row** | one-line; two-line queue item (verb line plus context line) | Queues, updates | Card grids |
 | **Metric / value** | value plus unit plus provenance plus scope label | Reliability counts, outcome metrics | Without a scope or source; as a hero number |
@@ -1033,15 +1170,15 @@ Families, not cosmetic variants. **Sizes:** sm = 28, md = 32, lg = 40, touch = 4
 | Component | Content (fields from backend) | Notes |
 |---|---|---|
 | **Case row** | attention · asset (tag, name, condition) · stage · waiting on · severity or criticality · next step · deadline · updated | Compact by default |
-| **Asset row** | class glyph · tag · name · line · condition (plus risk score) · sparkline (risk) · active case (stage) · last reading time | Condition and case are separate cells |
+| **Asset row** | class glyph · tag · name · line · condition (plus risk score) · sparkline (risk) · active case (stage) · last reading (receipt time until X8, labelled "received") | Condition and case are separate cells |
 | **Work-order row** | WO number (mono) · asset · case link · technician · window · work state · verification state | Field status column reads "Not reported (G10)" |
 | **Evidence item** | provenance mark · kind · summary · source (system / capability) · observed at · quality (Good / Suspect / Missing) · cited by | Row in the evidence table. Expandable. Opens in inspector. |
-| **Hypothesis row** | outcome (Supported / Refuted / Unresolved / Open) · mechanism · failure mode · supporting n · contradicting n · confidence basis (text) · falsification tests | No percentage by default. The numeric `confidence` (uncalibrated: `calibrated = False`) appears only in the inspector with the label "uncalibrated model self-report". |
+| **Hypothesis row** | outcome (Supported / Refuted / Unresolved / Open) · mechanism · failure mode · supporting n · contradicting n · confidence basis (text) · falsification tests | **No model self-reported confidence value is displayed anywhere in V2**: not in rows, not in the inspector, not with a disclaimer (product-owner correction A). Backend `confidence` fields on hypotheses, diagnoses and assessments are uncalibrated (`calibrated = False`) and are omitted from every view, including raw payload views. Investigation UI relies on evidence, basis text, supporting / contradicting observations, specialist results and other truthful backend values. No replacement percentage is invented. A calibrated, explicitly defined metric would need new backend work and a design decision. |
 | **Review row** | role (Diagnostic / Engineering / Operations / Critic / Planner review) · verdict · key finding · challenges · run reference | No avatars; role abbreviations |
 | **Recommendation block** | finding (cause) → consequence → recommended work, with evidence links | §screens 7–8 |
 | **Approval panel (decision surface)** | §`08` screens 8 and 22 | The only approval UI |
-| **Inspection control** | Per check: **Pass / Flag / Fail** segmented (touch 48 px), note field, evidence references; submit | Today the backend can record only *confirmed* checks (G1, plus new G13 in `08` §1) |
-| **Next-step block** | Verb, owner, deadline, primary action or "nothing to do: waiting on …" | Exactly one per case |
+| **Inspection control** | Per check: **Pass / Flag / Fail** as a labelled **radio group** (may be styled as 48 px segments; R-16), note field, evidence references; submit | Today the backend can record only *confirmed* checks (G1, plus new G13 in `08` §1). Roll-up rule in G13. |
+| **Next-step block** | Verb, owner, deadline, action or "nothing to do: waiting on …" | Exactly one per case. Tint plus 2 px ink left rule, not a frame (R-11). Its action is secondary while the decision surface is on screen (R-5). |
 
 ---
 
@@ -1078,7 +1215,7 @@ Families, not cosmetic variants. **Sizes:** sm = 28, md = 32, lg = 40, touch = 4
 | Dispatch failed | **Work order not confirmed.** {reason}. Nothing was dispatched (or: dispatch state unknown). Waiting on the approver. Retry isn't available in this version (G3). | — |
 | Verification success | **Recovery verified.** Last 3 risk scores after the work ({values}) are below the 0.45 warning band; baseline {value}. Case closed. | — |
 | Verification failure | **Not recovered.** {n} scores observed since {time}; none below 0.45. The case returned to investigation. / **Regressed.** Risk rose above {baseline} after the work. The case is escalated. | — |
-| Inconclusive | **Verification inconclusive so far.** {n} of the required samples observed. Observation continues. | — |
+| Inconclusive | **Verification inconclusive so far.** Observing since {observation_start}. Observation continues. (A sample count is shown only once X8 makes it truthful.) | — |
 
 **Never:** exclamation marks, "Oops", "Something went wrong", "AI-powered", "smart", "Our AI
 thinks", emoji, "Resolve" meaning acknowledge, "Done" meaning verified, percentages for model
@@ -1119,7 +1256,7 @@ decisions.
 | Element | Tablet (768–1279) | Phone (< 768) |
 |---|---|---|
 | Nav rail | Collapsed 56 px icons with tooltips | Bottom bar: My actions · Cases · Assets · More |
-| Inspector | Overlay drawer | Full-screen sheet with back |
+| Preview / inspector | Modal drawer (scrim, focus trap; CH-2) | Full-screen sheet with back (one pane at a time) |
 | Case context rail | Folds into Summary | Next-step block at top |
 | Case sections | Same document | Sequential accordion; one open at a time |
 | Tables | Fewer columns (priority order per screen) | Two-line list rows |
@@ -1210,8 +1347,8 @@ The brief's §51 list, with the system mechanism that enforces each item:
 | # | Earlier position | Phase 3 decision | Reason |
 |---|---|---|---|
 | R1 | Phase 2.5 §12: five status hues incl. "executing" blue | **Four hues**; executing / in work is neutral | Blue and violet collapse under CVD (ΔE 0.6–1.9); in-work is a process state, not an alarm |
-| R2 | Phase 2.5 §12: light warning `#B36200` ("darken for page") | **`#7F5C00`** | 5.54:1 on Paper; better critical separation under deutan |
-| R3 | Phase 2.5 §11: light page `#F4F5F4`, white panels | Shell = **Paper `#F3F4F1`**; working area = full-bleed sheet `#FAFAF8`; white only for inputs and overlays | Avoids "white cards on grey"; makes the drawing-sheet idea literal; uses the brand Paper exactly |
+| R2 | Phase 2.5 §12: light warning `#B36200` ("darken for page") | **`#7F5C00`** | 5.54:1 on brand Paper (5.36:1 on the reconciled light shell `#F1F0EC`); better critical separation under deutan |
+| R3 | Phase 2.5 §11: light page `#F4F5F4`, white panels | Shell on a warm paper tone; working area = full-bleed sheet `#FAFAF8`; white only for inputs and overlays. *Reconciled after Phase 3.1:* shell `#F1F0EC` (R-9 starting value), brand Paper `#F3F4F1` unchanged. | Avoids "white cards on grey"; makes the drawing-sheet idea literal; the 1.056 step of brand Paper on the sheet was too low (`09 §16.6`) |
 | R4 | Phase 2.5 §15: validated categorical palette for comparisons | **No categorical palette in V2** | Overlaps status hues; comparisons use focus + context |
 | R5 | Phase 1 §9: global search | **No global search**; local filters plus asset jump | 8 assets, ≤ 8 projected cases; revisit after G5 |
 | R6 | Phase 1 §15: "Act now", "Needs you", "Incident"; Phase 1 stage "Execution failed", "Needs inspection" | "Action required", "My actions", "Case" (Phases 2 / 2.5); **"Dispatch failed"**, **"Awaiting inspection"** | Accuracy: execution is dispatch to the CMMS adapter; consistent stage grammar |
@@ -1222,7 +1359,26 @@ The brief's §51 list, with the system mechanism that enforces each item:
 | R11 | Phase 2.5 §9: Plex condensed width for headers | Width axis **not used in product UI** | Legibility over character at UI sizes (Phase 2.5 §21 rule 2) |
 | R12 | Phase 1 "Performance", Phase 2 "Reliability (conditional)" | **Reliability** (product-owner nav, Phase 2.5) | Accepted IA |
 
-No earlier document was edited. These decisions supersede the earlier positions for Phase 4.
+**Phase 3.1 reconciliation (product-owner reviewed; record in `09 §22`):**
+
+| # | Phase 3 position | Reconciled baseline | Where |
+|---|---|---|---|
+| CH-1 | Violet `#6B47CC` / `#A98BF5`; violet top rule on the decision surface | Option A: `#674EB0` / `#AA95E8`, glyph plus role word only, Ink decision rule, adjacency bans, recognition test with Ink fallback | §4.3, §9.2–9.3 |
+| CH-2 | Preview docks ≥ 1440; 1024–1439 "overlay, no scrim" | Docked ≈ 380 px ≥ 1280; modal drawer < 1280; one pane on mobile (prototype hypothesis) | §8, §18.3, `08 §4` |
+| R-1, R-18, R-19 | Live < 10 s / Stale > 3×; skeleton 2 s | Live / Delayed / Stale / Disconnected; message hierarchy; skeleton timing | §15 |
+| R-2, R-17 | 90-sample window; dashed forecast line; in-plot event labels | Axis ends at "now", stale region, gap rule, suspect markers, chart states, bands, event lane | §4.6, §16 |
+| R-3, R-16 | `disabled` consequential controls; form rules thin | Inactive vs disabled vs read-only; validation timing and levels; radio group; toasts | §17, §18 |
+| R-4 | 10 / 12 px status shapes; status overlays | ≥ 14 px (16 px band and title block); overlays dropped | §7.3, §10 |
+| R-5, R-11 | Header CTA primary; next-step block framed | One primary per view; tint plus ink left rule; one framed object per region | §9.3, §18 |
+| R-6, R-7, R-8 | Up to 9 title-block cells; uppercase eyebrows widely; rules unbudgeted | ≤ 6 cells; uppercase only in title-block and rail-group labels; rule budget | §6.2, §9.4, §5.2 |
+| R-9, R-25 | Light shell `#F3F4F1`; dark sheet `#161A1C`, text `#E8ECEE` | `#F1F0EC`; `#1A1F21` and `#DDE2E4` (Phase 4A starting values) | §4.2 |
+| R-13, R-14, R-15, R-22 | — | Identifier truncation; aggregate rule and glyph budget; words, not "—"; stage track not a stepper | §12, §13, §18 |
+| R-24 | Danger button used the critical status colour | Separate `action.danger` token; Reject's danger emphasis provisional | §4.2, §4.3 |
+| PO-A | Uncalibrated confidence shown in the inspector with a disclaimer | Never displayed anywhere in V2 | §18.6 |
+| PO-B | Flood control collapsed items | Presentation-only, always expandable; not implemented without safe expansion | §12.5 |
+
+No earlier phase document (00–06) was edited. These decisions supersede the earlier positions for
+Phase 4.
 
 ---
 
@@ -1235,9 +1391,9 @@ No earlier document was edited. These decisions supersede the earlier positions 
 | Does "industrial" become dark sci-fi? | No. Industrial is expressed as tags, title blocks, units and ISA-101 restraint. Theme follows the OS. |
 | Generic AI SaaS? | No. No AI motifs or assistant surface. Analysis is typed records and roles. |
 | Generic component-library dashboard? | No. Title blocks, ruled sections, the stage track, ink controls, provenance marks and instrument tags are not library defaults. Radius ≤ 4 and the absence of cards remove the default look. |
-| Card-heavy? | No. Five framed object types only (§9.3). |
+| Card-heavy? | No. Four framed object types only, at most one per viewport region (§9.3). |
 | Excessively rounded? | No. Maximum 4 px. No pills. |
-| Operational colour overused? | No. Four hues with one meaning each, a per-row limit of two hued glyphs and a ~20 % screen budget. Attention, severity, provenance and in-work are neutral. |
+| Operational colour overused? | No. Four hues with one meaning each, a per-row limit of two hued glyphs and a ~20 % screen budget. Attention, severity, provenance and in-work are neutral. Violet is confined to the person glyph and role word. |
 | Light mode intentionally designed? | Yes. Its own surface logic (Paper desk, sheet, white only for inputs and overlays), its own status steps and rule weights. |
 | Dark mode restrained? | Yes. Graphite surfaces, lighter-is-higher, bright-but-controlled status, no glow. |
 | Useful information removed to look clean? | No. Compact density for comparison surfaces; title blocks carry stage, waiting-on, deadline and revision; identifiers stay visible on the decision surface. |
@@ -1246,17 +1402,13 @@ No earlier document was edited. These decisions supersede the earlier positions 
 
 ---
 
-## 26. Open items for product-owner approval
+## 26. Status of open items
 
-1. **R1:** remove the fifth (blue) status hue.
-2. **R3:** light-theme surface logic (Paper shell plus full-bleed sheet).
-3. **Theme default follows the OS** (no product-preferred theme).
-4. **R5:** no global search in V2.
-5. **R7:** waiting-on label "Analysis (automated)" instead of "Agent".
-6. **R6:** stage names "Awaiting inspection" and "Dispatch failed".
-7. **G13** (structured inspection result) and **G14** (attachments) as new backend gaps (`08` §1).
-8. Phone approval permitted under the screen-22 rules (Phase 2 Q2 was answered "only if legible";
-   this is the concrete rule set).
-9. Projection exposures X1–X5 (`08` §1): approve as small backend changes for Phase 6, or accept
-   the per-case fetch fallbacks.
-10. Favicon placeholder (neutral Ink square) until the logo and name decision.
+The product owner approved Phase 3 in principle and reviewed Phase 3.1 (`09 §22`).
+
+| Item | Status |
+|---|---|
+| R1 four hues; R3 sheet logic; OS-driven theme; R5 no global search; R7 "Analysis (automated)"; R6 stage names; phone approval under the screen-22 rules; favicon placeholder | Accepted with Phase 3 |
+| G13 (structured inspection result) and G14 (attachments) | Accepted as proposed backend gaps (Phase 6) |
+| Projection exposures X1–X8 (`08 §1.2`) | Phase 6 backend decisions. Phase 4 uses the documented fallbacks. |
+| CH-1 violet, CH-2 preview, R-9 / R-25 starting values, Reject's danger emphasis | **Phase 4A gate items:** confirmed or revised after the screenshot / usability review (`08 §11`) |

@@ -1,10 +1,15 @@
 # OPERON V2: Visual reference study and design validation (Phase 3.1)
 
-Status: research and validation only. Phase 3 is not redone, and
+Status: research and validation only (historical record). Phase 3 is not redone, and
 [`07-product-design-system.md`](07-product-design-system.md) and
-[`08-screen-specifications.md`](08-screen-specifications.md) (commit `84b6399`) are **not
-edited**. Every proposed change is listed in §19 for review. No frontend, token or route work
-was done, and Phase 4 has not started.
+[`08-screen-specifications.md`](08-screen-specifications.md) (commit `84b6399`) were **not
+edited** by this study. Every proposed change is listed in §19 for review. No frontend, token or
+route work was done, and Phase 4 has not started.
+
+> **Post-review note.** The product owner reviewed this study. The accepted decisions are recorded
+> in **§22** and are now incorporated into `07` and `08`, which are the governing implementation
+> baseline. §1–§21 below are kept unchanged as the original research record, including its access
+> limits.
 
 **Evidence labels:**
 
@@ -676,3 +681,58 @@ Fluent Copilot.
 
 **RENDER:** scratch specimen of the Phase 3 tokens and the §19 refinements at 1440 px, light and
 dark (not committed).
+
+---
+
+## 22. Product-owner resolution (post-review addendum)
+
+Added after review. This section does **not** alter the research above; it records what was
+decided and where it now lives.
+
+**Accepted and incorporated into `07` / `08`:**
+
+| Item | Resolution | Now specified in |
+|---|---|---|
+| R-1 – R-8 | Approved as written | `07 §15`, `§16`, `§17`, `§10`, `§9`, `§6.2`, `§5.2`; `08` case template, screens 8, 21–23 |
+| R-9 | Light `surface.base` `#F1F0EC` as the **Phase 4A starting value**, subject to the screenshot gate. Brand Paper `#F3F4F1` is unchanged. | `07 §4.2`, `§5.2` |
+| R-10 – R-23 | Approved as written | `07 §9`, `§12`, `§13`, `§16`, `§17`, `§18`; `08 §4`, `§6`, `§8`, screens 3, 8, 21, 22 |
+| R-24 | Separate `action.danger` token approved. Danger-red is **not** established as Reject's permanent treatment; it is re-evaluated once Request changes and escalation resolution exist (G4, G2). | `07 §4.2`, `§4.3` rule 5, `§18.1` |
+| R-25 | Dark `surface.sheet` `#1A1F21` and `text.primary` `#DDE2E4` as **Phase 4A starting values**; hover / selected / raised / overlay re-derived and re-measured | `07 §4.2` |
+| CH-1 | **Option A** for Phase 4A. Decision violet `#674EB0` / `#AA95E8`; only the person / action glyph and the short role word; the decision-surface rule is Ink; never framing model output; never for AI, automation, loading, onboarding or empty states; no gradients or glow. Prototype decision with a recognition test; fallback is neutral Ink. | `07 §4.3`, `§9.2–9.3`; `08` screen 8, §11.3 |
+| CH-2 | **Phase 4A prototype hypothesis:** docked preview of about 380 px at ≥ 1280; modal drawer below 1280; one pane on mobile. No ambiguous non-modal overlay state. To be confirmed after the rendered review. | `07 §8`, `§18.3`; `08 §4`, §11.3 |
+
+**Additional product-owner corrections:**
+
+| Correction | Resolution | Now specified in |
+|---|---|---|
+| A. Uncalibrated model confidence | Never displayed in V2, including the inspector and raw payload views; no replacement percentage | `07 §2`, `§18.6`; `08 §4`, screen 5 |
+| B. Burst / flood grouping | Presentation-only, always expandable, never hides asset, timestamp, severity, evidence, state or record; not implemented where safe expansion isn't possible (today: not in Phase 4A) | `07 §12.5`; `08` screen 2, §8, §9 |
+| C. Backend truth | AVAILABLE / X / G distinctions preserved; no illustrative value becomes application data | `08 §1`, §11.3 |
+
+**Found during reconciliation:**
+- R-1 and R-2 assumed server timestamps. The stream carries only tick indices and simulated plant
+  minutes.
+- This is recorded as projection exposure **X8**, with an honest fallback: receipt-time freshness,
+  tick-based axes, and no post-start sample count (`07 §15.1`, `§16`; `08 §1.2`, screen 10).
+- No other G / X definition changed, except that G13 gained the approved roll-up rule (R-23).
+
+**Supplementary reference pack (received after this study).** `OPERON-V2-Phase3-reference-pack`
+(6 October 2026) uses its own evidence labels: VIEWED, PAGE, DOC, INDEX. Only the VIEWED items are
+first-hand visual evidence:
+- Refero Cycle dashboard (R01);
+- Refero Vercel usage (R02);
+- Mobbin Linear inbox (R05);
+- Mobbin Linear issue detail (R09).
+
+They corroborate decisions already in the baseline:
+
+| Principle | Reference | Baseline it supports |
+|---|---|---|
+| Stable left rail with a central work area | R01 | Shell (`08 §3`) |
+| Scope and time-range controls next to unit-labelled charts | R02 | `07 §16` "scope and time range sit next to the chart title" |
+| Compact list, filter at the list head, readable timestamps | R05 | My actions (`08` screen 3), **without** read / unread state (G7 / G8) |
+| A central document with a narrow properties rail | R09 | Case workspace with context rail (`08` case template) |
+
+Its PAGE, DOC and INDEX entries are references, not visual evidence. Nothing in the pack reopens a
+decision, and no reference's visual brand was imported (no blue charts, gradient illustrations,
+activity avatars, command overlays or indigo actions).
