@@ -16,9 +16,12 @@ export function useEngine() {
     const connect = () => {
       ws = new WebSocket(wsURL());
       wsRef.current = ws;
+      const socket = ws;
       ws.onopen = () => setState((p) => ({ ...p, connected: true }));
-      ws.onclose = () => { setState((p) => ({ ...p, connected: false })); if (!stop) setTimeout(connect, 1200); };
-      ws.onmessage = (ev) => { const msg = JSON.parse(ev.data); setState((prev) => reduce(prev, msg)); };
+      // Only the current socket may report a disconnect: a superseded socket's late close event
+      // (e.g. React StrictMode's dev double effect) must not mark a live connection as lost.
+      ws.onclose = () => { if (wsRef.current !== socket) return; setState((p) => ({ ...p, connected: false })); if (!stop) setTimeout(connect, 1200); };
+      ws.onmessage = (ev) => { if (wsRef.current !== socket) return; const msg = JSON.parse(ev.data); setState((prev) => reduce(prev, msg)); };
     };
     connect();
     return () => { stop = true; if (ws) ws.close(); };
