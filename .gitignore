@@ -51,3 +51,8 @@ service-account*.json
 .idea/
 .DS_Store
 Thumbs.db
+
+# ---- Frontend test output (Phase 4A) ----
+frontend/test-results/
+frontend/playwright-report/
+frontend/test/.out/

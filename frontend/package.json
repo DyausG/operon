@@ -9,19 +9,27 @@
     "build": "vite build",
     "preview": "vite preview",
     "test:smoke": "node test/smoke.mjs",
+    "test:unit": "vitest run",
+    "test:e2e": "playwright test -c test/e2e/playwright.config.js",
+    "capture:phase4a": "node test/visual/capture-phase4a.mjs",
     "fixtures": "python3 test/make_fixtures.py"
   },
   "dependencies": {
     "@fontsource/ibm-plex-mono": "^5.3.0",
     "@fontsource/ibm-plex-sans": "^5.3.0",
     "@fontsource/ibm-plex-sans-condensed": "^5.3.0",
+    "@ibm/plex-mono": "2.5.0",
+    "@ibm/plex-sans-variable": "0.2.0",
+    "@tabler/icons-react": "3.49.0",
     "framer-motion": "^11.3.19",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.30.6"
   },
   "devDependencies": {
+    "@playwright/test": "1.56.1",
     "@vitejs/plugin-react": "^4.3.1",
-    "vite": "^5.4.2"
+    "vite": "^5.4.2",
+    "vitest": "2.1.9"
   }
 }

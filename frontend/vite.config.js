@@ -13,4 +13,7 @@ export default defineConfig({
       "/ws": { target: "ws://127.0.0.1:8000", ws: true },
     },
   },
+  // Vitest (Phase 4A): pure derivations, token contrast and server-rendered V2 routes over the
+  // engine fixture frames. Browser interaction tests live in test/e2e (Playwright).
+  test: { include: ["src/**/*.test.{js,jsx}"], environment: "node" },
 });
