@@ -1,0 +1,20 @@
+%% OPERON V2 — work state vs verification state (Phase 3, 07 §12.2; 08 screens 9–11).
+%% "Work order committed" is never "verified". Field completion is not a backend fact (G10).
+stateDiagram-v2
+  direction LR
+  state "Work state" as WS {
+    Planned --> AwaitingDecision: requirement issued
+    AwaitingDecision --> Approved: APPROVE (exact hash + revision)
+    Approved --> Dispatching: execution claim
+    Dispatching --> Committed: receipt CONFIRMED (work order, parts, labour, notification recorded)
+    Dispatching --> DispatchFailed: receipt FAILED / UNKNOWN / stale claim
+    Committed --> FieldStatusNotReported: field progress (G10)
+  }
+  state "Verification state" as VS {
+    NotStarted --> Observing: observation_start (after receipt)
+    Observing --> Inconclusive: samples below requirement
+    Inconclusive --> Observing
+    Observing --> VerifiedRecovery: last 3 scores < 0.45
+    Observing --> NotRecovered: no healthy tail (→ Investigating)
+    Observing --> Regressed: risk above baseline (→ Escalated)
+  }

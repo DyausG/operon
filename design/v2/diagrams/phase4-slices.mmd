@@ -1,0 +1,17 @@
+%% OPERON V2 — Phase 4 implementation slices (08 §9). Branches off overhaul/v2; merge in order.
+flowchart LR
+  F["1 v2/design-foundations"] --> S["2 v2/app-shell"]
+  F --> M["3 v2/status-model"]
+  S --> C["4 v2/case-workspace"]
+  M --> C
+  C --> O["5 v2/overview-actions-cases"]
+  M --> A["6 v2/assets-work"]
+  C --> A
+  S --> R["7 v2/reliability-audit-system"]
+  M --> R
+  C --> P["8 v2/mobile-operational"]
+  O --> P
+  O --> X["9 v2/accessibility-polish"]
+  A --> X
+  R --> X
+  P --> X

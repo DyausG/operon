@@ -1,0 +1,25 @@
+%% OPERON V2 — user-facing case lifecycle (Phase 3, 07 §13). Internal phases in brackets.
+%% Source of truth for transitions: core/reliability/state.py, lifecycle.py, outcome.py.
+%% Dashed edges = transitions the backend graph allows but no endpoint/caller provides (G2, G3, G4).
+flowchart LR
+  D["1 Detected<br/>[OPEN]<br/>waiting: Analysis"] --> I["2 Investigating<br/>[INVESTIGATING]<br/>waiting: Analysis"]
+  I <--> AI["2a Awaiting inspection<br/>[AWAITING_EVIDENCE]<br/>waiting: Technician (G1)"]
+  I --> Dx["3 Diagnosed<br/>[DIAGNOSIS_VALIDATED]<br/>waiting: Approver – resources (G1)"]
+  Dx --> P["4 Planning<br/>[PLANNING, INTERVENTION_VALIDATED]<br/>waiting: Analysis"]
+  P --> HP{{"hold point<br/>human decision"}}
+  HP --> AD["5 Awaiting decision<br/>[AWAITING_APPROVAL]<br/>waiting: Approver · expires min(24 h, window)"]
+  AD -- "Approve and dispatch" --> W["6 In work<br/>[READY, EXECUTING]<br/>waiting: Dispatch (system)"]
+  W -- "receipt CONFIRMED" --> V["7 Verifying<br/>[OBSERVING]<br/>waiting: Verification (system)"]
+  V -- "VERIFIED_RECOVERY" --> C["8 Closed<br/>[CLOSED]"]
+  V -- "NOT_RECOVERED" --> I
+  V -- "INCONCLUSIVE (stays)" --> V
+  AD -- "Reject and escalate" --> E["⚠ Escalated<br/>[ESCALATED]<br/>waiting: Reliability engineer"]
+  V -- "REGRESSED" --> E
+  I -- "run failed / blocked" --> E
+  W -- "receipt FAILED / UNKNOWN" --> F["⚠ Dispatch failed<br/>[EXECUTION_FAILED]<br/>waiting: Approver"]
+  AD -. "Request changes (G4)" .-> P
+  AD -. "Reject → reinvestigate (G4)" .-> I
+  AD -. "expired → renew (G11)" .-> AD
+  E -. "resume (G2)" .-> I
+  E -. "cancel (G2)" .-> X["⊘ Cancelled<br/>[CANCELLED]<br/>unreachable today"]
+  F -. "retry (G3)" .-> W
