@@ -11,17 +11,25 @@ export const INCIDENT = APPROVAL.alerts[0].incident_id;
 export const REJECT_FRAMES = load("demo-frames-reject.json");
 export const MATERIAL_FRAME = load("demo-frames-material.json")[0];
 export const BLOCKING_FRAME = load("demo-frames-blocking.json")[0];
+// F4.1 exception frames (each driven through a labelled test seam in make_fixtures.py):
+// [escalated after a rejection, resumed, cancelled]; suspended analysis; expired approval;
+// [definitive dispatch failure, READY after retry_execution].
+export const RECOVERY_FRAMES = load("demo-frames-recovery.json");
+export const SUSPENDED_FRAME = load("demo-frames-suspended.json")[0];
+export const EXPIRED_FRAME = load("demo-frames-expired.json")[0];
+export const DISPATCH_FRAMES = load("demo-frames-dispatch.json");
 export const incidentOf = (frame) => frame.alerts[0].incident_id;
+export const lifecycleOf = (frame) => frame.alerts[0].lifecycle;
 const NOW = fixtureNow(FRAMES);
 
-const SESSION = { email: "reviewer@example.com", name: "Reviewer", role: "maintenance_approver", remember: true, signedInAt: "2026-09-15T18:40:00Z", mode: "demo" };
+export const SESSION = { email: "reviewer@example.com", name: "Reviewer", role: "maintenance_approver", remember: true, signedInAt: "2026-09-15T18:40:00Z", mode: "demo" };
 
-export async function boot(page, { frame = APPROVAL, theme = "light", signedIn = true } = {}) {
+export async function boot(page, { frame = APPROVAL, theme = "light", signedIn = true, session = SESSION } = {}) {
   await page.clock.install({ time: NOW });
-  await page.addInitScript(([session, t]) => {
-    if (session) localStorage.setItem("operon.session", JSON.stringify(session));
+  await page.addInitScript(([s, t]) => {
+    if (s) localStorage.setItem("operon.session", JSON.stringify(s));
     if (!localStorage.getItem("operon.v2.theme")) localStorage.setItem("operon.v2.theme", JSON.stringify(t));
-  }, [signedIn ? SESSION : null, theme]);
+  }, [signedIn ? session : null, theme]);
   const sockets = [];
   let refuse = false;
   await page.routeWebSocket(/\/ws$/, (ws) => {

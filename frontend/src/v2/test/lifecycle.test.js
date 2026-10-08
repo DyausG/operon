@@ -2,7 +2,7 @@
 // in core/reliability/lifecycle.py and server/main.py), action gating, stage line, navigator hash
 // routing, safe refusals and the isolated F1.2 work-boundary wording. Pure functions, small inputs.
 import { describe, expect, it } from "vitest";
-import { actionGate, approvalStateOf, availableCommands, sectionForHash, sectionStates, stageLineOf, suspensionOf } from "../model/lifecycle.js";
+import { actionGate, approvalStateOf, approverRoleBlock, availableCommands, commandRequest, revisionOf, sectionForHash, sectionStates, stageLineOf, suspensionOf } from "../model/lifecycle.js";
 import { responseFor, waitingOn } from "../model/status.js";
 import { cleanServerText, refusalFrom, serverReason } from "../model/refusal.js";
 import { fieldStatus, workFacts, VERIFICATION_BASIS } from "../model/workBoundary.js";
@@ -125,6 +125,38 @@ describe("action gate", () => {
   it("never implies a verified identity", () => {
     expect(actionGate({ environment: "SANDBOX", sessionRole: "reliability_engineer", connected: true }).recordedAs).toMatch(/unauthenticated/);
     expect(actionGate({ environment: "UNSPECIFIED", sessionRole: "reliability_engineer", connected: true }).recordedAs).toMatch(/not verified/);
+  });
+  it("approval decisions need a required role (lifecycle.decide_approval refuses others, rejection too)", () => {
+    const req = { required_roles: ["maintenance_approver"] };
+    expect(approverRoleBlock(req, "maintenance_approver")).toBeNull();
+    expect(approverRoleBlock(req, "reliability_engineer")).toBe("This approval needs the maintenance approver role; your declared role is reliability engineer. The backend refuses decisions from other roles.");
+    expect(approverRoleBlock({ required_roles: [] }, "observer")).toBeNull(); // not reported: the backend decides
+  });
+});
+
+describe("command requests", () => {
+  const bound = { revision: 33, interventionId: "iv-1", interventionHash: "h-1" };
+  it("a lifecycle command names the reviewed revision, a declared actor and a trimmed reason, never a kind", () => {
+    const r = commandRequest("INC/7", { command: "renew_approval", endpoint: "command" }, { actorId: "a@example.com", actorRole: "maintenance_approver", rationale: "  window still open  ", bound });
+    expect(r).toEqual({ url: "/api/incidents/INC%2F7/commands/renew_approval",
+      body: { actor_id: "a@example.com", actor_role: "maintenance_approver", expected_revision: 33, rationale: "window still open" } });
+    expect(r.body).not.toHaveProperty("actor_kind");
+  });
+  it("dispatch sends the exact approved intent and nothing else", () => {
+    expect(commandRequest("i-1", { command: "execute", endpoint: "execute" }, { actorId: "a", actorRole: "r", rationale: "x", bound }))
+      .toEqual({ url: "/api/incidents/i-1/execute", body: { intervention_id: "iv-1", intervention_hash: "h-1" } });
+  });
+  it("the revision is the incident revision the backend checks", () => {
+    expect(revisionOf({ lifecycle: { revision: 40, context_revision: 40 } })).toBe(40);
+    expect(revisionOf({ lifecycle: { context_revision: 12 } })).toBe(12);
+    expect(revisionOf({})).toBeNull();
+  });
+  it("after a dispatch, cancel and escalate say what they don't undo", () => {
+    const observing = alert({ phase: "OBSERVING", read_model: { events: [], requirements: [], execution_receipts: [{ status: "CONFIRMED" }] } });
+    const c = Object.fromEntries(availableCommands(observing, { now: NOW }).map((x) => [x.command, x.consequence]));
+    expect(c.cancel).toContain("A dispatched work order isn’t withdrawn by cancelling the case.");
+    expect(c.escalate).toContain("resuming returns the case to Investigating, not to verification");
+    expect(availableCommands(alert({ phase: "PLANNING" }), { now: NOW }).find((x) => x.command === "cancel").consequence).not.toContain("withdrawn");
   });
 });
 

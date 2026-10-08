@@ -9,6 +9,7 @@ import { IconSquareCheck, IconSquareX } from "@tabler/icons-react";
 import { Shape } from "../components/glyphs.jsx";
 import { Button, Checkbox, InlineAlert, Ledger, TextArea } from "../components/ui.jsx";
 import { assessment, contradictingEvidence, criticChallenges, latestRun } from "../model/cases.js";
+import { actionGate, approverRoleBlock } from "../model/lifecycle.js";
 import { clock, when, dayClock, duration, middle, number, score, zoneAbbr } from "../model/format.js";
 
 const bindingOf = (c) => ({
@@ -55,7 +56,7 @@ function reviewsLine(rm) {
   return parts.length ? `${parts.join(" · ")} (advisory, run ${String(run.run_id).slice(0, 8)}${scope})` : "Reviews recorded without a verdict.";
 }
 
-export function DecisionSurface({ c, session, roleLabel, connected, now, trigger, onDecide }) {
+export function DecisionSurface({ c, session, roleId, roleLabel, connected, now, trigger, onDecide }) {
   const rm = c.rm || {};
   const req = c.requirement;
   const current = bindingOf(c);
@@ -85,9 +86,13 @@ export function DecisionSurface({ c, session, roleLabel, connected, now, trigger
   const iv = rm.intervention || {};
   const hasEstimates = [iv.estimated_cost, iv.estimated_downtime_minutes, iv.estimated_avoided_loss].some(Number.isFinite);
 
-  // Inactive reasons in priority order (R-3). Each moves focus to its blocker.
+  // Inactive reasons in priority order (R-3). Each moves focus to its blocker. Environment and role
+  // blocks (the backend refuses both) apply to rejection as well as approval.
+  const gate = actionGate({ environment: c.environment, sessionRole: roleId, connected });
+  const hardBlock = !gate.allowed ? gate.reason : approverRoleBlock(req, roleId);
   let block = null;
-  if (!connected) block = { text: "Reconnect to make decisions.", focus: () => document.getElementById("wb-connection-banner")?.focus() };
+  if (hardBlock) block = { text: hardBlock, focus: () => {} };
+  else if (!connected) block = { text: "Reconnect to make decisions.", focus: () => document.getElementById("wb-connection-banner")?.focus() };
   else if (changed) block = { text: "The case changed since you opened it. Review the change first.", focus: () => document.getElementById(changeId)?.focus() };
   else if (needsAck && !ack) block = { text: "Confirm that you have reviewed the contradicting evidence first.", focus: () => document.getElementById(ackId)?.focus() };
 
@@ -164,7 +169,7 @@ export function DecisionSurface({ c, session, roleLabel, connected, now, trigger
             <span className="wb-secondary">Any change to the case or plan voids this approval.</span>
           </>
         ) },
-        { label: "Decider", value: <>Required role: {(req?.required_roles || []).map((r) => r.replace(/_/g, " ")).join(", ") || "not reported"} · recorded as: {session?.name || "declared operator"}, {roleLabel.toLowerCase()} <span className="wb-secondary">(declared, not verified: G8)</span></> },
+        { label: "Decider", value: <>Required role: {(req?.required_roles || []).map((r) => r.replace(/_/g, " ")).join(", ") || "not reported"} · recorded as: {session?.name || "declared operator"}, {roleLabel.toLowerCase()} <span className="wb-secondary">({c.environment === "SANDBOX" ? "sandbox identity, unauthenticated" : "declared, not verified: G8"})</span></> },
       ]} />
 
       <details className="wb-details wb-decision-more">
@@ -206,7 +211,7 @@ export function DecisionSurface({ c, session, roleLabel, connected, now, trigger
           busy={busy === "APPROVE"} busyLabel="Recording approval…" onClick={() => decide("APPROVE")}>
           Approve and dispatch
         </Button>
-        <Button variant="danger" size="lg" icon={IconSquareX} inactive={!connected} reasonId={reasonId} onBlocked={block?.focus}
+        <Button variant="danger" size="lg" icon={IconSquareX} inactive={!connected || !!hardBlock} reasonId={reasonId} onBlocked={block?.focus}
           aria-expanded={rejectOpen} onClick={() => setRejectOpen((o) => !o)}>
           Reject and return to planning…
         </Button>
@@ -216,7 +221,7 @@ export function DecisionSurface({ c, session, roleLabel, connected, now, trigger
         <div className="wb-reject" role="group" aria-label="Confirm rejection">
           <p>Rejecting withdraws this plan and returns the case to planning; nothing is dispatched. A reason is required and is recorded with your declared identity.</p>
           <div className="wb-reject-controls">
-            <Button variant="danger" size="md" inactive={!connected} reasonId={reasonId} onBlocked={block?.focus}
+            <Button variant="danger" size="md" inactive={!connected || !!hardBlock} reasonId={reasonId} onBlocked={block?.focus}
               busy={busy === "REJECT"} busyLabel="Recording rejection…" onClick={() => decide("REJECT")}>Confirm rejection</Button>
             <Button variant="secondary" size="md" onClick={() => setRejectOpen(false)}>Cancel</Button>
           </div>

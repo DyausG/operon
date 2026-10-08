@@ -18,6 +18,7 @@ import { duration, score, when, zoneAbbr } from "../model/format.js";
 import { WB_ROUTES } from "../shell/routes.js";
 import { CaseNow } from "./CaseNow.jsx";
 import { EvidenceSection, InvestigationSection, PlanSection, RecordSection, WorkSection } from "./CaseSections.jsx";
+import { RecoveryActions } from "./RecoveryActions.jsx";
 
 function NavMarker({ state }) {
   if (state === "action") return <Shape name="decision" size={14} label="Action required" tone="decision" />;
@@ -102,7 +103,8 @@ export function CaseWorkspace() {
   else if (section === "record") content = <RecordSection c={c} />;
   else {
     content = <CaseNow c={c} now={now} trigger={trigger}
-      decide={{ session, roleLabel: role.label, connected, onDecide }} />;
+      decide={{ session, roleId: role.id, roleLabel: role.label, connected, onDecide }}
+      actions={<RecoveryActions key={c.incidentId} c={c} session={session} role={role} connected={connected} now={now} decisionPending={decisionPending} />} />;
   }
 
   return (

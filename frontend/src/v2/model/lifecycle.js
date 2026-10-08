@@ -90,6 +90,38 @@ export function actionGate({ environment, sessionRole, connected }) {
   };
 }
 
+const roleWords = (role) => String(role || "unrecorded").replace(/_/g, " ");
+
+/** Approval decisions (approve and reject alike) need a required role; lifecycle.decide_approval
+ *  refuses any other declared role. Null when the role fits or the requirement names none. */
+export function approverRoleBlock(requirement, sessionRole) {
+  const roles = requirement?.required_roles || [];
+  if (!roles.length || roles.includes(sessionRole)) return null;
+  return `This approval needs the ${roles.map(roleWords).join(" or ")} role; your declared role is ${roleWords(sessionRole)}. The backend refuses decisions from other roles.`;
+}
+
+/** The incident revision a command must name (repository._check compares it exactly). */
+export const revisionOf = (alert) => alert?.lifecycle?.revision ?? alert?.lifecycle?.context_revision ?? null;
+
+/** Lifecycle commands accept a rationale of 1–2000 characters (server/main.py LifecycleCommandBody). */
+export const RATIONALE_MAX = 2000;
+
+/**
+ * The exact request for a command confirmed against `bound` ({ revision, interventionId,
+ * interventionHash } captured when the person opened the confirmation). The actor kind is never
+ * sent: the server assigns it. /execute takes the exact intent and records no actor.
+ */
+export function commandRequest(incidentId, cmd, { actorId, actorRole, rationale, bound }) {
+  const id = encodeURIComponent(incidentId);
+  if (cmd.endpoint === "execute") {
+    return { url: `/api/incidents/${id}/execute`, body: { intervention_id: bound.interventionId, intervention_hash: bound.interventionHash } };
+  }
+  return {
+    url: `/api/incidents/${id}/commands/${cmd.command}`,
+    body: { actor_id: actorId, actor_role: actorRole, expected_revision: bound.revision, rationale: String(rationale || "").trim() },
+  };
+}
+
 const RESUME_LABEL = {
   suspended: { label: "Resume analysis", consequence: "Clears the suspension. The next analysis run starts with a fresh retry budget." },
   ESCALATED: { label: "Resume investigation", consequence: "Returns the case to Investigating. Automated analysis continues from the current evidence." },
@@ -129,11 +161,14 @@ export function availableCommands(alert, { now = Date.now() } = {}) {
   if (phase === "READY" || (phase === "AWAITING_APPROVAL" && approval.state !== "pending")) {
     add("return_to_planning", "Return to planning", "Withdraws the current work package. A revised plan is drafted and reviewed; nothing is dispatched.");
   }
+  // A cancelled or escalated case never touches the work-order system, and resume from ESCALATED
+  // always returns to Investigating: say so once something was dispatched.
+  const dispatched = (lc.read_model?.execution_receipts || []).some((r) => r.status === "CONFIRMED");
   if (phase !== "EXECUTING" && phase !== "ESCALATED") {
-    add("escalate", "Escalate", "Escalates the case to a reliability engineer. Automated progress stops until someone resumes or cancels it.", "danger");
+    add("escalate", "Escalate", `Escalates the case to a reliability engineer. Automated progress stops until someone resumes or cancels it.${phase === "OBSERVING" ? " Verification of the dispatched work stops: resuming returns the case to Investigating, not to verification." : ""}`, "danger");
   }
   if (phase !== "EXECUTING") {
-    add("cancel", "Cancel case", "Ends the case without further action and keeps its full record. The asset can open a new case.", "danger");
+    add("cancel", "Cancel case", `Ends the case without further action and keeps its full record. The asset can open a new case.${dispatched ? " A dispatched work order isn’t withdrawn by cancelling the case." : ""}`, "danger");
   }
   return out;
 }

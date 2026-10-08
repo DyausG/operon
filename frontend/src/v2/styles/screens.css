@@ -185,6 +185,15 @@
 .wb-reject-controls { display: flex; gap: 8px; }
 .wb-decision.is-recorded { border-top-color: var(--color-text-primary); }
 
+/* Recovery commands (F4.1, in Now): a row of buttons, one inline confirmation at a time. A
+   consequential command confirms with the danger button; the row itself stays neutral. */
+.wb-actions { display: flex; flex-direction: column; gap: 10px; max-width: 980px; }
+.wb-actions .wb-subhead { margin-bottom: 0; }
+.wb-actions-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.wb-confirm { border-left: 2px solid var(--color-text-primary); padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; background: var(--color-surface-sunken); max-width: 76ch; }
+.wb-confirm-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.wb-actions-done { border-left: 2px solid var(--color-text-primary); padding: 6px 12px; }
+
 /* ===== Simulation (minimal) ===== */
 .wb-settings-page { max-width: 1100px; }
 .wb-row-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 4px 0 12px; }
