@@ -5,9 +5,11 @@ import { renderToString } from "react-dom/server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import App from "../../App.jsx";
 import { applySnapshot, initialState } from "../../state/engineState.js";
+import { fixtureNow } from "../../../test/fixture-era.js";
 
 const load = (name) => JSON.parse(readFileSync(new URL(`../../../test/fixtures/${name}`, import.meta.url), "utf8"));
-const FRAMES = [...load("demo-frames.json"), ...load("demo-frames-reject.json")];
+const FRAMES = [...load("demo-frames.json"), ...load("demo-frames-reject.json"),
+  ...load("demo-frames-material.json"), ...load("demo-frames-blocking.json")];
 const SESSION = { email: "reviewer@example.com", name: "Reviewer", role: "maintenance_approver", remember: true, signedInAt: "2026-09-15T18:40:00Z", mode: "demo" };
 const noop = () => Promise.resolve({ ok: true });
 const ACTIONS = { approve: noop, reject: noop, reset: noop, stop: noop, resume: noop, startDemo: noop, clearError: () => {} };
@@ -22,7 +24,7 @@ function statesFor() {
 }
 
 // Pin the clock to the fixture era so requirement deadlines are pending, as they were when captured.
-beforeAll(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date("2026-09-15T18:45:00Z")); });
+beforeAll(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(fixtureNow(FRAMES)); });
 afterAll(() => vi.useRealTimers());
 
 const FORBIDDEN = [

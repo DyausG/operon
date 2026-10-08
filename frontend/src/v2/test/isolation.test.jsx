@@ -7,9 +7,11 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import App from "../../App.jsx";
 import { applySnapshot, initialState } from "../../state/engineState.js";
 import { LEGACY_SEGMENTS, WB_PLANNED, WB_ROUTES, legacyCompatTarget } from "../shell/routes.js";
+import { fixtureNow } from "../../../test/fixture-era.js";
 
 const load = (name) => JSON.parse(readFileSync(new URL(`../../../test/fixtures/${name}`, import.meta.url), "utf8"));
-const FRAMES = [...load("demo-frames.json"), ...load("demo-frames-reject.json")];
+const FRAMES = [...load("demo-frames.json"), ...load("demo-frames-reject.json"),
+  ...load("demo-frames-material.json"), ...load("demo-frames-blocking.json")];
 const SESSION = { email: "reviewer@example.com", name: "Reviewer", role: "maintenance_approver", remember: true, signedInAt: "2026-09-15T18:40:00Z", mode: "demo" };
 const noop = () => Promise.resolve({ ok: true });
 const ACTIONS = { approve: noop, reject: noop, reset: noop, stop: noop, resume: noop, startDemo: noop, clearError: () => {} };
@@ -32,7 +34,7 @@ const V2_PATHS = [WB_ROUTES.overview, WB_ROUTES.actions, WB_ROUTES.simulation, W
 const LEGACY_PATHS = ["/legacy/dashboard", "/legacy/machines", "/legacy/machines/AC-COMP-01", "/legacy/incidents", `/legacy/incidents/${incidentId}`,
   `/legacy/agent?incident=${incidentId}`, "/legacy/maintenance", "/legacy/analytics", "/legacy/activity", "/legacy/notifications", "/legacy/profile", "/legacy/settings"];
 
-beforeAll(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date("2026-09-15T18:45:00Z")); });
+beforeAll(() => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(fixtureNow(FRAMES)); });
 afterAll(() => vi.useRealTimers());
 
 describe("route ownership", () => {
