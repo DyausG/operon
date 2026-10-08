@@ -47,7 +47,7 @@ test.describe("F1.1 decisions and uncertainty", () => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await boot(page, { frame: BLOCKING_FRAME });
     await page.goto(`/app/cases/${incidentOf(BLOCKING_FRAME)}`);
-    await expect(page.getByText("Awaiting inspection · 2/8").first()).toBeVisible();
+    await expect(page.getByText("Investigating · Awaiting inspection · stage 2 of 8").first()).toBeVisible();
     await expect(page.locator("#decision-surface")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Approve and dispatch" })).toHaveCount(0);
     await expect(page.getByText(/blocking uncertainty remains: Fixture: shaft condition has not been inspected/).first()).toBeVisible();

@@ -1,7 +1,9 @@
 // The decision surface (08 screen 8): the only authoritative approval UI. Framed, raised, 2 px INK
 // top rule (CH-1: never violet); violet appears only on the person glyph. Order: action → what will
-// happen → if not approved → why → reviews → contradicting evidence → conditions → estimates →
-// bound identifiers → decider → acknowledgement → rationale → binding token → controls.
+// happen → if not approved → why → contradicting evidence → conditions → bound identifiers → decider
+// → acknowledgement → rationale → binding token → controls. F4.1 (F0 Appendix A "move into Now;
+// shorten via progressive disclosure"): reviews and estimates sit under "Supporting detail"; an
+// expired or invalidated approval is handled by Now, never rendered here.
 import { useEffect, useId, useRef, useState } from "react";
 import { IconSquareCheck, IconSquareX } from "@tabler/icons-react";
 import { Shape } from "../components/glyphs.jsx";
@@ -76,7 +78,6 @@ export function DecisionSurface({ c, session, roleLabel, connected, now, trigger
 
   useEffect(() => { if (!changed) return; setAck(false); }, [changed]);
 
-  const expired = c.expiry?.state === "expired";
   const near = c.expiry?.state === "approaching" || c.expiry?.state === "final";
   const dx = rm.diagnosis;
   const alternatives = (rm.hypotheses || []).filter((h) => (dx?.alternative_hypothesis_ids || []).includes(h.id) && h.status !== "REFUTED");
@@ -113,20 +114,9 @@ export function DecisionSurface({ c, session, roleLabel, connected, now, trigger
     };
     const result = await onDecide(body);
     setBusy(null);
-    if (result?.ok === false) setRefusal(result.error || "The decision was refused.");
+    if (result?.ok === false) setRefusal(result.refusal || { status: null, lead: "The decision was refused.", detail: null });
     else setRecorded({ decision, at: Date.now() });
   };
-
-  if (expired) {
-    return (
-      <section className="wb-decision" aria-labelledby="wb-decision-title">
-        <div className="wb-decision-head">
-          <h3 className="wb-decision-title" id="wb-decision-title">Approval request expired at {when(req?.expires_at)}</h3>
-        </div>
-        <p>Nothing was dispatched. Renewal isn’t available in this version (G11). The case remains in Awaiting decision.</p>
-      </section>
-    );
-  }
 
   if (recorded) {
     return (
@@ -164,12 +154,10 @@ export function DecisionSurface({ c, session, roleLabel, connected, now, trigger
       <Ledger className="wb-decision-ledger" rows={[
         { label: "If not approved", value: <>The requirement expires at {req?.expires_at ? dayClock(req.expires_at) : "an unreported time"}; nothing is dispatched. Current model risk score <span className="wb-num">{score(c.failureProb)}</span> (action gate <span className="wb-num">{score(trigger)}</span>).</> },
         { label: "Why", value: dx ? <>Diagnosis accepted {dx.created_at ? clock(dx.created_at) : ""}: {dx.conclusion} · cites {(dx.evidence_ids || []).length} evidence</> : "No accepted diagnosis recorded." },
-        { label: "Reviews", value: reviewsLine(rm) },
         { label: "Contradicting", value: needsAck
           ? <>{contradicting.length ? `${contradicting.length} evidence ${contradicting.length === 1 ? "item contradicts" : "items contradict"} the diagnosis` : ""}{contradicting.length && challenges.length ? " · " : ""}{challenges.length ? `${challenges.length} unresolved critic ${challenges.length === 1 ? "challenge" : "challenges"}` : ""} (acknowledgement required)</>
           : <>No evidence contradicts the diagnosis; no unresolved critic challenges.{alternatives.length ? <> Alternative hypothesis unresolved (advisory): {alternatives.map((h) => h.mechanism).join("; ")}</> : null}</> },
         { label: "Conditions", value: conditions.length ? <ul className="wb-bullets">{conditions.map((t) => <li key={t}>{t}</li>)}</ul> : "None recorded." },
-        hasEstimates ? { label: "Estimates", value: <>Cost {number(iv.estimated_cost)} · downtime {iv.estimated_downtime_minutes} min · avoided loss {number(iv.estimated_avoided_loss)} <span className="wb-secondary">— estimates · assumption set <span className="wb-mono">{iv.business_assumption_version || "not recorded"}</span> · currency not recorded</span></> } : null,
         { label: "Bound to", value: (
           <>
             <span className="wb-bound">requirement <span className="wb-mono" title={current.requirement_id}>{middle(current.requirement_id, 4, 3)}</span> · intervention <span className="wb-mono" title={current.intervention_id}>{middle(current.intervention_id, 4, 3)}</span> · hash <span className="wb-mono" title={current.intervention_hash}>{middle(current.intervention_hash, 6, 4)}</span> · <span className="wb-mono">R{current.context_revision}</span></span>
@@ -178,6 +166,14 @@ export function DecisionSurface({ c, session, roleLabel, connected, now, trigger
         ) },
         { label: "Decider", value: <>Required role: {(req?.required_roles || []).map((r) => r.replace(/_/g, " ")).join(", ") || "not reported"} · recorded as: {session?.name || "declared operator"}, {roleLabel.toLowerCase()} <span className="wb-secondary">(declared, not verified: G8)</span></> },
       ]} />
+
+      <details className="wb-details wb-decision-more">
+        <summary>Supporting detail: reviews{hasEstimates ? " and estimates" : ""}</summary>
+        <Ledger className="wb-decision-ledger" rows={[
+          { label: "Reviews", value: reviewsLine(rm) },
+          hasEstimates ? { label: "Estimates", value: <>Cost {number(iv.estimated_cost)} · downtime {iv.estimated_downtime_minutes} min · avoided loss {number(iv.estimated_avoided_loss)} <span className="wb-secondary">— estimates · assumption set <span className="wb-mono">{iv.business_assumption_version || "not recorded"}</span> · currency not recorded</span></> } : null,
+        ]} />
+      </details>
 
       {changed ? (
         <div className="wb-decision-change" id={changeId} tabIndex={-1} role="alert">
@@ -197,7 +193,11 @@ export function DecisionSurface({ c, session, roleLabel, connected, now, trigger
       <TextArea id={rationaleId} label="Rationale" hint="Optional for approval · required for rejection" value={rationale}
         onChange={(v) => setRationale(v)} onBlur={() => setTouched(true)} message={rationaleMsg} level={rationaleLevel} rows={2} />
 
-      {refusal ? <InlineAlert tone="critical" title="The backend refused this decision" role="alert">{refusal}</InlineAlert> : null}
+      {refusal ? (
+        <InlineAlert tone="critical" title="The backend refused this decision" role="alert">
+          {refusal.lead}{refusal.detail ? <> Server reason: “{refusal.detail}”</> : null}{refusal.status ? <span className="wb-secondary"> (HTTP {refusal.status})</span> : null}
+        </InlineAlert>
+      ) : null}
 
       <p className="wb-binding">Binding <span className="wb-mono">{String(current.intervention_hash || "").slice(0, 6)} · R{current.context_revision}</span></p>
       {block ? <p className="wb-sr" id={reasonId}>{block.text}</p> : null}

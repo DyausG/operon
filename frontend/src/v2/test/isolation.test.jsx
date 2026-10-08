@@ -58,7 +58,9 @@ describe("route ownership", () => {
     expect(cases.filter((a) => a.exit).map((a) => a.href)).toEqual(["/legacy/incidents"]);
     expect(cases.some((a) => a.href === WB_ROUTES.cases && !a.exit)).toBe(true); // the rail item
     const kase = anchors(render(WB_ROUTES.case(incidentId), withCase));
-    expect(kase.some((a) => a.exit && a.href.startsWith("/legacy/agent?incident="))).toBe(true);
+    // F4.1 layout D: the PRISM legacy exit lives in the Investigation section.
+    const investigation = anchors(render(WB_ROUTES.case(incidentId, "investigation"), withCase));
+    expect(investigation.some((a) => a.exit && a.href.startsWith("/legacy/agent?incident="))).toBe(true);
     expect(kase.some((a) => a.href === WB_ROUTES.cases && !a.exit)).toBe(true); // breadcrumb + rail
     expect(kase.some((a) => a.href === WB_ROUTES.updates)).toBe(true);
   });
@@ -85,7 +87,8 @@ describe("route ownership", () => {
 describe.each(states.map((s, i) => [i, s]))("link audit, frame %i", (_i, state) => {
   const id = Object.values(state.alerts || {})[0]?.incident_id;
   const paths = [WB_ROUTES.overview, WB_ROUTES.actions, WB_ROUTES.simulation, ...planned, "/app/not-a-page"];
-  if (id) paths.push(WB_ROUTES.case(id), `${WB_ROUTES.actions}?preview=${id}`);
+  // F4.1 layout D renders one case section at a time: audit every section, not just Now.
+  if (id) paths.push(WB_ROUTES.case(id), ...["evidence", "investigation", "decision", "work", "record"].map((s) => WB_ROUTES.case(id, s)), `${WB_ROUTES.actions}?preview=${id}`);
 
   it.each(paths)("every link on %s stays in the workbench or is an explicit legacy exit", (path) => {
     for (const a of anchors(render(path, state))) {

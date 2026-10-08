@@ -33,7 +33,8 @@ const incident = (frame) => frame.alerts[0].incident_id;
 const render = (path, frame) => renderToString(
   <App engine={{ state: applySnapshot(initialState, frame), ...ACTIONS }} session={SESSION} settings={null} theme="light" router="memory" initialEntries={[path]} />);
 const text = (html) => html.replace(/<!-- -->/g, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
-const casePage = (frame) => render(WB_ROUTES.case(incident(frame)), frame);
+// F4.1 layout D shows one section at a time; `section` opens one through the URL hash.
+const casePage = (frame, section) => render(WB_ROUTES.case(incident(frame), section), frame);
 const currentStage = (html) => text(/<li[^>]*aria-current="step"[^>]*>(.*?)<\/li>/s.exec(html)?.[1] || "").trim();
 const decisionSurface = (html) => html.split('id="decision-surface"')[1]?.split("</section>")[0] ?? null;
 const myActionCount = (html) => Number(/class="wb-nav-count" aria-label="(\d+) require action"/.exec(html)?.[1] || 0);
@@ -109,12 +110,13 @@ describe("the V2 workbench shows F1.1 behaviour", () => {
     const html = casePage(REJECTED);
     const page = text(html);
     expect(currentStage(html)).toBe("Planning (current)");
-    expect(page).toContain("Stage Planning · 4/8");
+    expect(page).toContain("Planning · stage 4 of 8");
     expect(page).toContain("Waiting on Analysis (automated)");
-    expect(page).toContain("Stage: Awaiting decision → Planning");
-    expect(page).toContain("Rejected by dashboard-operator");
+    expect(page).toContain("Returned to planning after a rejection. Rejected by dashboard-operator (declared, not verified)");
     expect(decisionSurface(html)).toBeNull();
     expect(page).not.toMatch(/Decision required|Approve and dispatch|Escalated \(current\)/);
+    // The record carries the transition (layout D: the Record section).
+    expect(text(casePage(REJECTED, "record"))).toContain("Stage: Awaiting decision → Planning");
   });
 
   it("the approver's queue holds the case while approval is pending and releases it after the rejection", () => {
@@ -135,7 +137,7 @@ describe("the V2 workbench shows F1.1 behaviour", () => {
   it("BLOCKING uncertainty: no decision is offered, the case waits on a technician and the record says why", () => {
     const html = casePage(BLOCKING);
     const page = text(html);
-    expect(page).toContain("Stage Awaiting inspection · 2/8");
+    expect(page).toContain("Investigating · Awaiting inspection · stage 2 of 8");
     expect(page).toContain("Waiting on Technician");
     expect(page).toContain(`blocking uncertainty remains: ${BLOCKING_TEXT}`);
     expect(decisionSurface(html)).toBeNull();
@@ -145,7 +147,7 @@ describe("the V2 workbench shows F1.1 behaviour", () => {
 
   it("durable hypotheses are shown as recorded, not as run proposals", () => {
     const parked = FRAMES.find((f) => lifecycle(f)?.phase === "AWAITING_EVIDENCE");
-    const page = text(casePage(parked));
+    const page = text(casePage(parked, "investigation"));
     expect(page).toContain("basis: Advisory suggestion registered for durable identity; not validated");
     expect(page).not.toContain("not yet recorded as a hypothesis");
   });
