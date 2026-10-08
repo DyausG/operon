@@ -83,6 +83,11 @@ class DeterministicAdvisoryBackend(ReasoningBackend):
         mechanism = (confirmed.confirmed_mechanism if confirmed else
                      f"{code or 'Mechanical'} degradation mechanism indicated by the predictive signal; "
                      "physical confirmation required")
+        # Durable identity (F1): continue the confirmed hypothesis by its reference, and the
+        # one remaining durable alternative by its reference. No wording is compared.
+        confirmed_ref = confirmed.hypothesis_ref if confirmed else None
+        durable = [item.reference for item in context.artifacts if isinstance(item, m.Hypothesis) and item.reference]
+        alternatives = [ref for ref in durable if ref != confirmed_ref]
         common = {
             "incident_id": context.incident_id,
             "evidence_reviewed": evidence_ids,
@@ -91,10 +96,11 @@ class DeterministicAdvisoryBackend(ReasoningBackend):
         if context.review_target_id is None:
             diagnostic = common | {
                 "competing_hypotheses": [
-                    {"key": "primary", "mechanism": mechanism,
+                    {"key": "primary", "hypothesis_ref": confirmed_ref, "mechanism": mechanism,
                      "supporting_evidence_ids": [history.id], "confidence": 0.72,
                      "falsification_tests": ["Perform an independent physical inspection."]},
-                    {"key": "sensor", "mechanism": "Sensor bias remains an alternative until inspection.",
+                    {"key": "sensor", "hypothesis_ref": alternatives[0] if confirmed_ref and len(alternatives) == 1 else None,
+                     "mechanism": "Sensor bias remains an alternative until inspection.",
                      "supporting_evidence_ids": [], "confidence": 0.18,
                      "falsification_tests": ["Verify sensor calibration against a reference instrument."]},
                 ],
@@ -204,20 +210,21 @@ def technical_confirmation(engine, equipment_id: str) -> m.TrustedTechnicalConfi
     history = [item for item in artifacts if isinstance(item, m.Evidence)
                and item.kind == "maintenance_history" and item.id not in superseded][-1]
     mechanism = recommended_mechanism(artifacts)
-    if mechanism is None:
-        raise ValueError("no diagnosis-stage advisory recommended a hypothesis; there is nothing to confirm")
+    reference = PromotionService(engine.coordinator.repository).recommended_reference(incident.id)
+    if mechanism is None or reference is None:
+        raise ValueError("no diagnosis-stage advisory recommended a durable hypothesis; there is nothing to confirm")
     with db.get_conn(engine.coordinator.repository.path) as conn:
         guided_mode_id = f"FM-{engine.sim.assets[equipment_id].profile.scenario}"
         mode = conn.execute("SELECT * FROM failure_mode WHERE failure_mode_id=?",
                             (guided_mode_id,)).fetchone()
     return m.TrustedTechnicalConfirmation(
-        incident_id=incident.id, asset_id=equipment_id,
+        incident_id=incident.id, asset_id=equipment_id, hypothesis_ref=reference,
         confirmed_mechanism=mechanism, failure_mode_code=mode["mode_code"],
         supporting_evidence_ids=(history.id,),
         performed_checks=(m.PerformedCheck(check="Simulator physical inspection",
                                            result=f"Signature consistent with {mode['mode_code']}", passed=True),),
         observed_at=utcnow(), source="operon-guided-demo-simulator", actor_id="demo-trusted-inspector",
-        provenance="SIMULATED")
+        provenance="SIMULATED", actor_kind="SCENARIO")
 
 
 def resource_confirmation(engine, equipment_id: str) -> m.ResourceConfirmation:
@@ -238,7 +245,7 @@ def resource_confirmation(engine, equipment_id: str) -> m.ResourceConfirmation:
         window_start=start, window_end=start + timedelta(hours=2), window_confirmed=True,
         parts=tuple(m.WorkPackagePart(part_id=row["part_id"], quantity=row["qty_per_service"]) for row in rows),
         observed_at=utcnow(), source="operon-guided-demo-simulator", actor_id="demo-trusted-dispatcher",
-        provenance="SIMULATED")
+        provenance="SIMULATED", actor_kind="SCENARIO")
 
 
 def binding_fields(engine, equipment_id: str, resource_evidence: m.Evidence) -> dict:

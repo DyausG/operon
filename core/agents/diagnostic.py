@@ -13,7 +13,10 @@ confidence to evidence strength; numerical confidence is not statistically
 calibrated. Expose uncertainty and request missing evidence. Use request_evidence
 before citing a new read observation as durable evidence. Never claim unavailable
 OEM limits or prescribe consequential execution. Hypothesis keys are local
-suggestions, not domain IDs.
+suggestions, not domain IDs. Durable hypotheses in context.artifacts carry a stable
+reference (for example HYP-001): when a suggestion continues one, set hypothesis_ref to
+that exact reference even if you describe the mechanism differently; leave it null only
+for a genuinely new mechanism. Never reuse one reference for two suggestions.
 """
 
 # Preserve the Step 12A exception API.

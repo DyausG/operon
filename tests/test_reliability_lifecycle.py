@@ -389,15 +389,28 @@ def test_stale_approval_after_intervention_supersession_is_rejected(flow):
     assert flow.incident().phase == m.IncidentPhase.READY
 
 
-def test_rejection_escalates_and_blocks_execution(flow):
+def test_rejection_returns_to_planning_and_blocks_execution(flow):
+    # F1 (intentional change): REJECT no longer escalates by default. It records who rejected
+    # and why, consumes the exact intervention and returns the case to PLANNING.
     intervention, _, requirement = flow.awaiting()
     decision = flow.lifecycle.decide_approval(flow.incident_id, **(flow.command(requirement, intervention) | {"decision": "REJECT"}))
-    assert decision.decision == "REJECT" and flow.incident().phase == m.IncidentPhase.ESCALATED
-    incident = flow.repo.transition(flow.incident_id, m.IncidentPhase.INVESTIGATING, expected_revision=revision(flow), reason="human resume")
-    for target in ("DIAGNOSIS_VALIDATED", "PLANNING", "INTERVENTION_VALIDATED", "AWAITING_APPROVAL", "READY"):
+    incident = flow.incident()
+    assert decision.decision == "REJECT" and incident.phase == m.IncidentPhase.PLANNING
+    assert incident.current_intervention_id is None and decision.actor_kind == "DECLARED"
+    recorded = [e for e in flow.repo.list_events(flow.incident_id) if e.event_type == "APPROVAL_RECORDED"][-1]
+    assert recorded.payload["return_to"] == "PLANNING" and recorded.payload["rationale"] == APPROVER["rationale"]
+    assert recorded.payload["intervention_hash"] == artifact_hash(intervention)
+    for target in ("INTERVENTION_VALIDATED", "AWAITING_APPROVAL", "READY"):
         incident = flow.repo.transition(incident.id, m.IncidentPhase(target), expected_revision=incident.revision, reason="graph only")
     with pytest.raises((ExecutionRefused, AuthorityRefused)):
         flow.lifecycle.execute(flow.incident_id, intervention.id)
+
+
+def test_explicit_escalating_rejection_remains_available(flow):
+    intervention, _, requirement = flow.awaiting()
+    flow.lifecycle.decide_approval(flow.incident_id, **(flow.command(requirement, intervention)
+                                                        | {"decision": "REJECT", "return_to": "ESCALATED"}))
+    assert flow.incident().phase == m.IncidentPhase.ESCALATED
 
 
 def test_approval_after_new_technical_evidence_requires_revalidation(flow):
@@ -812,8 +825,11 @@ async def test_diagnose_parks_missing_confirmation_and_resumes_after_trusted_evi
                                             evidence_service=flow.evidence_service)
     assert outcome.disposition == "NEEDS_EVIDENCE" and outcome.phase == m.IncidentPhase.AWAITING_EVIDENCE
     assert flow.incident().current_diagnosis_id is None
+    # F1: parking gave the competing hypotheses durable references; the inspection names one.
+    reference = flow.service.recommended_reference(flow.incident_id)
+    assert reference == "HYP-001" and set(flow.service.current_hypotheses(flow.incident_id)) == {"HYP-001", "HYP-002"}
     fields = dict(incident_id=flow.incident_id, asset_id=ASSET, confirmed_mechanism="Confirmed compressor mechanical overload",
-                  failure_mode_code="OSF", supporting_evidence_ids=(flow.history_id,),
+                  hypothesis_ref=reference, failure_mode_code="OSF", supporting_evidence_ids=(flow.history_id,),
                   performed_checks=(m.PerformedCheck(check="Shaft inspection", result="Overload confirmed", passed=True),),
                   observed_at=utcnow(), source="offline-inspection", actor_id="trusted-inspector", provenance="SIMULATED")
     evidence, incident = flow.lifecycle.submit_technical_confirmation(
@@ -828,7 +844,8 @@ async def test_diagnose_parks_missing_confirmation_and_resumes_after_trusted_evi
 
 @pytest.mark.parametrize("change,disposition,phase", [
     ({"disposition": "ESCALATED", "decision": None, "blockers": ["Unsafe"]}, "ESCALATED", "ESCALATED"),
-    ({"termination_reason": "TIMEOUT"}, "ESCALATED", "ESCALATED"),
+    # F1 (intentional change): a provider timeout is a technical failure: retried, never escalated.
+    ({"termination_reason": "TIMEOUT"}, "RETRY", "INVESTIGATING"),
     ({"disposition": "UNRESOLVED"}, "NEEDS_EVIDENCE", "AWAITING_EVIDENCE")])
 async def test_diagnose_routes_unsuccessful_runs_without_creating_authority(flow, monkeypatch, change, disposition, phase):
     flow.confirm()
@@ -861,7 +878,12 @@ async def test_plan_evidence_need_stays_in_planning_and_unsafe_review_escalates(
                                         expected_revision=revision(flow), **flow.binding_fields(promotion, report))
     assert outcome.disposition == "NEEDS_EVIDENCE" and outcome.phase == m.IncidentPhase.PLANNING
     assert flow.incident().current_intervention_id is None
-    scripted_supervisor(monkeypatch, flow, lambda payload: payload | {"disposition": "BLOCKED", "decision": None, "blockers": ["Unsafe isolation"]})
+    # F1: escalation is reserved for a genuinely unsafe review (an invocation-blocked run is a technical retry).
+    def unsafe(payload):
+        engineering = payload["assessments"][0]["assessment"]
+        engineering.update(intervention_feasibility="UNSAFE", safety_concerns=["Unsafe isolation"])
+        return payload | {"disposition": "BLOCKED", "blockers": ["Unsafe isolation"]}
+    scripted_supervisor(monkeypatch, flow, unsafe)
     outcome = await flow.lifecycle.review_draft(flow.incident_id, draft_id=outcome.draft_id, runtime=flow.runtime,
                                                 evidence_service=flow.evidence_service)
     assert outcome.disposition == "ESCALATED" and outcome.phase == m.IncidentPhase.ESCALATED
@@ -877,7 +899,7 @@ async def test_no_model_invocation_holds_a_write_lock(flow, monkeypatch):
         with db.get_conn(flow.repo.path) as conn:
             conn.execute("BEGIN IMMEDIATE")  # would block if the lifecycle held a writer
             observed.append(True)
-        snapshot = next(a for a in flow.repo.list_artifacts(flow.incident_id) if isinstance(a, m.SupervisorRunSnapshot))
+        snapshot = [a for a in flow.repo.list_artifacts(flow.incident_id) if isinstance(a, m.SupervisorRunSnapshot)][-1]
         return SupervisorResult.model_validate(result_payload(flow, snapshot))
     monkeypatch.setattr("core.agents.supervisor.supervise_reliability", invoke)
     outcome = await flow.lifecycle.diagnose(flow.incident_id, asset_id=ASSET, runtime=flow.runtime,

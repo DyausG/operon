@@ -29,6 +29,7 @@ from .assessments import prepare_specialist_context
 from .evidence import (
     DeferredEvidenceLedger, EvidenceCollection, EvidenceDeferred, EvidenceDeferredToApplication, EvidenceService,
 )
+from .models import SEVERITY_RANK, RecordedUncertainty
 from .repository import IncidentRepository, InvalidReference, new_id
 
 
@@ -153,6 +154,58 @@ class OrchestrationLimitError(ValueError):
     pass
 
 
+def role_of(assessment) -> str:
+    return next(role for role, cls in ROLE_CONTRACTS.items() if isinstance(assessment, cls))
+
+
+def active_assessment_keys(advice: dict[str, AdvisoryInput]) -> tuple[str, ...]:
+    """Latest report per role plus every critic of a current subject (shared by assembly and gates).
+
+    Old reports remain in the audit; replacing one requires a new critic review before
+    a supported conclusion, so a later agreeable review cannot erase objections on an
+    unchanged report.
+    """
+    latest = latest_assessments(advice)
+    keys = [key for role, key in latest.items() if role != "critic"]
+    for key, item in advice.items():
+        critic = item.assessment
+        if isinstance(critic, CriticAssessment) and (critic.subject_kind != "assessment"
+                                                     or critic.subject_id in latest.values()):
+            keys.append(key)
+    return tuple(dict.fromkeys(keys))
+
+
+def effective_uncertainties(advice: dict[str, AdvisoryInput], *, run_id: str,
+                            keys: tuple[str, ...] | None = None) -> tuple[RecordedUncertainty, ...]:
+    """Typed uncertainties of ``keys`` (default: the active reports) after critic review (F1).
+
+    A critic may only raise severity; the highest raise wins and the original severity
+    and the raising critic are both recorded. Nothing here parses prose.
+    """
+    raises: dict[tuple[str, int], tuple[str, object]] = {}
+    for critic_key, item in advice.items():
+        if not isinstance(item.assessment, CriticAssessment):
+            continue
+        for review in item.assessment.uncertainty_reviews:
+            slot = (review.assessment_key, review.uncertainty_index)
+            current = raises.get(slot)
+            if current is None or SEVERITY_RANK[review.severity] > SEVERITY_RANK[current[1].severity]:
+                raises[slot] = (critic_key, review)
+    recorded = []
+    for key in (active_assessment_keys(advice) if keys is None else keys):
+        assessment = advice[key].assessment
+        for index, uncertainty in enumerate(assessment.uncertainties):
+            severity, raised_by, rationale = uncertainty.severity, None, None
+            critic = raises.get((key, index))
+            if critic is not None and SEVERITY_RANK[critic[1].severity] > SEVERITY_RANK[severity]:
+                severity, raised_by, rationale = critic[1].severity, critic[0], critic[1].rationale
+            recorded.append(RecordedUncertainty(
+                statement=uncertainty.statement, severity=severity, original_severity=uncertainty.severity,
+                source_run_id=run_id, source_key=key, source_role=role_of(assessment),
+                raised_by_key=raised_by, raise_rationale=rationale))
+    return tuple(recorded)
+
+
 def _needs(assessment) -> tuple[EvidenceNeed, ...]:
     if isinstance(assessment, DiagnosticAssessment):
         return assessment.missing_evidence_requests
@@ -204,19 +257,20 @@ def assemble_result(scope: SpecialistContext, advice: dict[str, AdvisoryInput], 
     """
     latest = latest_assessments(advice)
     critics = tuple(key for key, item in advice.items() if isinstance(item.assessment, CriticAssessment))
-    # Keep objections on current subjects. Old reports remain in the audit;
-    # replacing one requires a new critic review before a supported conclusion.
-    active = [advice[key].assessment for role, key in latest.items() if role != "critic"]
-    for key in critics:
-        critic = advice[key].assessment
-        if critic.subject_kind != "assessment" or critic.subject_id in latest.values():
-            # A later agreeable review cannot erase objections on an unchanged report.
-            active.append(critic)
+    active_keys = active_assessment_keys(advice)
+    active = [advice[key].assessment for key in active_keys]
     needs = list(decision.unresolved_evidence_needs if decision else ())
     blockers = list(decision.blockers if decision else ())
+    # F1: only BLOCKING uncertainty (after critic review) stops a conclusion. MINOR and
+    # MATERIAL uncertainty is legitimate output and travels with the record instead.
+    originals = [item for key in active_keys for item in advice[key].assessment.uncertainties]
+    for original, recorded in zip(originals, effective_uncertainties(advice, run_id=scope.run_id, keys=active_keys)):
+        if recorded.severity == "BLOCKING":
+            blockers.append(recorded.statement)
+            if original.resolvable_by is not None:
+                needs.append(original.resolvable_by)
     for item in active:
         needs.extend(_needs(item))
-        blockers.extend(item.uncertainties)
         if isinstance(item, EngineeringAssessment):
             blockers.extend((*item.missing_constraints, *item.blockers, *item.safety_concerns))
         elif isinstance(item, OperationsAssessment):

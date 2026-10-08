@@ -12,7 +12,7 @@ from core.agents.contracts import (
     AdvisoryInput, Assessment, CriticAssessment, DiagnosticAssessment, DiagnosticContext,
     EngineeringAssessment, MaintenancePlanAssessment, OperationsAssessment, SpecialistContext,
 )
-from .models import Diagnosis, Evidence, Intervention, ValidationVerdict
+from .models import SEVERITY_RANK, Diagnosis, Evidence, Hypothesis, Intervention, ValidationVerdict
 from .repository import IncidentRepository, InvalidReference, content_hash
 
 
@@ -56,8 +56,8 @@ def prepare_specialist_context(repository: IncidentRepository, incident_id: str,
     if len(artifact_ids) > 10 or len(advisory_inputs) > 5:
         raise ValueError("select at most 10 artifacts and 5 advisory inputs")
     artifacts = tuple(repository.get_artifact(incident_id, key) for key in artifact_ids)
-    if any(not isinstance(item, (Diagnosis, Intervention, ValidationVerdict)) for item in artifacts):
-        raise InvalidReference("specialist artifact context requires diagnosis, intervention, or verdict")
+    if any(not isinstance(item, (Diagnosis, Intervention, ValidationVerdict, Hypothesis)) for item in artifacts):
+        raise InvalidReference("specialist artifact context requires diagnosis, intervention, verdict or hypothesis")
     context = SpecialistContext(**(base.model_dump() | {"question": question}),
                                 lifecycle_state=repository.fetch_incident(incident_id).phase,
                                 artifacts=artifacts, advisory_inputs=advisory_inputs,
@@ -140,7 +140,22 @@ def validate_specialist_assessment(repository: IncidentRepository, assessment: A
             require_artifact(validated.intervention_id, Intervention)
         elif not validated.input_assessment_keys:
             raise InvalidReference("operations requires an intervention or supplied advisory input")
-    elif isinstance(validated, CriticAssessment):
+    elif isinstance(validated, DiagnosticAssessment):
+        # F1: a continued hypothesis must name a durable hypothesis supplied in this
+        # context; identity is the reference, never the mechanism wording.
+        known = {item.reference for item in artifacts.values() if isinstance(item, Hypothesis) and item.reference}
+        for suggestion in validated.competing_hypotheses:
+            if suggestion.hypothesis_ref is not None and suggestion.hypothesis_ref not in known:
+                raise InvalidReference(f"hypothesis_ref {suggestion.hypothesis_ref!r} is not a supplied durable hypothesis")
+    if isinstance(validated, CriticAssessment):
+        for review in validated.uncertainty_reviews:
+            if review.assessment_key not in validated.input_assessment_keys or review.assessment_key not in advice:
+                raise InvalidReference("uncertainty review must target a supplied input report")
+            reviewed = advice[review.assessment_key].uncertainties
+            if review.uncertainty_index >= len(reviewed):
+                raise InvalidReference("uncertainty review index outside the reviewed report")
+            if SEVERITY_RANK[review.severity] < SEVERITY_RANK[reviewed[review.uncertainty_index].severity]:
+                raise InvalidReference("a critic may raise, never lower, uncertainty severity")
         if validated.subject_kind == "assessment":
             if validated.subject_id not in advice or validated.subject_id not in validated.input_assessment_keys:
                 raise InvalidReference("critic subject requires a supplied advisory key and input reference")

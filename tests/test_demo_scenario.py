@@ -320,9 +320,10 @@ async def test_rejection_cancels_the_scenario_on_the_real_lifecycle(seeded_db):
         await engine.start_guided_demo(ASSET)
         await wait_status(engine, "awaiting_human_approval")
         result = await engine.reject(ASSET, approval_intent(engine))
-        assert result["ok"] and result["phase"] == "ESCALATED"
+        # F1 (intentional change): rejection returns the case to planning; the scenario still ends there.
+        assert result["ok"] and result["phase"] == "PLANNING"
         cancelled = await wait_status(engine, "cancelled")
-        assert cancelled["approval_state"] == "REJECTED" and cancelled["phase"] == "ESCALATED"
+        assert cancelled["approval_state"] == "REJECTED" and cancelled["phase"] == "PLANNING"
         assert engine._guided_owner is None
     finally:
         await finish(engine)

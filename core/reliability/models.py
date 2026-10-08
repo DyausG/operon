@@ -29,6 +29,20 @@ SourceDomain = Literal["asset_registry", "health_score_latest", "sensor_inventor
 OutcomeResult = Literal["VERIFIED_RECOVERY", "NOT_RECOVERED", "REGRESSED", "INCONCLUSIVE"]
 OUTCOME_POLICY = "operon-outcome-1"
 OUTCOME_VERIFIER = "operon.application.outcome"
+# F1: where a record lives. UNSPECIFIED is the historical local mode (and every
+# pre-F1 incident); it is never silently treated as SANDBOX or PRODUCTION.
+OperatingEnvironment = Literal["SANDBOX", "PRODUCTION", "UNSPECIFIED"]
+# F1: who acted. There is deliberately no authenticated kind before real identity
+# exists (F3): SANDBOX is a declared, unauthenticated sandbox identity; DECLARED is
+# the historical caller-declared local actor; SCENARIO is an in-process scenario
+# driver (Guided Demo); SYSTEM is the application itself.
+ActorKind = Literal["SANDBOX", "DECLARED", "SCENARIO", "SYSTEM"]
+# F1 typed uncertainty. MINOR never blocks; MATERIAL is decision-relevant and is
+# carried to the approver; BLOCKING (insufficient evidence) prevents promotion.
+UncertaintySeverity = Literal["MINOR", "MATERIAL", "BLOCKING"]
+SEVERITY_RANK = {"MINOR": 0, "MATERIAL": 1, "BLOCKING": 2}
+# F1 failure classification of a reasoning stage or command outcome.
+FailureCategory = Literal["TECHNICAL", "EVIDENCE", "GOVERNANCE", "OPERATIONAL", "ESCALATION"]
 
 
 class Contract(BaseModel):
@@ -58,6 +72,42 @@ class IncidentPhase(str, Enum):
     CANCELLED = "CANCELLED"
 
 
+class ActorRef(Contract):
+    """Who performed a human or system action. Never an authenticated identity in F1.
+
+    ``authenticated`` is fixed to False until real identity exists (F3), so no record
+    written before then can claim to be authenticated production identity.
+    """
+    kind: ActorKind
+    id: Identifier
+    role: str | None = None
+    authenticated: Literal[False] = False
+
+    def label(self) -> str:
+        return {"SANDBOX": "Sandbox identity (declared, unauthenticated)",
+                "DECLARED": "Declared identity (unauthenticated)",
+                "SCENARIO": "Scenario driver (simulated)",
+                "SYSTEM": "OPERON application"}[self.kind]
+
+    def public(self) -> dict:
+        return {**self.model_dump(mode="json", exclude={"schema_version"}), "label": self.label()}
+
+
+class AnalysisState(Contract):
+    """Durable technical-retry bookkeeping for the current phase visit (F1).
+
+    Reset whenever the phase changes. ``suspended`` stops automatic reasoning until an
+    explicit, audited resume; it is not a phase and never an escalation.
+    """
+    attempts: int = Field(default=0, ge=0)
+    suspended: bool = False
+    codes: dict[str, int] = Field(default_factory=dict)
+    last_category: FailureCategory | None = None
+    last_code: str | None = None
+    last_reason: str | None = None
+    updated_at: AwareDatetime | None = None
+
+
 class Incident(Record):
     equipment_ids: tuple[Identifier, ...] = Field(min_length=1)
     admission_key: Identifier
@@ -75,6 +125,9 @@ class Incident(Record):
     signal_evidence_ids: tuple[Identifier, ...] = ()
     # Compatibility snapshots never imply accepted diagnoses or approved plans.
     legacy_alert_id: str | None = None
+    # F1: fixed at admission from OPERON_ENVIRONMENT; pre-F1 rows load as UNSPECIFIED.
+    environment: OperatingEnvironment = "UNSPECIFIED"
+    analysis: AnalysisState | None = None
 
 
 class Artifact(Record):
@@ -86,8 +139,11 @@ class Artifact(Record):
         # Additive optional metadata must not alter hashes of pre-004/pre-13C artifacts.
         for field in ("source_state_hash", "validator_identity", "validation_policy_version", "binding_id",
                       "check_results", "risk_metadata", "promotion_id", "source_dependencies",
-                      "source_dependency_manifest"):
-            if field in value and value[field] in (None, {}):
+                      "source_dependency_manifest",
+                      # F1 additive metadata (absent on pre-F1 records).
+                      "reference", "source_run_id", "source_key", "link_basis", "uncertainties",
+                      "material_uncertainties", "actor_kind"):
+            if field in value and value[field] in (None, {}, (), []):
                 value.pop(field)
         return value
 
@@ -229,6 +285,30 @@ class Hypothesis(Artifact):
     falsification_tests: tuple[str, ...]
     evidence_request_ids: tuple[Identifier, ...] = ()
     supersedes_id: str | None = None
+    # F1 durable identity. ``reference`` (e.g. HYP-001) is stable for the life of the
+    # incident: every revision of the same hypothesis carries it and supersedes the
+    # previous revision, so wording can change between runs without breaking linkage.
+    reference: str | None = None
+    # Advisory provenance: the run and report-local key that proposed this revision.
+    source_run_id: str | None = None
+    source_key: str | None = None
+    # How a promoted revision was linked to its reference: MODEL (the model returned
+    # the reference) or APPLICATION_FALLBACK (exactly one structural candidate after
+    # the contract retry budget). Never by text similarity.
+    link_basis: Literal["MODEL", "APPLICATION_FALLBACK"] | None = None
+
+
+class RecordedUncertainty(Contract):
+    """One advisory uncertainty as the application recorded it, with its source."""
+    statement: str
+    severity: UncertaintySeverity
+    original_severity: UncertaintySeverity
+    source_run_id: Identifier
+    source_key: Identifier
+    source_role: Identifier
+    # Present when a critic raised the severity; the original is kept above.
+    raised_by_key: str | None = None
+    raise_rationale: str | None = None
 
 
 class Diagnosis(Artifact):
@@ -258,6 +338,8 @@ class ValidationVerdict(Artifact):
     validator_run_id: Identifier
     validator_identity: str | None = None
     validation_policy_version: str | None = None
+    # F1: non-blocking (MINOR/MATERIAL) uncertainties that remained at promotion.
+    uncertainties: tuple[RecordedUncertainty, ...] | None = None
     check_results: dict[str, bool] = Field(default_factory=dict)
 
 
@@ -382,7 +464,10 @@ class PerformedCheck(Contract):
 class TrustedTechnicalConfirmation(Contract):
     incident_id: Identifier
     asset_id: Identifier
+    # Human-readable description of what was confirmed. Since F1 it is never
+    # compared with model text: ``hypothesis_ref`` is the binding key.
     confirmed_mechanism: Identifier
+    hypothesis_ref: str | None = None
     failure_mode_code: str | None = None
     supporting_evidence_ids: tuple[Identifier, ...] = Field(min_length=1)
     performed_checks: tuple[PerformedCheck, ...] = Field(min_length=1)
@@ -390,6 +475,7 @@ class TrustedTechnicalConfirmation(Contract):
     source: Identifier
     actor_id: Identifier
     provenance: Literal["OBSERVED", "SIMULATED"]
+    actor_kind: ActorKind | None = None
 
 
 class WorkPackagePart(Contract):
@@ -422,6 +508,7 @@ class ResourceConfirmation(Contract):
     source: Identifier
     actor_id: Identifier
     provenance: Literal["OBSERVED", "SIMULATED"]
+    actor_kind: ActorKind | None = None
     # Always recomputed from local records by trusted submission, never accepted
     # as caller-supplied proof. Retains quantities after operational rows change.
     inventory_snapshot: tuple[ConfirmedInventory, ...] = ()
@@ -505,6 +592,8 @@ class ApprovalRequirement(Artifact):
     supersedes_id: str | None = None
     # Step 13B lifecycle requirements bind the exact application promotion lineage.
     promotion_id: str | None = None
+    # F1: decision-relevant uncertainty the approver must see, with its source.
+    material_uncertainties: tuple[RecordedUncertainty, ...] | None = None
 
 
 class ApprovalDecision(Artifact):
@@ -517,6 +606,8 @@ class ApprovalDecision(Artifact):
     rationale: str
     context_revision: int = Field(default=1, ge=1)
     promotion_id: str | None = None
+    # F1: kind of the (unauthenticated) actor; None only on pre-F1 records.
+    actor_kind: ActorKind | None = None
 
 
 class ExecutionReceipt(Artifact):
@@ -650,6 +741,58 @@ class Outcome(Artifact):
         return self
 
 
+AssigneeKind = Literal["WORKER", "TEAM", "CONTRACTOR", "EXTERNAL_SYSTEM", "AUTOMATION"]
+WorkResult = Literal["COMPLETED", "PARTIAL", "NOT_PERFORMED"]
+
+
+class WorkAssignee(Contract):
+    """Who is asked to do the work. Not an OPERON account: ``reference`` is resolved in
+    ``reference_system`` (today the local technician roster; later a team, a contractor,
+    an external work-management system or an authorized automation)."""
+    kind: AssigneeKind
+    reference: Identifier
+    reference_system: Identifier
+
+
+class WorkAssignment(Artifact):
+    """Work requested by one confirmed dispatch (F1). A fact about people, not the plant.
+
+    Created with the CONFIRMED execution receipt. Acknowledgement and reporting are
+    separate later facts (WORK_ACKNOWLEDGED / WorkReport); none of them implies that
+    the plant recovered, which only outcome verification can establish.
+    """
+    equipment_ids: tuple[Identifier, ...] = Field(min_length=1)
+    intervention_id: Identifier
+    intervention_hash: Identifier
+    step_id: Identifier
+    execution_claim_key: Identifier
+    receipt_id: Identifier
+    external_refs: dict[str, str] = Field(default_factory=dict)
+    assignee: WorkAssignee
+    delivery_channel: Identifier = "operon.local"
+    instructions: tuple[str, ...] = ()
+    window_start: AwareDatetime | None = None
+    window_end: AwareDatetime | None = None
+
+
+class WorkReport(Artifact):
+    """What the assignee reports about performing the work (F1). Not verification."""
+    equipment_ids: tuple[Identifier, ...] = Field(min_length=1)
+    assignment_id: Identifier
+    result: WorkResult
+    summary: str = Field(min_length=1, max_length=2000)
+    findings: tuple[str, ...] = ()
+    performed_at: AwareDatetime | None = None
+    actor: ActorRef
+    provenance: Literal["OBSERVED", "SIMULATED"]
+
+    @model_validator(mode="after")
+    def performed_requires_time(self):
+        if self.result != "NOT_PERFORMED" and self.performed_at is None:
+            raise ValueError("performed work requires performed_at")
+        return self
+
+
 class LegacyAlert(Artifact):
     """Temporary UI checkpoint; proposal/result retain the existing API shapes.
 
@@ -686,5 +829,9 @@ class IncidentEvent(Contract):
                         "INCIDENT_UPDATED", "APPROVAL_REQUESTED", "APPROVAL_RECORDED",
                         "EXECUTION_CLAIMED", "EXECUTION_RECORDED",
                         "EVIDENCE_REQUESTED", "EVIDENCE_COLLECTED",
-                        "EVIDENCE_REQUEST_RESOLVED", "OBSERVATION_PLANNED", "OUTCOME_RECORDED"]
+                        "EVIDENCE_REQUEST_RESOLVED", "OBSERVATION_PLANNED", "OUTCOME_RECORDED",
+                        # F1
+                        "HYPOTHESES_REGISTERED", "ANALYSIS_RETRY_SCHEDULED", "ANALYSIS_SUSPENDED",
+                        "ANALYSIS_RESUMED", "LIFECYCLE_COMMAND", "INCIDENT_CANCELLED",
+                        "WORK_ASSIGNED", "WORK_ACKNOWLEDGED", "WORK_REPORTED"]
     payload: dict[str, JsonValue]

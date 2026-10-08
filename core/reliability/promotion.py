@@ -21,7 +21,7 @@ from .repository import (
     IncidentRepository, InvalidReference, StaleRevision, content_hash, manifest_authority, new_id, utcnow,
 )
 from .resources import ResourceUnavailable, require_part_stock, require_qualified_technician
-from .state import validate_transition
+from .state import TERMINAL_PHASES, InvalidTransition, validate_transition
 
 POLICY_VERSION = "operon-promotion-1"
 VALIDATOR = "operon.application.promotion"
@@ -31,18 +31,28 @@ MAX_REASONING_EVIDENCE_CONTEXT_BYTES = 32_000
 
 
 class PromotionRefused(ValueError):
-    def __init__(self, reason: str, *, disposition="BLOCKED"):
+    def __init__(self, reason: str, *, disposition="BLOCKED", code: str | None = None):
         super().__init__(reason)
         self.disposition = disposition
+        self.code = code
 
 
 class PromotionConflict(ValueError):
     pass
 
 
-def _require(condition, reason, *, evidence=False):
+def _require(condition, reason, *, evidence=False, contract=False, code=None):
+    """Refuse a promotion. ``evidence``: more evidence is needed. ``contract``: the advisory
+    output broke a structural contract (F1), which is a retryable technical failure."""
     if not condition:
-        raise PromotionRefused(reason, disposition="NEEDS_EVIDENCE" if evidence else "BLOCKED")
+        raise PromotionRefused(reason, disposition="NEEDS_EVIDENCE" if evidence else "CONTRACT" if contract else "BLOCKED",
+                               code=code)
+
+
+HYPOTHESIS_REF_MISSING = "HYPOTHESIS_REF_MISSING"
+HYPOTHESIS_LINK_AMBIGUOUS = "HYPOTHESIS_LINK_AMBIGUOUS"
+# Bound on durable hypotheses shown to one diagnosis run (SpecialistContext allows 10 artifacts).
+MAX_CONTEXT_HYPOTHESES = 8
 
 
 def _hash(value):
@@ -201,7 +211,7 @@ class PromotionService:
     def _manifest(self, values):
         return {key: _hash(value) for key, value in sorted(values.items())}
 
-    def _checkpoint(self, conn, incident, artifacts, *, phase=None, **changes):
+    def _checkpoint(self, conn, incident, artifacts, *, phase=None, events=(), reason=VALIDATOR, **changes):
         """One revision and event checkpoint for the entire atomic command."""
         # Promotion creates diagnosis/intervention authority only; closure is outcome authority (Step 14).
         _require(phase != m.IncidentPhase.CLOSED, "promotion never closes an incident")
@@ -215,10 +225,81 @@ class PromotionService:
         for artifact in artifacts:
             self.repository._event(conn, updated, "ARTIFACT_ADDED", {
                 "artifact_id": artifact.id, "kind": type(artifact).__name__, "boundary": VALIDATOR})
+        for event_type, payload in events:
+            self.repository._event(conn, updated, event_type, payload)
         if phase is not None and phase != incident.phase:
             self.repository._event(conn, updated, "PHASE_CHANGED", {
-                "from": incident.phase.value, "to": phase.value, "reason": VALIDATOR})
+                "from": incident.phase.value, "to": phase.value, "reason": reason})
         return updated
+
+    # ------------------------------------------------------ durable hypotheses (F1)
+    def _current_hypotheses(self, conn, incident_id) -> dict[str, m.Hypothesis]:
+        """Latest revision of every durable hypothesis, keyed by its stable reference."""
+        hypotheses = self._all(conn, incident_id, m.Hypothesis)
+        superseded = {item.supersedes_id for item in hypotheses if item.supersedes_id}
+        return {item.reference: item for item in hypotheses if item.reference and item.id not in superseded}
+
+    def current_hypotheses(self, incident_id: str) -> dict[str, m.Hypothesis]:
+        with db.get_conn(self.repository.path) as conn:
+            return self._current_hypotheses(conn, incident_id)
+
+    def _next_reference(self, conn, incident_id, taken=()) -> str:
+        used = {item.reference for item in self._all(conn, incident_id, m.Hypothesis) if item.reference} | set(taken)
+        index = len(used) + 1
+        while f"HYP-{index:03d}" in used:
+            index += 1
+        return f"HYP-{index:03d}"
+
+    def register_hypotheses(self, incident_id: str, *, report_id: str, phase=None, reason: str = VALIDATOR,
+                            conn=None) -> dict[str, str]:
+        """Give the run's competing hypotheses durable identity (F1); optionally park the case.
+
+        A suggestion that names a current durable reference continues it; any other
+        suggestion becomes a new OPEN hypothesis with the next reference. Nothing is
+        matched by wording. Returns ``{report-local key: durable reference}``; the
+        mapping and the recommended reference are recorded in HYPOTHESES_REGISTERED.
+        """
+        with self._writer(conn) as conn:
+            incident = self.repository._fetch(conn, incident_id)
+            if incident.phase in TERMINAL_PHASES:
+                return {}
+            if phase is not None:
+                try:
+                    validate_transition(incident.phase, phase)
+                except InvalidTransition:
+                    phase = None  # the case moved on concurrently; identity is still recorded
+            report = self._get(conn, incident_id, report_id, m.SupervisorReport)
+            result = SupervisorResult.model_validate(report.result_payload)
+            advice = {item.key: item.assessment for item in result.assessments}
+            diagnostic = advice.get(result.candidate_diagnosis_key)
+            mapping, artifacts = {}, []
+            if isinstance(diagnostic, DiagnosticAssessment):
+                current = self._current_hypotheses(conn, incident_id)
+                for suggestion in diagnostic.competing_hypotheses:
+                    if suggestion.hypothesis_ref in current:
+                        mapping[suggestion.key] = suggestion.hypothesis_ref
+                        continue
+                    reference = self._next_reference(conn, incident_id, mapping.values())
+                    artifacts.append(m.Hypothesis(
+                        **_identity(incident_id), equipment_ids=(report.asset_id,), mechanism=suggestion.mechanism,
+                        status="OPEN", supporting_evidence_ids=suggestion.supporting_evidence_ids,
+                        contradicting_evidence_ids=suggestion.contradicting_evidence_ids, confidence=None,
+                        confidence_basis="Advisory suggestion registered for durable identity; not validated.",
+                        falsification_tests=suggestion.falsification_tests, reference=reference,
+                        source_run_id=report.run_id, source_key=suggestion.key))
+                    mapping[suggestion.key] = reference
+            recommended = mapping.get(diagnostic.recommended_hypothesis) if isinstance(diagnostic, DiagnosticAssessment) else None
+            if not artifacts and not mapping and (phase is None or phase == incident.phase):
+                return mapping
+            self._checkpoint(conn, incident, artifacts, phase=phase, reason=reason, events=[("HYPOTHESES_REGISTERED", {
+                "run_id": report.run_id, "report_id": report.id, "mapping": mapping, "recommended": recommended,
+                "new": [item.reference for item in artifacts]})])
+            return mapping
+
+    def recommended_reference(self, incident_id: str) -> str | None:
+        """Durable reference of the most recently registered recommended hypothesis, if any."""
+        events = [item for item in self.repository.list_events(incident_id) if item.event_type == "HYPOTHESES_REGISTERED"]
+        return events[-1].payload.get("recommended") if events else None
 
     def submit_technical_confirmation(self, confirmation: m.TrustedTechnicalConfirmation, *, expected_revision: int):
         """Trusted application submission only; never registered as an agent capability.
@@ -226,11 +307,19 @@ class PromotionService:
         Actor authentication/authorization belongs to the calling application. No
         public API or model-facing tool exposes this command in Step 13A.
         """
+        from .actors import authorize, refuse_simulated_in_production
         confirmation = m.TrustedTechnicalConfirmation.model_validate_json(confirmation.model_dump_json())
         with self.repository._write() as conn:
             incident = self.repository._fetch(conn, confirmation.incident_id)
             self.repository._check(incident, expected_revision)
+            authorize(confirmation.actor_kind, incident)
+            refuse_simulated_in_production(incident, confirmation.provenance)
             _require(confirmation.asset_id in incident.equipment_ids, "confirmation asset scope mismatch")
+            # F1: a confirmation binds one durable hypothesis by reference, never by wording.
+            _require(confirmation.hypothesis_ref, "confirmation must name the durable hypothesis it confirms (hypothesis_ref)")
+            hypothesis = self._current_hypotheses(conn, incident.id).get(confirmation.hypothesis_ref)
+            _require(hypothesis is not None and hypothesis.status != "REFUTED" and confirmation.asset_id in hypothesis.equipment_ids,
+                     f"{confirmation.hypothesis_ref} is not a current durable hypothesis of this asset")
             _require(confirmation.observed_at <= utcnow(), "confirmation observation is in the future")
             support = self._evidence(conn, incident, confirmation.asset_id, confirmation.supporting_evidence_ids)
             _require(any(item.kind in {"telemetry", "maintenance_history", "inspection"}
@@ -290,10 +379,13 @@ class PromotionService:
             reserved_quantity=rows[part.part_id]["reserved_quantity"], required_quantity=part.quantity) for part in parts)
 
     def submit_resource_confirmation(self, confirmation: m.ResourceConfirmation, *, expected_revision: int):
+        from .actors import authorize, refuse_simulated_in_production
         confirmation = m.ResourceConfirmation.model_validate_json(confirmation.model_dump_json())
         with self.repository._write() as conn:
             incident = self.repository._fetch(conn, confirmation.incident_id)
             self.repository._check(incident, expected_revision)
+            authorize(confirmation.actor_kind, incident)
+            refuse_simulated_in_production(incident, confirmation.provenance)
             _require(confirmation.asset_id in incident.equipment_ids, "resource confirmation asset mismatch")
             _require(confirmation.observed_at <= utcnow() < confirmation.window_start, "resource dates are not current")
             asset, rows = self._resource_rows(conn, confirmation.asset_id, confirmation.technician_id, confirmation.parts)
@@ -338,6 +430,10 @@ class PromotionService:
                 _require(incident.phase == m.IncidentPhase.INVESTIGATING and draft_id is None,
                          "diagnosis run requires INVESTIGATING")
                 question = "Assess competing mechanisms and explicitly review the selected diagnostic assessment."
+                # F1: durable hypotheses travel with every diagnosis run so a model can
+                # continue them by reference (most recent references first if bounded).
+                current = sorted(self._current_hypotheses(conn, incident_id).values(), key=lambda item: item.reference)
+                artifacts = [item for item in current if asset_id in item.equipment_ids][-MAX_CONTEXT_HYPOTHESES:]
             elif stage == "INTERVENTION_REVIEW":
                 _require(incident.phase == m.IncidentPhase.PLANNING and draft_id, "draft review requires PLANNING and exact draft")
                 diagnosis, lineage = self._lineage(conn, incident, incident.current_diagnosis_id, "diagnosis", current=True)
@@ -473,7 +569,7 @@ class PromotionService:
 
     def _audit_result(self, snapshot, report):
         """Revalidate application audit, dependency DAG, canonical selections and calls."""
-        from .orchestration import ROLE_CONTRACTS, assessment_dependencies, latest_assessments
+        from .orchestration import ROLE_CONTRACTS, assessment_dependencies, effective_uncertainties, latest_assessments
         result = SupervisorResult.model_validate(report.result_payload)
         _require(result.termination_reason == "MODEL_COMPLETED" and not result.exhausted_limits and not result.invalid_output,
                  "run failed, cancelled, timed out or exhausted limits")
@@ -505,8 +601,13 @@ class PromotionService:
                      "assessment relies on unsupplied or future inputs")
             _require(set(assessment.evidence_reviewed) <= set(record.evidence_ids) <= snapshot.evidence_manifest.keys(),
                      "assessment cites evidence outside its frozen packet")
-            _require(not assessment.uncertainties, "assessment uncertainty remains", evidence=True)
             seen.add(record.key)
+        # F1: uncertainty is legitimate output. Only BLOCKING uncertainty (after any
+        # critic raise) on the current reports refuses promotion; MINOR and MATERIAL
+        # uncertainty is recorded with the promotion and carried to the approver.
+        blocking = [item for item in effective_uncertainties(advice, run_id=snapshot.run_id) if item.severity == "BLOCKING"]
+        _require(not blocking, "blocking uncertainty remains: " + "; ".join(item.statement for item in blocking[:3]),
+                 evidence=True)
         for role in ROLE_CONTRACTS:
             _require(sum(record.role == role for record in result.delegations) <= result.bounds.max_role_invocations,
                      "role invocation bound violated")
@@ -578,17 +679,21 @@ class PromotionService:
         result, advice = self._audit_result(snapshot, report)
         return snapshot, report, result, advice, evidence
 
-    def _critic_review(self, advice, *, subject_id, subject_kind, inputs=(), draft=None):
-        reviews = [item.assessment for item in advice.values() if isinstance(item.assessment, CriticAssessment)
-                   and ((item.assessment.subject_id == subject_id and item.assessment.subject_kind == subject_kind)
-                        or set(item.assessment.input_assessment_keys) & set(inputs))]
+    def _critic_review(self, advice, *, subject_id, subject_kind, inputs=(), draft=None, run_id="audit"):
+        from .orchestration import effective_uncertainties
+        keys = [key for key, item in advice.items() if isinstance(item.assessment, CriticAssessment)
+                and ((item.assessment.subject_id == subject_id and item.assessment.subject_kind == subject_kind)
+                     or set(item.assessment.input_assessment_keys) & set(inputs))]
+        reviews = [advice[key].assessment for key in keys]
+        blocking = {item.source_key for item in effective_uncertainties(advice, run_id=run_id, keys=tuple(keys))
+                    if item.severity == "BLOCKING"}
         _require(reviews and any(item.subject_id == subject_id and item.subject_kind == subject_kind
                                 and set(inputs) <= set(item.input_assessment_keys) for item in reviews),
                  "explicit critic review of exact current inputs required")
-        for review in reviews:
+        for key, review in zip(keys, reviews):
             _require(review.recommendation == "ACCEPT" and not (review.evidence_gaps or review.contradictions
-                     or review.unsupported_claims or review.requested_additional_evidence or review.uncertainties),
-                     "outstanding critic rejection or evidence need", evidence=True)
+                     or review.unsupported_claims or review.requested_additional_evidence) and key not in blocking,
+                     "outstanding critic rejection, evidence need or blocking uncertainty", evidence=True)
         if draft:
             _require(any(item.subject_id == draft.id and set(inputs) <= set(item.input_assessment_keys)
                          and (item.reviewed_intervention_id, item.reviewed_intervention_hash) == (draft.id, _hash(draft))
@@ -604,12 +709,13 @@ class PromotionService:
                 return promotion
         return None
 
-    def _verdict(self, incident, target, stage, input_revision, run_id, challenges, checks):
+    def _verdict(self, incident, target, stage, input_revision, run_id, challenges, checks, uncertainties=()):
         return m.ValidationVerdict(
             **_identity(incident.id), target_kind=stage, target_id=target.id, target_hash=_hash(target),
             input_revision=input_revision, decision="ACCEPT", challenges=challenges,
             evidence_ids=target.evidence_ids, validator_run_id=run_id, validator_identity=VALIDATOR,
-            validation_policy_version=POLICY_VERSION, check_results={check: True for check in checks})
+            validation_policy_version=POLICY_VERSION, check_results={check: True for check in checks},
+            uncertainties=tuple(uncertainties) or None)
 
     def _record(self, incident, snapshot, report, target, verdict, stage, request, mapping, evidence, **extra):
         return m.PromotionRecord(
@@ -621,8 +727,37 @@ class PromotionService:
             idempotency_key=content_hash({"incident": incident.id, "run": snapshot.run_id, "stage": stage}),
             request_hash=content_hash(request), **extra)
 
+    def _link_hypothesis(self, selected, diagnostic, evidence, current, confirmation, allow_fallback):
+        """Durable identity of the recommended suggestion: (reference, link basis). Never by wording.
+
+        Preferred: the model names the reference. If it omits it, that is a contract
+        failure the caller retries; only once ``allow_fallback`` is granted (the contract
+        retry budget is spent) may the application link it, and only to the single
+        structurally valid candidate: a current durable hypothesis with a trusted
+        confirmation in this run's packet that no other suggestion of the report claims.
+        """
+        if selected.hypothesis_ref is not None:
+            _require(selected.hypothesis_ref == confirmation.hypothesis_ref,
+                     f"the recommended hypothesis {selected.hypothesis_ref} is not the confirmed hypothesis "
+                     f"{confirmation.hypothesis_ref}", evidence=True)
+            return selected.hypothesis_ref, "MODEL"
+        claimed = {item.hypothesis_ref for item in diagnostic.competing_hypotheses if item.hypothesis_ref}
+        _require(confirmation.hypothesis_ref not in claimed,
+                 f"confirmed hypothesis {confirmation.hypothesis_ref} is continued by a suggestion that is not recommended",
+                 evidence=True)
+        _require(allow_fallback, "the recommended hypothesis does not name its durable reference (hypothesis_ref)",
+                 contract=True, code=HYPOTHESIS_REF_MISSING)
+        confirmed = {m.TrustedTechnicalConfirmation.model_validate(item.payload).hypothesis_ref
+                     for item in evidence.values() if item.source_capability == CONFIRM_MECHANISM and item.kind == "inspection"}
+        candidates = (confirmed & set(current)) - claimed
+        _require(candidates == {confirmation.hypothesis_ref},
+                 f"hypothesis linkage is ambiguous: {len(candidates)} structurally valid candidates "
+                 f"({', '.join(sorted(item for item in candidates if item)) or 'none'})",
+                 contract=True, code=HYPOTHESIS_LINK_AMBIGUOUS)
+        return confirmation.hypothesis_ref, "APPLICATION_FALLBACK"
+
     def promote_diagnosis(self, incident_id: str, *, report_id: str, confirmation_id: str, expected_revision: int,
-                          conn=None):
+                          conn=None, allow_link_fallback: bool = False):
         with self._writer(conn) as conn:
             report = self._get(conn, incident_id, report_id, m.SupervisorReport)
             request = {"report_id": report_id, "report_hash": _hash(report), "confirmation_id": confirmation_id}
@@ -645,8 +780,13 @@ class PromotionService:
             _require(confirmation_evidence.kind == "inspection" and confirmation_evidence.source_capability == CONFIRM_MECHANISM
                      and confirmation_evidence.source_system == VALIDATOR, "trusted technical confirmation required", evidence=True)
             confirmation = m.TrustedTechnicalConfirmation.model_validate(confirmation_evidence.payload)
-            _require((confirmation.incident_id, confirmation.asset_id, confirmation.confirmed_mechanism) == (
-                incident.id, snapshot.asset_id, selected.mechanism), "confirmation scope or exact mechanism mismatch", evidence=True)
+            _require((confirmation.incident_id, confirmation.asset_id) == (incident.id, snapshot.asset_id),
+                     "confirmation scope mismatch", evidence=True)
+            current = self._current_hypotheses(conn, incident.id)
+            _require(confirmation.hypothesis_ref in current,
+                     "trusted confirmation does not name a current durable hypothesis", evidence=True)
+            reference, link_basis = self._link_hypothesis(selected, diagnostic, evidence, current, confirmation,
+                                                          allow_link_fallback)
             _require(confirmation_evidence.derived_from_ids == confirmation.supporting_evidence_ids
                      or set(confirmation.supporting_evidence_ids) <= set(confirmation_evidence.derived_from_ids),
                      "confirmation support differs from durable provenance")
@@ -658,10 +798,15 @@ class PromotionService:
             _require(any(evidence[key].kind in {"telemetry", "maintenance_history", "inspection"}
                          for key in selected.supporting_evidence_ids), "model/classifier evidence cannot confirm a mechanism", evidence=True)
             challenges = self._critic_review(advice, subject_id=result.candidate_diagnosis_key,
-                                             subject_kind="assessment", inputs=(result.candidate_diagnosis_key,))
-            hypotheses, mapping = [], {}
+                                             subject_kind="assessment", inputs=(result.candidate_diagnosis_key,),
+                                             run_id=snapshot.run_id)
+            hypotheses, mapping, taken = [], {}, []
             for suggestion in diagnostic.competing_hypotheses:
                 accepted = suggestion.key == selected.key
+                ref = reference if accepted else (suggestion.hypothesis_ref if suggestion.hypothesis_ref in current else None)
+                ref = ref or self._next_reference(conn, incident.id, taken)
+                taken.append(ref)
+                previous = current.get(ref)
                 hypothesis = m.Hypothesis(
                     **_identity(incident.id), equipment_ids=(snapshot.asset_id,), mechanism=suggestion.mechanism,
                     failure_mode_code=confirmation.failure_mode_code if accepted else None,
@@ -670,7 +815,10 @@ class PromotionService:
                     contradicting_evidence_ids=suggestion.contradicting_evidence_ids, confidence=None,
                     confidence_basis=("Categorical trusted confirmation; no numerical causal confidence assigned." if accepted else
                                       "Unvalidated competing advisory suggestion; no numerical causal confidence assigned."),
-                    falsification_tests=suggestion.falsification_tests)
+                    falsification_tests=suggestion.falsification_tests, reference=ref,
+                    supersedes_id=previous.id if previous else None, source_run_id=snapshot.run_id,
+                    source_key=suggestion.key,
+                    link_basis=link_basis if accepted else ("MODEL" if previous else None))
                 hypotheses.append(hypothesis)
                 mapping[f"{result.candidate_diagnosis_key}/{suggestion.key}"] = hypothesis.id
             selected_id = mapping[f"{result.candidate_diagnosis_key}/{selected.key}"]
@@ -682,8 +830,11 @@ class PromotionService:
                 evidence_ids=tuple(sorted(evidence)), confidence=None, status="ACCEPTED",
                 supersedes_id=incident.current_diagnosis_id)
             mapping[result.candidate_diagnosis_key] = diagnosis.id
+            from .orchestration import effective_uncertainties
             verdict = self._verdict(incident, diagnosis, "diagnosis", snapshot.input_revision, snapshot.run_id, challenges,
-                                    ("freshness", "evidence_closure", "canonical_diagnostic", "critic_review", "trusted_mechanism_match"))
+                                    ("freshness", "evidence_closure", "canonical_diagnostic", "critic_review",
+                                     "trusted_hypothesis_identity", f"hypothesis_link_{link_basis.lower()}"),
+                                    effective_uncertainties(advice, run_id=snapshot.run_id))
             promotion = self._record(incident, snapshot, report, diagnosis, verdict, "diagnosis", request, mapping, evidence)
             self._checkpoint(conn, incident, [*hypotheses, diagnosis, verdict, promotion],
                              phase=m.IncidentPhase.DIAGNOSIS_VALIDATED, current_diagnosis_id=diagnosis.id,
@@ -835,6 +986,7 @@ class PromotionService:
                 "policy": POLICY_VERSION}
 
     def promote_intervention(self, incident_id: str, *, report_id: str, draft_id: str, expected_revision: int):
+        from .orchestration import effective_uncertainties
         with self.repository._write() as conn:
             report = self._get(conn, incident_id, report_id, m.SupervisorReport)
             draft = self._get(conn, incident_id, draft_id, m.Intervention)
@@ -882,7 +1034,8 @@ class PromotionService:
                      "operations lacks feasible durable resource review", evidence=True)
             _require(result.engineering_key in ops.input_assessment_keys, "operations uses stale engineering assessment")
             challenges = self._critic_review(advice, subject_id=draft.id, subject_kind="intervention",
-                                             inputs=(result.engineering_key, result.operations_key), draft=draft)
+                                             inputs=(result.engineering_key, result.operations_key), draft=draft,
+                                             run_id=snapshot.run_id)
             previous = self._all(conn, incident_id, m.Intervention)
             target = m.Intervention.model_validate(draft.model_dump() | {
                 "id": new_id(), "created_at": utcnow(), "status": "VALIDATED",
@@ -891,7 +1044,8 @@ class PromotionService:
             _require(executable_content_hash(target) == executable_content_hash(draft), "reviewed content changed")
             verdict = self._verdict(incident, target, "intervention", snapshot.input_revision, snapshot.run_id, challenges,
                                     ("freshness", "diagnosis_lineage", "exact_draft", "engineering", "dated_resources",
-                                     "critic_review", "executable_parameters", "explicit_business_assumptions"))
+                                     "critic_review", "executable_parameters", "explicit_business_assumptions"),
+                                    effective_uncertainties(advice, run_id=snapshot.run_id))
             mapping = {result.engineering_key: target.id, result.operations_key: target.id,
                        f"{binding.source_report_id}/{binding.source_plan_key}": draft.id}
             promotion = self._record(incident, snapshot, report, target, verdict, "intervention", request, mapping, evidence,

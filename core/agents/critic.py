@@ -14,7 +14,9 @@ for independent retrieval with durable citations. Return advisory ACCEPT, REJECT
 or NEEDS_EVIDENCE with concrete technical reasons. ACCEPT is never policy approval
 or an authoritative ValidationVerdict. For a prior report, use subject_kind=assessment
 and its supplied local key as subject_id and an input_assessment_key. Otherwise
-reference the exact supplied domain artifact.
+reference the exact supplied domain artifact. When an input report understates an
+uncertainty, raise it with uncertainty_reviews (input key, zero-based index, the higher
+severity, rationale). You may raise severity, never lower it.
 """
 
 

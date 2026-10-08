@@ -55,7 +55,10 @@ class Bridge:
         # Trusted support must be source-fresh; refresh baseline reads like the lifecycle does.
         self.engine.lifecycle.refresh_baseline_evidence(self.incident_id, ASSET, self.engine.evidence_service)
         self.history_id = self.current_history_id()
+        # F1: the inspection names the durable hypothesis the parked run registered.
+        reference = PromotionService(self.repo).recommended_reference(self.incident_id)
         fields = dict(incident_id=self.incident_id, asset_id=ASSET, confirmed_mechanism=MECHANISM, failure_mode_code="OSF",
+                      hypothesis_ref=reference,
                       supporting_evidence_ids=(self.history_id,),
                       performed_checks=(m.PerformedCheck(check="Shaft inspection", result="Overload confirmed", passed=True),),
                       observed_at=utcnow(), source="offline-inspection", actor_id="trusted-inspector", provenance="SIMULATED")
@@ -252,7 +255,9 @@ async def test_restart_reconstructs_ready_and_requires_explicit_execution(seeded
         assert conn.execute("SELECT COUNT(*) FROM work_package").fetchone()[0] == 1
 
 
-async def test_engine_rejection_escalates_without_execution(seeded_db, monkeypatch):
+async def test_engine_rejection_returns_to_planning_without_execution(seeded_db, monkeypatch):
+    # F1 (intentional change): rejection returns the case to planning by default; it no
+    # longer escalates or drives the simulated plant to failure. Escalation is explicit.
     holder = {}
     scripted_supervisor(monkeypatch, holder)
     engine = make_engine(monkeypatch, runtime=StrandsRuntime(settings(), model=ScriptedModel()))
@@ -267,26 +272,41 @@ async def test_engine_rejection_escalates_without_execution(seeded_db, monkeypat
     assert (await engine.plan(bridge.incident_id, expected_revision=bridge.revision(), **bridge.binding_fields()))["ok"]
     alert = engine.alerts[ASSET]
     intent = {key: alert["lifecycle"][key] for key in ("requirement_id", "intervention_id", "intervention_hash", "context_revision")}
-    assert (await engine.reject(ASSET, intent))["ok"]
-    assert engine.incidents[ASSET].phase == m.IncidentPhase.ESCALATED and engine.alerts[ASSET]["status"] == "REJECTED"
-    assert engine.sim.assets[ASSET].mode == "failing"
+    assert (await engine.reject(ASSET, intent | {"actor_kind": "DECLARED"}))["ok"]
+    assert engine.incidents[ASSET].phase == m.IncidentPhase.PLANNING and engine.alerts[ASSET]["status"] == "ANALYZING"
+    assert engine.incidents[ASSET].current_intervention_id is None
+    assert engine.sim.assets[ASSET].mode == "arrested"
     assert (await engine.approve(ASSET, intent))["ok"] is False
     with db.get_conn() as conn:
         assert conn.execute("SELECT COUNT(*) FROM work_package").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM approval_decision").fetchone()[0] == 1
 
 
-async def test_supervisor_failures_escalate_and_never_promote(seeded_db, monkeypatch):
+async def test_supervisor_failures_are_retried_then_suspended_never_escalated(seeded_db, monkeypatch):
+    # F1 (intentional change): a model failure is a TECHNICAL failure. It spends the retry
+    # budget (3 attempts), then suspends analysis; it never escalates and never promotes.
     holder = {}
     scripted_supervisor(monkeypatch, holder, lambda payload: payload | {"termination_reason": "MODEL_FAILED", "disposition": "ESCALATED",
                                                                        "decision": None, "blockers": ["Invocation failed"]})
     engine = make_engine(monkeypatch, runtime=StrandsRuntime(settings(), model=ScriptedModel()))
     await engine._advance()
+    await engine.stop()
     holder["bridge"] = Bridge(engine, ASSET)
     await engine.drain()
-    incident = engine.coordinator.repository.fetch_incident(engine.incidents[ASSET].id)
-    assert incident.phase == m.IncidentPhase.ESCALATED and incident.current_diagnosis_id is None
-    assert engine.alerts[ASSET]["status"] == "ESCALATED"
+    repo = engine.coordinator.repository
+    for attempt in (2, 3):
+        engine._reasoning_retries.clear()  # skip the wall-clock backoff
+        engine._progress_lifecycle()
+        await engine.drain()
+    incident = repo.fetch_incident(engine.incidents[ASSET].id)
+    assert incident.phase == m.IncidentPhase.INVESTIGATING and incident.current_diagnosis_id is None
+    assert incident.analysis.suspended and incident.analysis.attempts == 3 and incident.analysis.last_category == "TECHNICAL"
+    reports = [a for a in repo.list_artifacts(incident.id) if isinstance(a, m.SupervisorReport)]
+    engine._reasoning_retries.clear()
+    engine._progress_lifecycle()
+    await engine.drain()
+    assert len([a for a in repo.list_artifacts(incident.id) if isinstance(a, m.SupervisorReport)]) == len(reports) == 3
+    assert engine.alerts[ASSET]["lifecycle"]["analysis"]["suspended"] is True
 
 
 def test_api_contract_rejects_equipment_only_and_stale_approval_intent(seeded_db, monkeypatch):

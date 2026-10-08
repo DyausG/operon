@@ -89,7 +89,38 @@ def legacy_demo_enabled() -> bool:
 
 
 def trusted_submissions_enabled() -> bool:
+    """TEMPORARY (F1): the pre-F1 trusted-host bypass for human-input HTTP routes.
+
+    Superseded by ``OPERON_ENVIRONMENT=sandbox``; still honoured outside production so
+    existing local setups keep working. It never applies in production and never
+    makes a caller authenticated.
+    """
     return _flag("OPERON_TRUSTED_SUBMISSIONS")
+
+
+# ---------------------------------------------------------------------------
+# Operating environment (F1). Explicit, never inferred from missing credentials.
+#   sandbox     synthetic/simulated plant; declared sandbox identities accepted
+#   production  real plant; refuses sandbox identities and simulated human inputs
+#   (unset)     "unspecified": the historical local mode, recorded as such
+# ---------------------------------------------------------------------------
+ENVIRONMENTS = ("sandbox", "production", "unspecified")
+
+
+def environment() -> str:
+    value = os.getenv("OPERON_ENVIRONMENT", "").strip().lower() or "unspecified"
+    if value not in ENVIRONMENTS:
+        raise ValueError(f"OPERON_ENVIRONMENT must be one of {', '.join(ENVIRONMENTS[:2])} (or unset); got {value!r}")
+    return value
+
+
+def technical_retry_attempts() -> int:
+    """Total attempts a reasoning stage gets for technical failures before it is suspended (F1 default 3)."""
+    try:
+        value = int(os.getenv("OPERON_TECHNICAL_RETRY_ATTEMPTS", "3"))
+    except ValueError:
+        value = 3
+    return min(max(value, 1), 10)
 
 
 # ---------------------------------------------------------------------------

@@ -37,15 +37,16 @@ def lazy_decision(disposition):
     return turn
 
 
-def promotable(history_id, confirmation_id):
-    """Specialist advice that satisfies the unchanged application diagnosis gates."""
+def promotable(history_id, confirmation_id, hypothesis_ref=None):
+    """Specialist advice that satisfies the application diagnosis gates (F1: it names the durable hypothesis)."""
     def transform(role, packet, messages, response):
         if role == "diagnostic":
             reviewed = [item.id for item in packet.evidence]
             response[0][1].update(
                 evidence_reviewed=reviewed, recommended_hypothesis="overload", confidence=0.7,
                 missing_evidence_requests=[], uncertainties=[],
-                competing_hypotheses=[dict(key="overload", mechanism=MECHANISM, supporting_evidence_ids=[history_id, confirmation_id],
+                competing_hypotheses=[dict(key="overload", hypothesis_ref=hypothesis_ref, mechanism=MECHANISM,
+                                           supporting_evidence_ids=[history_id, confirmation_id],
                                            confidence=0.7, falsification_tests=["Independent repeat load test"])])
         return response
     return transform
@@ -80,7 +81,7 @@ async def test_local_backend_is_the_unchanged_supervisor_seam(flow, monkeypatch)
         seen.update(runtime=runtime_arg, service=service, kwargs=kwargs)
         from tests.test_promotion import result_payload
         from core.agents.contracts import SupervisorResult
-        snapshot = next(a for a in flow.repo.list_artifacts(flow.incident_id) if isinstance(a, m.SupervisorRunSnapshot))
+        snapshot = [a for a in flow.repo.list_artifacts(flow.incident_id) if isinstance(a, m.SupervisorRunSnapshot)][-1]
         return SupervisorResult.model_validate(result_payload(flow, snapshot))
     monkeypatch.setattr("core.agents.supervisor.supervise_reliability", invoke)
     flow.confirm()
@@ -89,7 +90,7 @@ async def test_local_backend_is_the_unchanged_supervisor_seam(flow, monkeypatch)
     assert outcome.disposition == "PROMOTED"
     assert seen["runtime"] is runtime and seen["service"] is flow.evidence_service
     assert seen["kwargs"]["specialist_runtime"] is specialists and callable(seen["kwargs"]["cancellation_result_handler"])
-    snapshot = next(a for a in flow.repo.list_artifacts(flow.incident_id) if isinstance(a, m.SupervisorRunSnapshot))
+    snapshot = [a for a in flow.repo.list_artifacts(flow.incident_id) if isinstance(a, m.SupervisorRunSnapshot)][-1]
     assert snapshot.runtime_identity["backend"] == "local"
     assert snapshot.version_identity == code_identity()
 
@@ -97,7 +98,7 @@ async def test_local_backend_is_the_unchanged_supervisor_seam(flow, monkeypatch)
 async def test_packet_backend_diagnosis_promotes_only_through_application_gates(flow, monkeypatch):
     confirmation = flow.confirm()
     backend = packet_backend([delegation("diagnostic"), delegation("critic", ("diagnostic",)), lazy_decision("ADVISORY_CONCLUSION")],
-                             SpecialistsModel(supported=True, transform=promotable(flow.history_id, confirmation.id)))
+                             SpecialistsModel(supported=True, transform=promotable(flow.history_id, confirmation.id, flow.hypothesis_ref)))
     before = protected_state(flow.repo, flow.incident_id)
     observed = {}
     original = flow.lifecycle.promotion.promote_diagnosis
@@ -113,8 +114,8 @@ async def test_packet_backend_diagnosis_promotes_only_through_application_gates(
     assert outcome.disposition == "PROMOTED" and outcome.phase == m.IncidentPhase.DIAGNOSIS_VALIDATED
     assert observed["phase"] == m.IncidentPhase.INVESTIGATING and observed["authority"] == []
     assert observed["protected"][0] == before[0]
-    snapshot = next(a for a in flow.repo.list_artifacts(flow.incident_id) if isinstance(a, m.SupervisorRunSnapshot))
     report = flow.repo.get_artifact(flow.incident_id, outcome.report_id)
+    snapshot = flow.repo.get_artifact(flow.incident_id, report.snapshot_id)
     assert snapshot.runtime_identity["backend"] == "packet" and report.completion == "MODEL_COMPLETED"
     assert report.result_payload["disposition"] == "ADVISORY_CONCLUSION" and report.result_payload["evidence_requests"] == []
     assert flow.service.promotion_lineage(flow.incident_id, flow.incident().current_diagnosis_id, "diagnosis").id == outcome.promotion_id

@@ -10,14 +10,18 @@ presence therefore establishes no actor identity:
   (requirement, intervention, hash, context revision); the lifecycle service
   rejects stale or mismatched intent atomically. The actor recorded is the
   caller-declared dashboard operator; a real deployment must authenticate it.
-* Trusted technical/resource confirmation and binding endpoints are disabled
-  unless OPERON_TRUSTED_SUBMISSIONS is set, which declares that the deployment's
-  network/host boundary is the trusted application boundary. They accept the
-  typed schemas only; no endpoint accepts PromotionRecord, ValidationVerdict,
-  SupervisorReport or any other authority artifact JSON.
+* Human-input endpoints (technical/resource confirmation, draft binding, sandbox
+  work acknowledgement and report) are enabled by OPERON_ENVIRONMENT=sandbox (F1).
+  The pre-F1 OPERON_TRUSTED_SUBMISSIONS flag is a TEMPORARY fallback outside
+  production only. They accept the typed schemas only; no endpoint accepts
+  PromotionRecord, ValidationVerdict, SupervisorReport or any other authority JSON.
+* F1 actor kinds are assigned here, never chosen by the caller: SANDBOX in a
+  sandbox environment, DECLARED in the unspecified local environment. Production
+  refuses every human command until authenticated identity exists (F3).
 """
 from __future__ import annotations
 import json
+from datetime import datetime
 from typing import Literal
 
 from fastapi import Body, FastAPI, WebSocket, WebSocketDisconnect
@@ -27,6 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from core import config
 from core.reliability import models as m
+from core.reliability.actors import ActorRefused, request_actor_kind
 from core.seed_data import seed
 from core.engine import DemoEngine
 from server.prism_api import register_prism_routes
@@ -46,10 +51,37 @@ class ApprovalIntent(BaseModel):
     actor_id: str = "dashboard-operator"
     actor_role: str = "maintenance_approver"
     rationale: str = "decided in Operon dashboard"
+    # F1: where a rejection sends the case. Default: back to planning (not escalation).
+    return_to: Literal["PLANNING", "INVESTIGATING", "ESCALATED"] = "PLANNING"
 
 
 class ApprovalCommand(ApprovalIntent):
     decision: Literal["APPROVE", "REJECT"]
+
+
+class ActorFields(BaseModel):
+    """The caller's declared id and role. The kind is assigned by the server (F1)."""
+    model_config = ConfigDict(extra="forbid")
+    actor_id: str = Field(min_length=1, max_length=200)
+    actor_role: str | None = Field(default=None, max_length=100)
+
+
+class LifecycleCommandBody(ActorFields):
+    expected_revision: int = Field(ge=1)
+    rationale: str = Field(min_length=1, max_length=2000)
+
+
+class WorkAcknowledgement(ActorFields):
+    expected_revision: int = Field(ge=1)
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class WorkReportSubmission(ActorFields):
+    expected_revision: int = Field(ge=1)
+    result: Literal["COMPLETED", "PARTIAL", "NOT_PERFORMED"]
+    summary: str = Field(min_length=1, max_length=2000)
+    findings: tuple[str, ...] = Field(default=(), max_length=20)
+    performed_at: datetime | None = None
 
 
 class ExecutionCommand(BaseModel):
@@ -88,8 +120,28 @@ def _status(result: dict, *, refused=409):
 
 
 def _trusted_disabled():
-    return JSONResponse({"ok": False, "error": "trusted submission endpoints are disabled; set "
-                         "OPERON_TRUSTED_SUBMISSIONS=1 only when this host boundary is trusted"}, status_code=403)
+    return JSONResponse({"ok": False, "error": "human-input endpoints are disabled outside a sandbox; set "
+                         "OPERON_ENVIRONMENT=sandbox for synthetic plant validation"}, status_code=403)
+
+
+def _human_inputs_enabled() -> bool:
+    """F1 sandbox gate; the pre-F1 trusted-host flag is a temporary fallback, never in production."""
+    environment = config.environment()
+    return environment == "sandbox" or (environment != "production" and config.trusted_submissions_enabled())
+
+
+def _actor_kind():
+    try:
+        return request_actor_kind(), None
+    except ActorRefused as exc:
+        return None, JSONResponse({"ok": False, "error": str(exc)}, status_code=403)
+
+
+def _actor(fields: ActorFields):
+    kind, refused = _actor_kind()
+    if refused is not None:
+        return None, refused
+    return m.ActorRef(kind=kind, id=fields.actor_id, role=fields.actor_role), None
 
 
 @app.on_event("startup")
@@ -151,7 +203,10 @@ async def approve(equipment_id: str, intent: ApprovalIntent | None = Body(defaul
     if intent is None:
         return _status({"ok": False, "error": "approval must identify the exact requirement, intervention, "
                         "intervention hash and context revision"}, refused=400)
-    return _status(await engine.approve(equipment_id, intent.model_dump()))
+    kind, refused = _actor_kind()
+    if refused is not None:
+        return refused
+    return _status(await engine.approve(equipment_id, intent.model_dump() | {"actor_kind": kind}))
 
 
 @app.post("/api/reject/{equipment_id}")
@@ -161,7 +216,10 @@ async def reject(equipment_id: str, intent: ApprovalIntent | None = Body(default
     if intent is None:
         return _status({"ok": False, "error": "rejection must identify the exact requirement, intervention, "
                         "intervention hash and context revision"}, refused=400)
-    return _status(await engine.reject(equipment_id, intent.model_dump()))
+    kind, refused = _actor_kind()
+    if refused is not None:
+        return refused
+    return _status(await engine.reject(equipment_id, intent.model_dump() | {"actor_kind": kind}))
 
 
 # ---- Durable lifecycle (Step 13B) ----------------------------------------
@@ -178,8 +236,50 @@ async def approval(incident_id: str, command: ApprovalCommand):
     eid = engine._eid_for(incident_id)
     if eid is None:
         return JSONResponse({"ok": False, "error": "unknown incident"}, status_code=404)
+    kind, refused = _actor_kind()
+    if refused is not None:
+        return refused
     handler = engine.approve if command.decision == "APPROVE" else engine.reject
-    return _status(await handler(eid, command.model_dump(exclude={"decision"})))
+    return _status(await handler(eid, command.model_dump(exclude={"decision"}) | {"actor_kind": kind}))
+
+
+@app.post("/api/incidents/{incident_id}/commands/{command}")
+async def lifecycle_command(incident_id: str, command: Literal["resume", "cancel", "escalate", "renew_approval",
+                                                               "return_to_planning", "retry_execution"],
+                            body: LifecycleCommandBody):
+    """F1 recovery commands. Each re-enters the state machine through one validated transition."""
+    actor, refused = _actor(body)
+    if refused is not None:
+        return refused
+    return _status(await engine.lifecycle_command(incident_id, command, expected_revision=body.expected_revision,
+                                                  actor=actor, rationale=body.rationale))
+
+
+@app.post("/api/incidents/{incident_id}/work/{assignment_id}/acknowledge")
+async def acknowledge_work(incident_id: str, assignment_id: str, body: WorkAcknowledgement):
+    """Sandbox field response: the assignee acknowledges the work request (not performance)."""
+    if not _human_inputs_enabled():
+        return _trusted_disabled()
+    actor, refused = _actor(body)
+    if refused is not None:
+        return refused
+    return _status(await engine.lifecycle_command(incident_id, "acknowledge_work", assignment_id=assignment_id,
+                                                  expected_revision=body.expected_revision, actor=actor, note=body.note))
+
+
+@app.post("/api/incidents/{incident_id}/work/{assignment_id}/response")
+async def report_work(incident_id: str, assignment_id: str, body: WorkReportSubmission):
+    """Sandbox field response: the assignee reports the work. Never verification of recovery."""
+    if not _human_inputs_enabled():
+        return _trusted_disabled()
+    actor, refused = _actor(body)
+    if refused is not None:
+        return refused
+    return _status(await engine.lifecycle_command(
+        incident_id, "report_work", assignment_id=assignment_id, expected_revision=body.expected_revision,
+        actor=actor, result=body.result, summary=body.summary, findings=body.findings,
+        performed_at=body.performed_at,
+        provenance="SIMULATED" if config.environment() == "sandbox" else "OBSERVED"))
 
 
 @app.post("/api/incidents/{incident_id}/execute")
@@ -201,24 +301,32 @@ async def verify_outcome(incident_id: str):
 
 @app.post("/api/incidents/{incident_id}/confirmations/technical")
 async def technical_confirmation(incident_id: str, submission: TechnicalSubmission):
-    if not config.trusted_submissions_enabled():
+    if not _human_inputs_enabled():
         return _trusted_disabled()
     if submission.confirmation.incident_id != incident_id:
         return _status({"ok": False, "error": "confirmation incident mismatch"}, refused=400)
+    kind, refused = _actor_kind()
+    if refused is not None:
+        return refused
+    confirmation = submission.confirmation.model_copy(update={"actor_kind": kind})  # never caller-chosen
     try:
-        return engine.submit_technical_confirmation(submission.confirmation, expected_revision=submission.expected_revision)
+        return engine.submit_technical_confirmation(confirmation, expected_revision=submission.expected_revision)
     except Exception as exc:  # typed refusals from the promotion boundary
         return _status({"ok": False, "error": str(exc)})
 
 
 @app.post("/api/incidents/{incident_id}/confirmations/resource")
 async def resource_confirmation(incident_id: str, submission: ResourceSubmission):
-    if not config.trusted_submissions_enabled():
+    if not _human_inputs_enabled():
         return _trusted_disabled()
     if submission.confirmation.incident_id != incident_id:
         return _status({"ok": False, "error": "confirmation incident mismatch"}, refused=400)
+    kind, refused = _actor_kind()
+    if refused is not None:
+        return refused
+    confirmation = submission.confirmation.model_copy(update={"actor_kind": kind})  # never caller-chosen
     try:
-        return engine.submit_resource_confirmation(submission.confirmation, expected_revision=submission.expected_revision)
+        return engine.submit_resource_confirmation(confirmation, expected_revision=submission.expected_revision)
     except Exception as exc:
         return _status({"ok": False, "error": str(exc)})
 
@@ -226,7 +334,7 @@ async def resource_confirmation(incident_id: str, submission: ResourceSubmission
 @app.post("/api/incidents/{incident_id}/drafts")
 async def draft(incident_id: str, submission: DraftSubmission):
     """Trusted binding -> DRAFT -> fresh exact-draft review -> promotion -> approval requirement."""
-    if not config.trusted_submissions_enabled():
+    if not _human_inputs_enabled():
         return _trusted_disabled()
     try:
         return _status(await engine.plan(incident_id, expected_revision=submission.expected_revision, **submission.binding))

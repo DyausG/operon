@@ -21,12 +21,14 @@ change commit together. No receipt, phase, model or caller can close an incident
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from datetime import timedelta
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, JsonValue
 
-from core import db
+from core import config, db
+from core.agents.contracts import CriticAssessment
 from core.agents.contracts import SupervisorResult
 from . import models as m
 from .execution import (
@@ -39,11 +41,14 @@ from .investigation import (
     BASELINE_CAPABILITIES, PINNED_BOUNDARY, DeterministicInvestigator, InvestigationResult, baseline_parameters,
 )
 from .outcome import OutcomeVerification, OutcomeVerifier
-from .promotion import CONFIRM_MECHANISM, POLICY_VERSION as PROMOTION_POLICY, PromotionRefused, PromotionService
+from .promotion import (
+    CONFIRM_MECHANISM, HYPOTHESIS_REF_MISSING, POLICY_VERSION as PROMOTION_POLICY, PromotionRefused, PromotionService,
+)
+from .actors import ActorRefused, authorize
 from .repository import (
     IncidentRepository, InvalidReference, StaleRevision, content_hash, manifest_authority, new_id, utcnow,
 )
-from .state import validate_transition
+from .state import TERMINAL_PHASES, validate_transition
 
 POLICY_VERSION = "operon-lifecycle-1"
 BOUNDARY = "operon.application.lifecycle"
@@ -116,11 +121,28 @@ class ApprovalState(BaseModel):
     decision_ids: tuple[str, ...] = ()
 
 
+class Settlement(BaseModel):
+    """Typed classification of one reasoning stage result (F1). Never authority by itself.
+
+    ``category`` separates TECHNICAL failures (retried, then suspended for an explicit
+    resume) from EVIDENCE failures (the case waits for evidence), GOVERNANCE exceptions
+    (back to planning) and true ESCALATION. ``counted`` is False for retries that are not
+    failures (inputs changed concurrently) and so do not spend the retry budget.
+    """
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    disposition: Literal["PROMOTE", "NEEDS_EVIDENCE", "RETRY", "ESCALATED"]
+    category: m.FailureCategory | None = None
+    code: str
+    reason: str
+    counted: bool = True
+
+
 class StageOutcome(BaseModel):
     """Result of one application-driven reasoning stage; never authority by itself."""
     model_config = ConfigDict(extra="forbid", frozen=True)
     stage: Literal["DIAGNOSIS", "INTERVENTION_REVIEW"]
-    disposition: Literal["PROMOTED", "NEEDS_EVIDENCE", "ESCALATED", "RETRY", "APPROVAL_REQUESTED", "GOVERNANCE_BLOCKED"]
+    disposition: Literal["PROMOTED", "NEEDS_EVIDENCE", "ESCALATED", "RETRY", "SUSPENDED", "APPROVAL_REQUESTED",
+                         "GOVERNANCE_BLOCKED"]
     phase: m.IncidentPhase
     revision: int
     reason: str
@@ -128,6 +150,8 @@ class StageOutcome(BaseModel):
     promotion_id: str | None = None
     draft_id: str | None = None
     requirement_id: str | None = None
+    category: m.FailureCategory | None = None
+    code: str | None = None
 
 
 class LifecycleStatus(BaseModel):
@@ -455,20 +479,71 @@ class LifecycleService:
         return evidence, self.repository.fetch_incident(confirmation.incident_id)
 
     # -------------------------------------------------------- reasoning stages
-    def _settle(self, incident_id, report, stage):
-        """Classify a durable report deterministically. Returns (disposition, reason)."""
+    def _settle(self, incident_id, report, stage) -> Settlement:
+        """Classify a durable report deterministically into a typed Settlement (F1).
+
+        Technical failures (provider, budget, schema, failed specialists, incomplete
+        reviews) are retried and never escalate a case by themselves. Evidence failures
+        park the case. Only an explicit advisory escalation or an UNSAFE engineering
+        review is a true escalation.
+        """
+        from .orchestration import latest_assessments
         if report.stale_reasons:
-            return "RETRY", "run inputs changed during reasoning: " + ", ".join(report.stale_reasons)
+            return Settlement(disposition="RETRY", category="TECHNICAL", code="STALE_INPUTS", counted=False,
+                              reason="run inputs changed during reasoning: " + ", ".join(report.stale_reasons))
         result = SupervisorResult.model_validate(report.result_payload)
         if report.completion != "MODEL_COMPLETED" or result.exhausted_limits or result.invalid_output:
             failure = next((item for item in result.blockers if item.startswith("Model invocation failed")), None)
-            return "ESCALATED", (f"supervisor run terminated with {report.completion}"
-                                 + (f": {failure}" if failure else ""))
-        if result.disposition in {"BLOCKED", "ESCALATED"}:
-            return "ESCALATED", f"supervisor disposition {result.disposition}: " + "; ".join(result.blockers[:3])
+            code = ("INVALID_OUTPUT" if result.invalid_output else
+                    "LIMIT_EXHAUSTED" if result.exhausted_limits else report.completion)
+            return Settlement(disposition="RETRY", category="TECHNICAL", code=code,
+                              reason=f"supervisor run terminated with {report.completion}" + (f": {failure}" if failure else ""))
+        advice = {item.key: item for item in result.assessments}
+        latest = latest_assessments(advice)
+        # A genuinely unsafe exact intervention is a true escalation whatever else the run reported.
+        if stage == "INTERVENTION_REVIEW" and "engineering" in latest and \
+                advice[latest["engineering"]].assessment.intervention_feasibility == "UNSAFE":
+            return Settlement(disposition="ESCALATED", category="ESCALATION", code="UNSAFE_INTERVENTION",
+                              reason="engineering review judged the exact intervention unsafe")
+        failed = [item for item in result.delegations if item.status != "SUCCEEDED"]
+        failed_requests = [item for item in result.evidence_requests if item.status == "FAILED"]
+        if result.disposition == "BLOCKED":
+            model_declared = result.decision is not None and result.decision.disposition == "BLOCKED"
+            if failed or failed_requests or not model_declared:
+                detail = ", ".join(f"{item.role}:{item.error_code or item.status}" for item in failed) or "tool invocation"
+                return Settlement(disposition="RETRY", category="TECHNICAL", code="SPECIALIST_FAILURE",
+                                  reason=f"advisory run blocked by an invocation failure ({detail})")
+            return Settlement(disposition="NEEDS_EVIDENCE", category="EVIDENCE", code="ADVISORY_BLOCKED",
+                              reason="advisory run is blocked: " + "; ".join(result.blockers[:3]))
+        if result.disposition == "ESCALATED":
+            return Settlement(disposition="ESCALATED", category="ESCALATION", code="ADVISORY_ESCALATION",
+                              reason="advisory run escalated: " + "; ".join(result.blockers[:3]))
         if result.disposition in {"UNRESOLVED", "NEEDS_EVIDENCE"} or result.unresolved_evidence_needs:
-            return "NEEDS_EVIDENCE", f"supervisor disposition {result.disposition}"
-        return "PROMOTE", "advisory conclusion ready for application gates"
+            if stage == "DIAGNOSIS":
+                diagnostic = latest.get("diagnostic")
+                incomplete = diagnostic is None or not any(
+                    isinstance(item.assessment, CriticAssessment) and item.assessment.subject_id == diagnostic
+                    for item in advice.values())
+            else:
+                incomplete = not {"engineering", "operations", "critic"} <= latest.keys()
+            if incomplete and not result.unresolved_evidence_needs:
+                return Settlement(disposition="RETRY", category="TECHNICAL", code="INCOMPLETE_REVIEW",
+                                  reason="advisory run omitted a required specialist review")
+            return Settlement(disposition="NEEDS_EVIDENCE", category="EVIDENCE", code="INSUFFICIENT_EVIDENCE",
+                              reason=f"supervisor disposition {result.disposition}")
+        return Settlement(disposition="PROMOTE", code="ADVISORY_CONCLUSION",
+                          reason="advisory conclusion ready for application gates")
+
+    def _refusal(self, incident_id, report, exc: PromotionRefused, stage) -> Settlement:
+        """Classify an application gate refusal; a gate never escalates by itself (F1)."""
+        if exc.disposition == "NEEDS_EVIDENCE":
+            return Settlement(disposition="NEEDS_EVIDENCE", category="EVIDENCE", code="GATE_NEEDS_EVIDENCE", reason=str(exc))
+        if self._refusal_is_stale(incident_id, report):
+            return Settlement(disposition="RETRY", category="TECHNICAL", code="STALE_INPUTS", counted=False,
+                              reason=f"promotion inputs changed: {exc}")
+        code = exc.code or ("CONTRACT_VIOLATION" if exc.disposition == "CONTRACT" else "APPLICATION_GATE_REFUSED")
+        return Settlement(disposition="RETRY", category="TECHNICAL", code=code,
+                          reason=f"application {stage.lower().replace('_', ' ')} gate refused the advisory output: {exc}")
 
     def _refusal_is_stale(self, incident_id, report):
         """A BLOCKED refusal caused by concurrent change is retryable, not an escalation.
@@ -497,18 +572,78 @@ class LifecycleService:
         return StageOutcome(stage=stage, disposition=disposition, phase=incident.phase, revision=incident.revision,
                             reason=reason, **extra)
 
+    def _technical_failure(self, incident_id, settlement: Settlement) -> bool:
+        """Spend one attempt of the technical retry budget; suspend analysis when it is spent.
+
+        Durable (incident state + event), so a restart cannot reset the budget. Returns
+        True when analysis is now suspended. Suspension is not a phase and not an
+        escalation: an explicit, audited ``resume`` re-enables automatic reasoning.
+        """
+        with self.repository._write() as conn:
+            incident = self.repository._fetch(conn, incident_id)
+            if incident.phase in TERMINAL_PHASES:
+                return False
+            state = incident.analysis or m.AnalysisState()
+            attempts, budget = state.attempts + 1, config.technical_retry_attempts()
+            suspended = attempts >= budget
+            analysis = m.AnalysisState(
+                attempts=attempts, suspended=suspended,
+                codes={**state.codes, settlement.code: state.codes.get(settlement.code, 0) + 1},
+                last_category=settlement.category, last_code=settlement.code, last_reason=settlement.reason[:500],
+                updated_at=utcnow())
+            updated = self.repository._update(conn, incident, analysis=analysis)
+            self.repository._event(conn, updated, "ANALYSIS_SUSPENDED" if suspended else "ANALYSIS_RETRY_SCHEDULED", {
+                "category": settlement.category, "code": settlement.code, "reason": settlement.reason[:500],
+                "attempt": attempts, "budget": budget, "phase": incident.phase.value})
+            return suspended
+
+    def _apply(self, incident_id, stage, settlement: Settlement, *, report=None, **extra) -> StageOutcome:
+        """Apply a non-promoting Settlement through explicit, graph-valid writes only."""
+        disposition = settlement.disposition
+        if disposition == "NEEDS_EVIDENCE" and stage == "DIAGNOSIS":
+            if report is not None:
+                # Park and give the competing hypotheses durable identity in one commit, so a
+                # human confirmation can name exactly which hypothesis it confirms.
+                self.promotion.register_hypotheses(incident_id, report_id=report.id,
+                                                   phase=m.IncidentPhase.AWAITING_EVIDENCE, reason=settlement.reason)
+            else:
+                self._transition(incident_id, m.IncidentPhase.AWAITING_EVIDENCE, settlement.reason)
+        elif disposition == "ESCALATED":
+            self._transition(incident_id, m.IncidentPhase.ESCALATED, settlement.reason)
+        elif disposition == "RETRY" and settlement.counted and self._technical_failure(incident_id, settlement):
+            disposition = "SUSPENDED"
+        return self._outcome(incident_id, stage, disposition, settlement.reason, category=settlement.category,
+                             code=settlement.code, report_id=report.id if report is not None else None, **extra)
+
+    def _suspended(self, incident_id, stage, **extra) -> StageOutcome | None:
+        incident = self.repository.fetch_incident(incident_id)
+        if incident.analysis is not None and incident.analysis.suspended:
+            return self._outcome(incident_id, stage, "SUSPENDED",
+                                 "analysis is suspended after repeated technical failures; an explicit resume is required",
+                                 category=incident.analysis.last_category, code=incident.analysis.last_code, **extra)
+        return None
+
     async def diagnose(self, incident_id: str, *, asset_id: str, runtime, evidence_service,
                        specialist_runtime=None, bounds=None, confirmation_id: str | None = None) -> StageOutcome:
         """INVESTIGATING -> durable supervisor run -> application diagnosis gates.
 
-        Only PromotionService.promote_diagnosis creates authority. NEEDS_EVIDENCE
-        parks the incident in AWAITING_EVIDENCE; failed/blocked runs escalate.
+        Only PromotionService.promote_diagnosis creates authority. Evidence failures park
+        the incident in AWAITING_EVIDENCE with durable hypotheses; technical failures
+        spend the retry budget and then suspend analysis; only true escalation escalates.
         """
         incident = self.repository.fetch_incident(incident_id)
         _require(incident.phase == m.IncidentPhase.INVESTIGATING, "diagnosis requires INVESTIGATING")
+        suspended = self._suspended(incident_id, "DIAGNOSIS")
+        if suspended is not None:
+            return suspended
         self.refresh_baseline_evidence(incident_id, asset_id, evidence_service)
         incident = self.repository.fetch_incident(incident_id)
         evidence_ids = self.current_evidence_ids(incident_id, asset_id)
+        # The structural hypothesis-link fallback is allowed only on the attempt that would
+        # spend the technical budget, after at least one contract retry for the missing ID.
+        state = incident.analysis
+        allow_fallback = (state is not None and state.codes.get(HYPOTHESIS_REF_MISSING, 0) >= 1
+                          and state.attempts + 1 >= config.technical_retry_attempts())
         try:
             report = await self.promotion.run_supervisor(
                 incident_id, service=evidence_service, runtime=runtime, specialist_runtime=specialist_runtime,
@@ -516,34 +651,45 @@ class LifecycleService:
                 evidence_ids=evidence_ids, bounds=bounds)
         except PromotionRefused as exc:
             return self._outcome(incident_id, "DIAGNOSIS", "RETRY" if exc.disposition != "NEEDS_EVIDENCE" else "NEEDS_EVIDENCE",
-                                 f"run could not start: {exc}")
-        disposition, reason = self._settle(incident_id, report, "DIAGNOSIS")
-        if disposition == "PROMOTE":
+                                 f"run could not start: {exc}",
+                                 category="TECHNICAL" if exc.disposition != "NEEDS_EVIDENCE" else "EVIDENCE",
+                                 code="RUN_NOT_STARTED")
+        settlement = self._settle(incident_id, report, "DIAGNOSIS")
+        if settlement.disposition == "PROMOTE":
             if confirmation_id is None:
-                confirmations = [key for key in report.evidence_manifest
-                                 if getattr(self.repository.get_artifact(incident_id, key), "source_capability", None) == CONFIRM_MECHANISM]
-                confirmation_id = confirmations[-1] if confirmations else None
+                confirmation_id = self._confirmation_for(incident_id, report)
             if confirmation_id is None:
-                disposition, reason = "NEEDS_EVIDENCE", "trusted technical confirmation has not been supplied"
+                settlement = Settlement(disposition="NEEDS_EVIDENCE", category="EVIDENCE", code="CONFIRMATION_REQUIRED",
+                                        reason="trusted technical confirmation has not been supplied")
             else:
                 try:
                     promotion = self.promotion.promote_diagnosis(
                         incident_id, report_id=report.id, confirmation_id=confirmation_id,
-                        expected_revision=report.checkpoint_revision)
+                        expected_revision=report.checkpoint_revision, allow_link_fallback=allow_fallback)
                     return self._outcome(incident_id, "DIAGNOSIS", "PROMOTED", "application promoted the diagnosis",
                                          report_id=report.id, promotion_id=promotion.id)
                 except PromotionRefused as exc:
-                    if exc.disposition == "NEEDS_EVIDENCE":
-                        disposition, reason = "NEEDS_EVIDENCE", str(exc)
-                    elif self._refusal_is_stale(incident_id, report):
-                        disposition, reason = "RETRY", f"promotion inputs changed: {exc}"
-                    else:
-                        disposition, reason = "ESCALATED", f"application diagnosis gate failed: {exc}"
-        if disposition == "NEEDS_EVIDENCE":
-            self._transition(incident_id, m.IncidentPhase.AWAITING_EVIDENCE, reason)
-        elif disposition == "ESCALATED":
-            self._transition(incident_id, m.IncidentPhase.ESCALATED, reason)
-        return self._outcome(incident_id, "DIAGNOSIS", disposition, reason, report_id=report.id)
+                    settlement = self._refusal(incident_id, report, exc, "DIAGNOSIS")
+        return self._apply(incident_id, "DIAGNOSIS", settlement, report=report)
+
+    def _confirmation_for(self, incident_id, report) -> str | None:
+        """The trusted confirmation in the run's packet for the recommended hypothesis, else the latest one."""
+        confirmations = []
+        for key in report.evidence_manifest:
+            item = self.repository.get_artifact(incident_id, key)
+            if getattr(item, "source_capability", None) == CONFIRM_MECHANISM:
+                confirmations.append(item)
+        if not confirmations:
+            return None
+        result = SupervisorResult.model_validate(report.result_payload)
+        advice = {item.key: item.assessment for item in result.assessments}
+        diagnostic = advice.get(result.candidate_diagnosis_key)
+        selected = next((item for item in getattr(diagnostic, "competing_hypotheses", ())
+                         if item.key == getattr(diagnostic, "recommended_hypothesis", None)), None)
+        confirmations.sort(key=lambda item: (item.created_at, item.id))
+        matching = [item for item in confirmations if selected is not None and selected.hypothesis_ref is not None
+                    and item.payload.get("hypothesis_ref") == selected.hypothesis_ref]
+        return (matching or confirmations)[-1].id
 
     async def plan(self, incident_id: str, *, runtime, evidence_service, expected_revision: int,
                    specialist_runtime=None, bounds=None, **binding_fields) -> StageOutcome:
@@ -558,6 +704,9 @@ class LifecycleService:
         _require(incident.phase == m.IncidentPhase.PLANNING, "draft review requires PLANNING")
         draft = self.repository.get_artifact(incident_id, draft_id)
         _require(isinstance(draft, m.Intervention) and draft.status == "DRAFT", "review target must be a DRAFT intervention")
+        suspended = self._suspended(incident_id, "INTERVENTION_REVIEW", draft_id=draft.id)
+        if suspended is not None:
+            return suspended
         try:
             report = await self.promotion.run_supervisor(
                 incident_id, service=evidence_service, runtime=runtime, specialist_runtime=specialist_runtime,
@@ -565,33 +714,32 @@ class LifecycleService:
                 evidence_ids=draft.evidence_ids, draft_id=draft.id, bounds=bounds)
         except PromotionRefused as exc:
             return self._outcome(incident_id, "INTERVENTION_REVIEW", "RETRY" if exc.disposition != "NEEDS_EVIDENCE" else "NEEDS_EVIDENCE",
-                                 f"review could not start: {exc}", draft_id=draft.id)
-        disposition, reason = self._settle(incident_id, report, "INTERVENTION_REVIEW")
+                                 f"review could not start: {exc}", draft_id=draft.id,
+                                 category="TECHNICAL" if exc.disposition != "NEEDS_EVIDENCE" else "EVIDENCE",
+                                 code="RUN_NOT_STARTED")
+        settlement = self._settle(incident_id, report, "INTERVENTION_REVIEW")
         promotion = None
-        if disposition == "PROMOTE":
+        if settlement.disposition == "PROMOTE":
             try:
                 promotion = self.promotion.promote_intervention(
                     incident_id, report_id=report.id, draft_id=draft.id, expected_revision=report.checkpoint_revision)
             except PromotionRefused as exc:
-                if exc.disposition == "NEEDS_EVIDENCE":
-                    disposition, reason = "NEEDS_EVIDENCE", str(exc)
-                elif self._refusal_is_stale(incident_id, report):
-                    disposition, reason = "RETRY", f"promotion inputs changed: {exc}"
-                else:
-                    disposition, reason = "ESCALATED", f"application intervention gate failed: {exc}"
-        if disposition == "ESCALATED":
-            self._transition(incident_id, m.IncidentPhase.ESCALATED, reason)
+                settlement = self._refusal(incident_id, report, exc, "INTERVENTION_REVIEW")
         if promotion is None:
             # Evidence needs discovered at planning stay in PLANNING: a new trusted
             # binding/draft is required; no authority exists yet to invalidate.
-            return self._outcome(incident_id, "INTERVENTION_REVIEW", disposition, reason, report_id=report.id, draft_id=draft.id)
+            return self._apply(incident_id, "INTERVENTION_REVIEW", settlement, report=report, draft_id=draft.id)
         incident = self.repository.fetch_incident(incident_id)
         try:
             requirement = self.request_approval(incident_id, expected_revision=incident.revision)
         except GovernanceBlocked as exc:
-            self._transition(incident_id, m.IncidentPhase.ESCALATED, f"governance blocked: {exc}")
+            # A governance exception is not an escalation: the exact intervention cannot be
+            # approved as promoted, so it is consumed and the case returns to planning.
+            self._return_to_planning(incident_id, reason=f"governance blocked: {exc}",
+                                     actor=m.ActorRef(kind="SYSTEM", id=BOUNDARY), command="governance_blocked")
             return self._outcome(incident_id, "INTERVENTION_REVIEW", "GOVERNANCE_BLOCKED", str(exc),
-                                 report_id=report.id, promotion_id=promotion.id, draft_id=draft.id)
+                                 report_id=report.id, promotion_id=promotion.id, draft_id=draft.id,
+                                 category="GOVERNANCE", code="GOVERNANCE_BLOCKED")
         return self._outcome(incident_id, "INTERVENTION_REVIEW", "APPROVAL_REQUESTED", "human approval required",
                              report_id=report.id, promotion_id=promotion.id, draft_id=draft.id, requirement_id=requirement.id)
 
@@ -611,47 +759,69 @@ class LifecycleService:
         with self.repository._write() as conn:
             incident = self.repository._fetch(conn, incident_id)
             self.repository._check(incident, expected_revision)
-            _require(incident.phase in {m.IncidentPhase.INTERVENTION_VALIDATED, m.IncidentPhase.AWAITING_APPROVAL},
-                     f"approval request requires INTERVENTION_VALIDATED, found {incident.phase.value}")
-            intervention, record = self._authority(conn, incident)
-            governance = self._governance(conn, incident, intervention, record)
-            if governance.disposition == "BLOCKED":
-                raise GovernanceBlocked(governance)
-            existing = self._current_requirement(conn, incident, intervention)
-            if existing is not None and incident.phase == m.IncidentPhase.AWAITING_APPROVAL:
-                state = self._approval_state(conn, incident, existing)
-                if state.state == "PENDING":
-                    return existing
-                _require(state.state == "EXPIRED", f"requirement {existing.id} is already {state.state}", error=ApprovalRefused)
-            now = utcnow()
-            expires = now + APPROVAL_TTL
-            if intervention.window_start is not None:
-                expires = min(expires, intervention.window_start)
-            requirement = m.ApprovalRequirement(
-                **_identity(incident.id), intervention_id=intervention.id, intervention_hash=artifact_hash(intervention),
-                policy_version=POLICY_VERSION, mode="HUMAN", required_roles=(APPROVER_ROLE,), minimum_distinct_approvers=1,
-                conditions=governance.reasons, expires_at=expires, promotion_id=record.id,
-                supersedes_id=existing.id if existing is not None else None)
-            self._checkpoint(conn, incident, [requirement], phase=m.IncidentPhase.AWAITING_APPROVAL,
-                             reason="deterministic governance requires human approval",
-                             events=[("APPROVAL_REQUESTED", {
-                                 "requirement_id": requirement.id, "intervention_id": intervention.id,
-                                 "intervention_hash": requirement.intervention_hash, "promotion_id": record.id,
-                                 "policy_version": POLICY_VERSION, "governance": governance.model_dump(mode="json")})])
-            return requirement
+            return self._request_approval_in(conn, incident)
+
+    def _material_uncertainties(self, conn, incident, record) -> tuple[m.RecordedUncertainty, ...]:
+        """MATERIAL uncertainty recorded by the intervention and diagnosis promotions (F1)."""
+        verdicts = [self.promotion._get(conn, incident.id, record.verdict_id, m.ValidationVerdict)]
+        if record.source_diagnosis_promotion_id:
+            diagnosis_record = self.promotion._get(conn, incident.id, record.source_diagnosis_promotion_id, m.PromotionRecord)
+            verdicts.insert(0, self.promotion._get(conn, incident.id, diagnosis_record.verdict_id, m.ValidationVerdict))
+        return tuple(item for verdict in verdicts for item in (verdict.uncertainties or ()) if item.severity == "MATERIAL")
+
+    def _request_approval_in(self, conn, incident, *, events=()) -> m.ApprovalRequirement:
+        _require(incident.phase in {m.IncidentPhase.INTERVENTION_VALIDATED, m.IncidentPhase.AWAITING_APPROVAL},
+                 f"approval request requires INTERVENTION_VALIDATED, found {incident.phase.value}")
+        intervention, record = self._authority(conn, incident)
+        governance = self._governance(conn, incident, intervention, record)
+        if governance.disposition == "BLOCKED":
+            raise GovernanceBlocked(governance)
+        existing = self._current_requirement(conn, incident, intervention)
+        if existing is not None and incident.phase == m.IncidentPhase.AWAITING_APPROVAL:
+            state = self._approval_state(conn, incident, existing)
+            if state.state == "PENDING":
+                return existing
+            _require(state.state == "EXPIRED", f"requirement {existing.id} is already {state.state}", error=ApprovalRefused)
+        now = utcnow()
+        expires = now + APPROVAL_TTL
+        if intervention.window_start is not None:
+            expires = min(expires, intervention.window_start)
+        # F1: decision-relevant uncertainty is part of what the approver approves; it
+        # is bound to the requirement and listed with its source among the conditions.
+        material = self._material_uncertainties(conn, incident, record)
+        requirement = m.ApprovalRequirement(
+            **_identity(incident.id), intervention_id=intervention.id, intervention_hash=artifact_hash(intervention),
+            policy_version=POLICY_VERSION, mode="HUMAN", required_roles=(APPROVER_ROLE,), minimum_distinct_approvers=1,
+            conditions=(*governance.reasons, *(f"MATERIAL uncertainty ({item.source_role}): {item.statement}"
+                                               for item in material)),
+            expires_at=expires, promotion_id=record.id,
+            supersedes_id=existing.id if existing is not None else None, material_uncertainties=material or None)
+        self._checkpoint(conn, incident, [requirement], phase=m.IncidentPhase.AWAITING_APPROVAL,
+                         reason="deterministic governance requires human approval",
+                         events=[*events, ("APPROVAL_REQUESTED", {
+                             "requirement_id": requirement.id, "intervention_id": intervention.id,
+                             "intervention_hash": requirement.intervention_hash, "promotion_id": record.id,
+                             "policy_version": POLICY_VERSION, "governance": governance.model_dump(mode="json")})])
+        return requirement
 
     def decide_approval(self, incident_id: str, *, requirement_id: str, intervention_id: str, intervention_hash: str,
                         context_revision: int, actor_id: str, actor_role: str,
-                        decision: Literal["APPROVE", "REJECT"], rationale: str) -> m.ApprovalDecision:
-        """Atomic: exact decision + AWAITING_APPROVAL -> READY (APPROVE) or ESCALATED (REJECT).
+                        decision: Literal["APPROVE", "REJECT"], rationale: str, actor_kind: str | None = None,
+                        return_to: Literal["PLANNING", "INVESTIGATING", "ESCALATED"] = "PLANNING") -> m.ApprovalDecision:
+        """Atomic: exact decision + AWAITING_APPROVAL -> READY (APPROVE) or ``return_to`` (REJECT).
 
         Approval authorizes an exact, currently promoted intervention. It never
-        validates a diagnosis or intervention and never overrides governance.
+        validates a diagnosis or intervention and never overrides governance. F1: a
+        rejection consumes the intervention and returns the case to PLANNING by
+        default; INVESTIGATING or an explicit ESCALATED are the approver's choice.
         """
+        _require(return_to in {"PLANNING", "INVESTIGATING", "ESCALATED"}, f"unsupported rejection target {return_to}",
+                 error=ApprovalRefused)
         _require(actor_id.strip() and actor_role.strip() and rationale.strip(),
                  "approval actor, role and rationale are required", error=ApprovalRefused)
         with self.repository._write() as conn:
             incident = self.repository._fetch(conn, incident_id)
+            actor_kind = authorize(actor_kind, incident)
             requirement = self.repository._artifact(conn, incident.id, requirement_id)
             _require(isinstance(requirement, m.ApprovalRequirement) and requirement.policy_version == POLICY_VERSION
                      and requirement.mode == "HUMAN", "requirement is not a lifecycle human approval requirement",
@@ -687,19 +857,25 @@ class LifecycleService:
             record_decision = m.ApprovalDecision(
                 **_identity(incident.id), requirement_id=requirement.id, intervention_id=intervention.id,
                 intervention_hash=current_hash, actor_id=actor_id, actor_role=actor_role, decision=decision,
-                rationale=rationale, context_revision=incident.revision, promotion_id=record.id)
+                rationale=rationale, context_revision=incident.revision, promotion_id=record.id, actor_kind=actor_kind)
             self.repository._validate_references(conn, incident, record_decision)
             conn.execute("INSERT INTO approval_decision VALUES (?,?,?,?,?,?,?)",
                          (record_decision.id, incident.id, record_decision.intervention_id, record_decision.intervention_hash,
                           record_decision.actor_id, record_decision.created_at.isoformat(), record_decision.model_dump_json()))
-            target = m.IncidentPhase.READY if decision == "APPROVE" else m.IncidentPhase.ESCALATED
+            target = m.IncidentPhase.READY if decision == "APPROVE" else m.IncidentPhase(return_to)
+            changes = {}
+            if decision == "REJECT" and target != m.IncidentPhase.ESCALATED:
+                changes["current_intervention_id"] = None  # the rejected intervention is consumed
             self._checkpoint(conn, incident, phase=target,
                              reason=("exact human approval recorded" if decision == "APPROVE"
-                                     else "human rejected the promoted intervention; reconciliation required"),
+                                     else f"human rejected the promoted intervention; returned to {target.value}"),
                              events=[("APPROVAL_RECORDED", {
                                  "decision_id": record_decision.id, "decision": decision, "requirement_id": requirement.id,
                                  "intervention_id": intervention.id, "intervention_hash": current_hash,
-                                 "promotion_id": record.id, "actor_id": actor_id})])
+                                 "promotion_id": record.id, "actor_id": actor_id, "actor_role": actor_role,
+                                 "actor_kind": actor_kind, "rationale": rationale,
+                                 **({"return_to": target.value} if decision == "REJECT" else {})})],
+                             **changes)
             return record_decision
 
     # --------------------------------------------------------------- execution
@@ -828,13 +1004,21 @@ class LifecycleService:
                 "receipt_id": receipt.id, "step_id": receipt.step_id, "status": receipt.status, "attempt": receipt.attempt,
                 "intervention_id": receipt.intervention_id, "intervention_hash": receipt.intervention_hash,
                 "claim_revision_advanced": incident.revision != claim_started_revision(conn, incident.id, receipt.idempotency_key)})]
+            artifacts = []
+            if receipt.status == "CONFIRMED":
+                assignment = self._work_assignment(conn, incident, receipt)
+                artifacts.append(assignment)
+                events.append(("WORK_ASSIGNED", {
+                    "assignment_id": assignment.id, "receipt_id": receipt.id, "assignee": assignment.assignee.model_dump(
+                        mode="json", exclude={"schema_version"}), "delivery_channel": assignment.delivery_channel,
+                    "external_refs": assignment.external_refs}))
             if incident.phase != m.IncidentPhase.EXECUTING:
                 # Reality is recorded; the phase left EXECUTING through another explicit
                 # command, so the application flags reconciliation instead of guessing.
                 events.append(("INCIDENT_UPDATED", {"reconciliation": "receipt recorded outside EXECUTING",
                                                      "phase": incident.phase.value, "receipt_id": receipt.id}))
-                return self._checkpoint(conn, incident, events=events)
-            return self._checkpoint(conn, incident, phase=target, events=events,
+                return self._checkpoint(conn, incident, artifacts, events=events)
+            return self._checkpoint(conn, incident, artifacts, phase=target, events=events,
                                     reason=("work-package action confirmed; outcome observation required"
                                             if receipt.status == "CONFIRMED" else
                                             f"execution {receipt.status.lower()}; explicit reconciliation or retry required"))
@@ -866,11 +1050,18 @@ class LifecycleService:
         return ExecutionReport(incident_id=incident.id, intervention_id=claimed.intervention.id, phase=incident.phase,
                                receipt_ids=(receipt.id,), external_objects=external)
 
-    def retry_execution(self, incident_id: str, *, expected_revision: int) -> m.Incident:
-        """EXECUTION_FAILED -> READY only after a definitive FAILED claim; UNKNOWN never replays."""
+    def retry_execution(self, incident_id: str, *, expected_revision: int, actor: m.ActorRef | None = None,
+                        rationale: str | None = None) -> m.Incident:
+        """EXECUTION_FAILED -> READY only after a definitive FAILED claim; UNKNOWN never replays.
+
+        F1: a human retry names its actor and rationale and is audited as a command.
+        """
         with self.repository._write() as conn:
             incident = self.repository._fetch(conn, incident_id)
             self.repository._check(incident, expected_revision)
+            if actor is not None:
+                authorize(actor.kind, incident)
+                _require(isinstance(rationale, str) and rationale.strip(), "retry_execution requires a rationale")
             _require(incident.phase == m.IncidentPhase.EXECUTION_FAILED, "retry requires EXECUTION_FAILED",
                      error=ExecutionRefused)
             intervention, *_ = self._eligibility(conn, incident, incident.current_intervention_id, None)
@@ -878,7 +1069,10 @@ class LifecycleService:
             _require(all(item.state == "FAILED" for item in claims),
                      "a prior claim is not definitively FAILED; reconciliation is required",
                      error=ReconciliationRequired)
-            return self._checkpoint(conn, incident, phase=m.IncidentPhase.READY,
+            events = [] if actor is None else [("LIFECYCLE_COMMAND", {
+                "command": "retry_execution", "actor": actor.public(), "rationale": rationale.strip(),
+                "from": incident.phase.value, "to": m.IncidentPhase.READY.value})]
+            return self._checkpoint(conn, incident, phase=m.IncidentPhase.READY, events=events,
                                     reason="explicit retry after definitive execution failure")
 
     def reconcile(self, incident_id: str) -> LifecycleStatus:
@@ -906,6 +1100,204 @@ class LifecycleService:
                                                         "status": "UNKNOWN", "attempt": claim.attempt})])
                         break
             return self._status(conn, incident)
+
+    # ------------------------------------------------------- recovery commands (F1)
+    # Every command: one transaction, the caller's expected revision, an admissible
+    # actor, a rationale, a graph-valid transition through _checkpoint and an audited
+    # LIFECYCLE_COMMAND event. None of them writes authority or sets state directly.
+    def _command(self, conn, incident, *, command, actor: m.ActorRef, rationale, phase=None, events=(), **changes):
+        _require(isinstance(rationale, str) and rationale.strip(), f"{command} requires a rationale")
+        authorize(actor.kind, incident)
+        target = phase or incident.phase
+        payload = {"command": command, "actor": actor.public(), "rationale": rationale.strip(),
+                   "from": incident.phase.value, "to": target.value}
+        return self._checkpoint(conn, incident, phase=phase, reason=f"{command}: {rationale.strip()}",
+                                events=[("LIFECYCLE_COMMAND", payload), *events], **changes)
+
+    def _open(self, conn, incident_id, expected_revision):
+        incident = self.repository._fetch(conn, incident_id)
+        self.repository._check(incident, expected_revision)  # also refuses CLOSED/CANCELLED
+        return incident
+
+    def resume(self, incident_id: str, *, expected_revision: int, actor: m.ActorRef, rationale: str) -> m.Incident:
+        """Re-enter the state machine through an explicit, valid transition (never a state write).
+
+        * analysis suspended after technical failures (INVESTIGATING/PLANNING): clear the
+          suspension; the next run starts with a fresh retry budget;
+        * ESCALATED -> INVESTIGATING;
+        * AWAITING_APPROVAL whose promoted plan was invalidated by newer evidence -> INVESTIGATING;
+        * EXECUTION_FAILED with only definitive FAILED claims -> INVESTIGATING (dispatch abandoned).
+        """
+        with self.repository._write() as conn:
+            incident = self._open(conn, incident_id, expected_revision)
+            phase = incident.phase
+            if incident.analysis is not None and incident.analysis.suspended:
+                return self._command(conn, incident, command="resume", actor=actor, rationale=rationale, analysis=None,
+                                     events=[("ANALYSIS_RESUMED", {"previous": incident.analysis.model_dump(mode="json")})])
+            if phase == m.IncidentPhase.ESCALATED:
+                return self._command(conn, incident, command="resume", actor=actor, rationale=rationale,
+                                     phase=m.IncidentPhase.INVESTIGATING)
+            if phase == m.IncidentPhase.AWAITING_APPROVAL:
+                try:
+                    self._authority(conn, incident)
+                except AuthorityRefused as exc:
+                    return self._command(conn, incident, command="resume", actor=actor, rationale=rationale,
+                                         phase=m.IncidentPhase.INVESTIGATING, current_intervention_id=None,
+                                         events=[("INCIDENT_UPDATED", {"invalidated_plan": str(exc)})])
+                _require(False, "the approval is still valid; decide, renew or return it to planning instead")
+            if phase == m.IncidentPhase.EXECUTION_FAILED:
+                claims = self._claims_for(conn, incident.id, incident.current_intervention_id) if incident.current_intervention_id else []
+                _require(all(item.state == "FAILED" for item in claims),
+                         "a dispatch outcome is not definitively FAILED; reconcile it before abandoning dispatch",
+                         error=ReconciliationRequired)
+                return self._command(conn, incident, command="resume", actor=actor, rationale=rationale,
+                                     phase=m.IncidentPhase.INVESTIGATING, current_intervention_id=None)
+            _require(False, f"nothing to resume in {phase.value}")
+
+    def cancel(self, incident_id: str, *, expected_revision: int, actor: m.ActorRef, rationale: str) -> m.Incident:
+        """Explicit human abandonment -> CANCELLED. Releases the asset's admission key.
+
+        Refused while a dispatch is in flight (EXECUTING): what physically happened must
+        be recorded first. A cancelled case keeps its full durable record.
+        """
+        with self.repository._write() as conn:
+            incident = self._open(conn, incident_id, expected_revision)
+            _require(incident.phase != m.IncidentPhase.EXECUTING,
+                     "a dispatch is in flight; record or reconcile it before cancelling")
+            claims = self._claims_for(conn, incident.id, incident.current_intervention_id) if incident.current_intervention_id else []
+            return self._command(conn, incident, command="cancel", actor=actor, rationale=rationale,
+                                 phase=m.IncidentPhase.CANCELLED, active_run_id=None,
+                                 events=[("INCIDENT_CANCELLED", {
+                                     "actor": actor.public(), "rationale": rationale.strip(),
+                                     "claim_states": [item.state for item in claims]})])
+
+    def escalate(self, incident_id: str, *, expected_revision: int, actor: m.ActorRef, rationale: str) -> m.Incident:
+        """Explicit human escalation to higher authority (a separate act from rejection)."""
+        with self.repository._write() as conn:
+            incident = self._open(conn, incident_id, expected_revision)
+            _require(incident.phase not in {m.IncidentPhase.EXECUTING, m.IncidentPhase.ESCALATED},
+                     f"cannot escalate from {incident.phase.value}")
+            return self._command(conn, incident, command="escalate", actor=actor, rationale=rationale,
+                                 phase=m.IncidentPhase.ESCALATED)
+
+    def renew_approval(self, incident_id: str, *, expected_revision: int, actor: m.ActorRef,
+                       rationale: str) -> m.ApprovalRequirement:
+        """Issue a fresh requirement for the same exact intervention after the previous one EXPIRED.
+
+        Governance is re-evaluated; if the confirmed window has passed it refuses
+        (GovernanceBlocked) and the case must return to planning instead.
+        """
+        with self.repository._write() as conn:
+            incident = self._open(conn, incident_id, expected_revision)
+            _require(incident.phase == m.IncidentPhase.AWAITING_APPROVAL, "renewal requires AWAITING_APPROVAL",
+                     error=ApprovalRefused)
+            authorize(actor.kind, incident)
+            _require(isinstance(rationale, str) and rationale.strip(), "renew_approval requires a rationale")
+            intervention, _ = self._authority(conn, incident)
+            existing = self._current_requirement(conn, incident, intervention)
+            _require(existing is not None and self._approval_state(conn, incident, existing).state == "EXPIRED",
+                     "only an expired approval requirement can be renewed", error=ApprovalRefused)
+            return self._request_approval_in(conn, incident, events=[("LIFECYCLE_COMMAND", {
+                "command": "renew_approval", "actor": actor.public(), "rationale": rationale.strip(),
+                "from": incident.phase.value, "to": incident.phase.value, "expired_requirement_id": existing.id})])
+
+    def return_to_planning(self, incident_id: str, *, expected_revision: int, actor: m.ActorRef,
+                           rationale: str) -> m.Incident:
+        """Withdraw the current promoted intervention (expired window, changed resources,
+        requested changes): INTERVENTION_VALIDATED/AWAITING_APPROVAL/READY -> PLANNING."""
+        with self.repository._write() as conn:
+            incident = self._open(conn, incident_id, expected_revision)
+            _require(incident.phase in {m.IncidentPhase.INTERVENTION_VALIDATED, m.IncidentPhase.AWAITING_APPROVAL,
+                                        m.IncidentPhase.READY}, f"cannot return to planning from {incident.phase.value}")
+            return self._command(conn, incident, command="return_to_planning", actor=actor, rationale=rationale,
+                                 phase=m.IncidentPhase.PLANNING, current_intervention_id=None)
+
+    def _return_to_planning(self, incident_id, *, reason, actor: m.ActorRef, command):
+        with self.repository._write() as conn:
+            incident = self.repository._fetch(conn, incident_id)
+            if incident.phase not in {m.IncidentPhase.INTERVENTION_VALIDATED, m.IncidentPhase.AWAITING_APPROVAL,
+                                      m.IncidentPhase.READY}:
+                return incident
+            return self._command(conn, incident, command=command, actor=actor, rationale=reason,
+                                 phase=m.IncidentPhase.PLANNING, current_intervention_id=None)
+
+    # --------------------------------------------------------------- work (F1)
+    # Work requested (WorkAssignment at the confirmed dispatch), acknowledged and
+    # reported are separate durable facts about people. None of them is evidence that
+    # the plant recovered; only outcome verification can establish that.
+    def _work_assignment(self, conn, incident, receipt) -> m.WorkAssignment:
+        intervention = self.repository._artifact(conn, incident.id, receipt.intervention_id)
+        step = next(item for item in intervention.steps if item.id == receipt.step_id)
+        parameters = WorkPackageParameters.model_validate(step.parameters)
+        return m.WorkAssignment(
+            **_identity(incident.id), equipment_ids=tuple(step.equipment_ids), intervention_id=intervention.id,
+            intervention_hash=receipt.intervention_hash, step_id=step.id, execution_claim_key=receipt.idempotency_key,
+            receipt_id=receipt.id, external_refs=dict(receipt.external_ids),
+            assignee=m.WorkAssignee(kind="WORKER", reference=parameters.technician_id,
+                                    reference_system="operon.local.technician_roster"),
+            delivery_channel="operon.local", instructions=tuple(line for line in parameters.detail.split("\n") if line),
+            window_start=intervention.window_start, window_end=intervention.window_end)
+
+    def _work_states(self, conn, incident_id) -> dict[str, dict]:
+        assignments = self._all(conn, incident_id, m.WorkAssignment)
+        states = {item.id: {"assignment_id": item.id, "state": "ASSIGNED", "assignee": item.assignee.model_dump(
+                    mode="json", exclude={"schema_version"}), "delivery_channel": item.delivery_channel,
+                    "external_refs": item.external_refs, "assigned_at": item.created_at.isoformat(),
+                    "acknowledged_at": None, "acknowledged_by": None, "report_id": None, "result": None,
+                    "reported_at": None, "reported_by": None} for item in assignments}
+        rows = conn.execute("SELECT created_at,event_type,payload_json FROM incident_event WHERE incident_id=? "
+                            "AND event_type IN ('WORK_ACKNOWLEDGED','WORK_REPORTED') ORDER BY event_id",
+                            (incident_id,)).fetchall()
+        for created_at, event_type, payload_json in rows:
+            payload = json.loads(payload_json)
+            state = states.get(payload.get("assignment_id"))
+            if state is None:
+                continue
+            if event_type == "WORK_ACKNOWLEDGED":
+                state.update(state="ACKNOWLEDGED", acknowledged_at=created_at, acknowledged_by=payload.get("actor"))
+            else:
+                state.update(state="REPORTED", report_id=payload.get("report_id"), result=payload.get("result"),
+                             reported_at=created_at, reported_by=payload.get("actor"))
+        return states
+
+    def work_status(self, incident_id: str) -> list[dict]:
+        with db.get_conn(self.repository.path) as conn:
+            return list(self._work_states(conn, incident_id).values())
+
+    def acknowledge_work(self, incident_id: str, *, assignment_id: str, expected_revision: int, actor: m.ActorRef,
+                         note: str | None = None) -> m.Incident:
+        """The assignee acknowledges the request. Separate from assignment; not performance."""
+        with self.repository._write() as conn:
+            incident = self._open(conn, incident_id, expected_revision)
+            authorize(actor.kind, incident)
+            state = self._work_states(conn, incident.id).get(assignment_id)
+            _require(state is not None, "unknown work assignment")
+            _require(state["state"] == "ASSIGNED", f"work assignment is already {state['state']}")
+            return self._checkpoint(conn, incident, events=[("WORK_ACKNOWLEDGED", {
+                "assignment_id": assignment_id, "actor": actor.public(), "note": (note or "").strip() or None})])
+
+    def report_work(self, incident_id: str, *, assignment_id: str, expected_revision: int, actor: m.ActorRef,
+                    result: m.WorkResult, summary: str, findings: tuple[str, ...] = (), performed_at=None,
+                    provenance: Literal["OBSERVED", "SIMULATED"] = "OBSERVED") -> m.WorkReport:
+        """The assignee reports the work. Requires acknowledgement first; never verification."""
+        from .actors import refuse_simulated_in_production
+        with self.repository._write() as conn:
+            incident = self._open(conn, incident_id, expected_revision)
+            authorize(actor.kind, incident)
+            refuse_simulated_in_production(incident, provenance)
+            state = self._work_states(conn, incident.id).get(assignment_id)
+            _require(state is not None, "unknown work assignment")
+            _require(state["state"] == "ACKNOWLEDGED",
+                     "work must be acknowledged before it is reported" if state["state"] == "ASSIGNED"
+                     else f"work assignment is already {state['state']}")
+            assignment = self.promotion._get(conn, incident.id, assignment_id, m.WorkAssignment)
+            report = m.WorkReport(**_identity(incident.id), equipment_ids=assignment.equipment_ids,
+                                  assignment_id=assignment.id, result=result, summary=summary, findings=tuple(findings),
+                                  performed_at=performed_at, actor=actor, provenance=provenance)
+            self._checkpoint(conn, incident, [report], events=[("WORK_REPORTED", {
+                "assignment_id": assignment.id, "report_id": report.id, "result": result, "actor": actor.public(),
+                "provenance": provenance})])
+            return report
 
     # ----------------------------------------------------------------- outcome
     def verify_outcome(self, incident_id: str, *, evidence_service=None) -> OutcomeVerification:
@@ -1003,7 +1395,18 @@ class LifecycleService:
                 "intervention_hash": requirement.intervention_hash, "expires_at": requirement.expires_at.isoformat(),
                 "required_roles": list(requirement.required_roles), "conditions": list(requirement.conditions),
                 "context_revision": incident.revision,
+                "material_uncertainties": [item.model_dump(mode="json", exclude={"schema_version"})
+                                           for item in requirement.material_uncertainties or ()],
             },
+            # F1 additions: all descriptive, none of them authority.
+            "environment": incident.environment,
+            "analysis": None if incident.analysis is None else incident.analysis.model_dump(
+                mode="json", exclude={"schema_version"}),
+            "hypotheses": [{"reference": item.reference, "status": item.status, "mechanism": item.mechanism,
+                            "hypothesis_id": item.id, "link_basis": item.link_basis}
+                           for item in sorted(self.promotion.current_hypotheses(incident_id).values(),
+                                              key=lambda value: value.reference)],
+            "work": self.work_status(incident_id),
         }
 
 

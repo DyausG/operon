@@ -60,9 +60,23 @@ class Environment:
         self.history_id = history.evidence.id
         self.confirmation = None
         self.resource = None
+        self.hypothesis_ref = None
+
+    def register(self):
+        """F1: a first diagnosis run whose competing hypotheses receive durable references.
+
+        The recommended one ("overload") is what a human inspection later confirms by reference.
+        """
+        report = self.complete(self.start(evidence_ids=(self.signal_id, self.history_id)))
+        mapping = self.service.register_hypotheses(self.incident_id, report_id=report.id)
+        self.hypothesis_ref = mapping["overload"]
+        return mapping
 
     def confirm(self, **changes):
+        if self.hypothesis_ref is None and "hypothesis_ref" not in changes:
+            self.register()
         fields = dict(incident_id=self.incident_id, asset_id=ASSET, confirmed_mechanism=MECHANISM,
+                      hypothesis_ref=self.hypothesis_ref,
                       failure_mode_code="OSF", supporting_evidence_ids=(self.history_id,),
                       performed_checks=(m.PerformedCheck(check="Independent load and shaft inspection", result="Mechanical overload confirmed", passed=True),),
                       observed_at=utcnow(), source="offline-inspection-fixture", actor_id="trusted-test-inspector", provenance="SIMULATED")
@@ -138,15 +152,28 @@ def env(seeded_db):
     return Environment()
 
 
+def scripted_references(snapshot):
+    """What a scripted model returns as durable identity (F1): the confirmed reference for
+    the recommended suggestion and the one remaining durable reference for the alternative."""
+    context = snapshot.context_payload
+    confirmed = next((item["payload"].get("hypothesis_ref") for item in reversed(context.get("evidence", []))
+                      if item.get("source_capability") == CONFIRM_MECHANISM), None)
+    durable = [item["reference"] for item in context.get("artifacts", []) if item.get("reference")]
+    others = [ref for ref in durable if ref != confirmed]
+    return confirmed, (others[0] if confirmed and len(others) == 1 else None)
+
+
 def result_payload(env, snapshot, draft=None):
     evidence = list(snapshot.evidence_manifest)
     common = dict(incident_id=env.incident_id, evidence_reviewed=evidence, reasoning_summary="Independent advisory review of supplied evidence.")
     if draft is None:
+        overload_ref, sensor_ref = scripted_references(snapshot)
         diagnostic = common | dict(competing_hypotheses=[
-            dict(key="overload", mechanism=MECHANISM, supporting_evidence_ids=[env.history_id], confidence=0.7,
-                 falsification_tests=["Suggested independent repeat load test"]),
-            dict(key="sensor", mechanism="Sensor bias alternative", supporting_evidence_ids=[], confidence=0.2,
-                 falsification_tests=["Suggested sensor calibration check"])], recommended_hypothesis="overload", confidence=0.7)
+            dict(key="overload", hypothesis_ref=overload_ref, mechanism=MECHANISM, supporting_evidence_ids=[env.history_id],
+                 confidence=0.7, falsification_tests=["Suggested independent repeat load test"]),
+            dict(key="sensor", hypothesis_ref=sensor_ref, mechanism="Sensor bias alternative", supporting_evidence_ids=[],
+                 confidence=0.2, falsification_tests=["Suggested sensor calibration check"])],
+            recommended_hypothesis="overload", confidence=0.7)
         critic = common | dict(subject_kind="assessment", subject_id="diagnostic", input_assessment_keys=["diagnostic"],
                                evidence_gaps=[], contradictions=[], unsupported_claims=[], recommendation="ACCEPT", requested_additional_evidence=[])
         plan = common | dict(input_assessment_keys=["diagnostic", "critic"], validated_input_ids=[], proposed_steps=[
@@ -186,9 +213,10 @@ async def test_snapshot_is_durable_before_invocation_and_terminal_report_after(e
     env.confirm()
     observed = []
     async def invoke(runtime, service, context, **kwargs):
+        # F1: the confirmation was preceded by a registration run, so this run's snapshot is the latest one.
         snapshots = [a for a in env.repo.list_artifacts(env.incident_id) if isinstance(a, m.SupervisorRunSnapshot)]
-        assert len(snapshots) == 1
-        snapshot = snapshots[0]
+        assert len(snapshots) == 2
+        snapshot = snapshots[-1]
         assert context.run_id == snapshot.run_id == env.repo.fetch_incident(env.incident_id).active_run_id
         assert context.input_revision == revision(env)
         # An independent writer succeeds: invocation is outside the write transaction.
@@ -284,10 +312,15 @@ def test_start_run_rejects_stale_raw_evidence_before_reasoning(env):
         env.start()
 
 
-@pytest.mark.parametrize("failure", ["missing_confirmation", "mechanism", "no_support", "classifier_only", "model_only", "critic_only", "contradiction"])
+@pytest.mark.parametrize("failure", ["missing_confirmation", "other_hypothesis", "no_support", "classifier_only", "model_only", "critic_only", "contradiction"])
 def test_diagnosis_needs_independent_grounding(env, failure):
-    if failure != "missing_confirmation":
-        env.confirm(confirmed_mechanism="Different mechanism" if failure == "mechanism" else MECHANISM)
+    # F1: "mechanism" (exact wording) became "other_hypothesis": the inspection confirmed a
+    # different durable hypothesis than the one recommended. Wording is never compared.
+    if failure == "other_hypothesis":
+        mapping = env.register()
+        env.confirm(hypothesis_ref=mapping["sensor"])
+    elif failure != "missing_confirmation":
+        env.confirm()
     if failure == "model_only":
         history = env.repo.get_artifact(env.incident_id, env.history_id)
         payload = {"model_reasoning": MECHANISM}
@@ -308,6 +341,9 @@ def test_diagnosis_needs_independent_grounding(env, failure):
         payload["assessments"][0]["assessment"]["recommended_hypothesis"] = None
     if failure == "contradiction":
         selected["contradicting_evidence_ids"] = [env.history_id]
+    if failure == "other_hypothesis":
+        hypotheses = payload["assessments"][0]["assessment"]["competing_hypotheses"]
+        hypotheses[0]["hypothesis_ref"], hypotheses[1]["hypothesis_ref"] = mapping["overload"], mapping["sensor"]
     report = env.complete(snapshot, payload)
     before = state(env)
     with pytest.raises(PromotionRefused) as exc:
@@ -334,7 +370,9 @@ def test_valid_confirmation_creates_durable_competing_hypotheses_and_application
     assert verdict.input_revision == report.input_revision
     assert verdict.falsification_attempts == ()
     assert hypotheses[0].falsification_tests == ("Suggested independent repeat load test",)
-    assert verdict.check_results["trusted_mechanism_match"] and verdict.challenges
+    assert verdict.check_results["trusted_hypothesis_identity"] and verdict.check_results["hypothesis_link_model"]
+    assert verdict.challenges
+    assert hypotheses[0].reference == env.hypothesis_ref and hypotheses[0].link_basis == "MODEL"
     incident = env.repo.fetch_incident(env.incident_id)
     assert incident.current_diagnosis_id == diagnosis.id and incident.phase == m.IncidentPhase.DIAGNOSIS_VALIDATED
     assert promotion.output_revision == incident.revision and incident.active_run_id is None
@@ -878,7 +916,8 @@ async def test_native_cancellation_retains_completed_delegation_audit(env):
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    report = next(a for a in env.repo.list_artifacts(env.incident_id) if isinstance(a, m.SupervisorReport))
+    # F1: the registration run's report precedes the cancelled run's report.
+    report = [a for a in env.repo.list_artifacts(env.incident_id) if isinstance(a, m.SupervisorReport)][-1]
     result = SupervisorResult.model_validate(report.result_payload)
     assert result.termination_reason == "CANCELLED"
     assert len(result.delegations) == len(result.assessments) == 1

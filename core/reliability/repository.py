@@ -44,13 +44,16 @@ ARTIFACT_TYPES = {cls.__name__: cls for cls in (
     m.Evidence, m.EvidenceRequest, m.Hypothesis, m.Diagnosis, m.ValidationVerdict,
     m.Intervention, m.AgentAction, m.ApprovalRequirement, m.Outcome, m.LegacyAlert,
     m.SupervisorRunSnapshot, m.SupervisorReport, m.PromotionRecord, m.WorkPackageBinding,
-    m.ObservationPlan,
+    m.ObservationPlan, m.WorkAssignment, m.WorkReport,
 )}
 PROMOTION_OWNED_TYPES = (m.SupervisorRunSnapshot, m.SupervisorReport, m.PromotionRecord, m.WorkPackageBinding)
 # Step 14: outcome authority records are authored only by the lifecycle outcome
 # verifier, in the same transaction as the phase change they justify. The public
 # ``add_artifact`` refuses them exactly as it refuses promotion-owned records.
 OUTCOME_OWNED_TYPES = (m.ObservationPlan, m.Outcome)
+# F1: work facts are written only by LifecycleService commands (assignment at the
+# confirmed dispatch receipt, reports by the work-report command).
+WORK_OWNED_TYPES = (m.WorkAssignment, m.WorkReport)
 # Trusted confirmation capabilities and the one evidence kind each produces. The
 # public ``add_artifact`` refuses them, so such records reach ``_store_artifact`` only
 # through the private promotion boundary (PromotionService._submit_evidence).
@@ -67,6 +70,7 @@ REFERENCE_TYPES = {
     "execution_receipt_ids": m.ExecutionReceipt,
     "request_id": m.EvidenceRequest,
     "plan_id": m.ObservationPlan, "baseline_evidence_ids": m.Evidence, "baseline_signal_evidence_id": m.Evidence,
+    "assignment_id": m.WorkAssignment,
 }
 
 
@@ -178,6 +182,10 @@ class IncidentRepository:
 
     @staticmethod
     def _update(conn, incident, **changes):
+        # Technical-retry bookkeeping belongs to one phase visit (F1): a phase change
+        # starts a fresh budget unless the caller sets it explicitly.
+        if "phase" in changes and m.IncidentPhase(changes["phase"]) != incident.phase and "analysis" not in changes:
+            changes["analysis"] = None
         updated = m.Incident.model_validate({**incident.model_dump(), **changes,
                                              "revision": incident.revision + 1, "updated_at": utcnow()})
         cursor = conn.execute("UPDATE incident SET phase=?,revision=?,updated_at=?,state_json=? "
@@ -192,14 +200,17 @@ class IncidentRepository:
         for eid in equipment_ids:
             if not conn.execute("SELECT 1 FROM equipment WHERE equipment_id=?", (eid,)).fetchone():
                 raise InvalidReference(f"unknown equipment {eid}")
+        from core import config
         now = utcnow()
         incident = m.Incident(id=new_id(), created_at=now, updated_at=now,
                               equipment_ids=equipment_ids, admission_key=admission_key,
-                              severity=severity, triage_score=triage_score)
+                              severity=severity, triage_score=triage_score,
+                              environment=config.environment().upper())
         conn.execute("INSERT INTO incident VALUES (?,?,?,?,?,?,?)",
                      (incident.id, incident.admission_key, incident.phase.value, incident.revision,
                       now.isoformat(), now.isoformat(), incident.model_dump_json()))
-        self._event(conn, incident, "INCIDENT_OPENED", {"equipment_ids": list(equipment_ids)})
+        self._event(conn, incident, "INCIDENT_OPENED", {"equipment_ids": list(equipment_ids),
+                                                        "environment": incident.environment})
         return incident
 
     def create_incident(self, equipment_ids: tuple[str, ...], *, admission_key: str,
@@ -389,6 +400,8 @@ class IncidentRepository:
             raise InvalidReference("promotion-owned records require the trusted PromotionService command")
         if isinstance(artifact, OUTCOME_OWNED_TYPES):
             raise InvalidReference("outcome records require the trusted LifecycleService outcome verification command")
+        if isinstance(artifact, WORK_OWNED_TYPES):
+            raise InvalidReference("work records require the LifecycleService work commands")
         with self._write() as conn:
             incident = self._fetch(conn, artifact.incident_id)
             self._check(incident, expected_revision)

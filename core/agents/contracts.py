@@ -7,9 +7,11 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
-from core.reliability.models import Diagnosis, Evidence, IncidentPhase, Intervention, Score, ValidationVerdict
+from core.reliability.models import (
+    Diagnosis, Evidence, Hypothesis, IncidentPhase, Intervention, Score, UncertaintySeverity, ValidationVerdict,
+)
 
 Reference = Annotated[str, Field(min_length=1, max_length=200, pattern=r"\S")]
 Text = Annotated[str, Field(min_length=1, max_length=2000, pattern=r"\S")]
@@ -29,8 +31,33 @@ class EvidenceNeed(AdvisoryContract):
     question: Text
 
 
+class Uncertainty(AdvisoryContract):
+    """One explicit uncertainty (F1). Honest output, never a reason by itself to refuse.
+
+    MINOR: does not affect the decision. MATERIAL: decision-relevant; it stays visible
+    to the approver. BLOCKING: evidence is insufficient to promote; name the evidence
+    that would resolve it in ``resolvable_by`` when one exists.
+    """
+    statement: Text
+    severity: UncertaintySeverity
+    resolvable_by: EvidenceNeed | None = None
+
+
+Uncertainties = Annotated[tuple[Uncertainty, ...], Field(max_length=20)]
+
+
+def _upgrade_uncertainties(value):
+    """Pre-F1 reports stored free-text uncertainties. Read them conservatively as BLOCKING."""
+    if isinstance(value, (list, tuple)):
+        return tuple({"statement": item, "severity": "BLOCKING"} if isinstance(item, str) else item for item in value)
+    return value
+
+
 class HypothesisSuggestion(AdvisoryContract):
     key: Reference
+    # F1: the durable hypothesis reference (e.g. HYP-001) this suggestion continues,
+    # copied from context.artifacts; null only for a genuinely new mechanism.
+    hypothesis_ref: Reference | None = None
     mechanism: Text
     supporting_evidence_ids: References = ()
     contradicting_evidence_ids: References = ()
@@ -44,8 +71,10 @@ class SpecialistAssessment(AdvisoryContract):
     reasoning_summary: Text
     # Application-assigned packet keys, explicitly NOT durable artifact IDs.
     input_assessment_keys: References = ()
-    uncertainties: Observations = ()
+    uncertainties: Uncertainties = ()
     reviewed_intervention_id: Reference | None = None
+
+    _upgrade = field_validator("uncertainties", mode="before")(_upgrade_uncertainties)
     reviewed_intervention_hash: Reference | None = None
 
 
@@ -62,6 +91,9 @@ class DiagnosticAssessment(SpecialistAssessment):
             raise ValueError("hypothesis keys must be unique within this report")
         if self.recommended_hypothesis is not None and self.recommended_hypothesis not in keys:
             raise ValueError("recommended hypothesis must reference a report-local hypothesis key")
+        refs = [item.hypothesis_ref for item in self.competing_hypotheses if item.hypothesis_ref is not None]
+        if len(refs) != len(set(refs)):
+            raise ValueError("a durable hypothesis reference may be continued by only one suggestion")
         for item in self.competing_hypotheses:
             if not set((*item.supporting_evidence_ids, *item.contradicting_evidence_ids)) <= set(self.evidence_reviewed):
                 raise ValueError("hypothesis citations must be in evidence_reviewed")
@@ -94,6 +126,17 @@ class OperationsAssessment(SpecialistAssessment):
     operational_recommendations: Observations
 
 
+class UncertaintyReview(AdvisoryContract):
+    """A critic's severity judgement on one uncertainty of a supplied input report.
+
+    The critic may only raise severity; the original is preserved by the application.
+    """
+    assessment_key: Reference
+    uncertainty_index: int = Field(strict=True, ge=0, le=19)
+    severity: UncertaintySeverity
+    rationale: Text
+
+
 class CriticAssessment(SpecialistAssessment):
     subject_id: Reference
     subject_kind: Literal["diagnosis", "intervention", "assessment"]
@@ -102,6 +145,7 @@ class CriticAssessment(SpecialistAssessment):
     unsupported_claims: Observations
     recommendation: Literal["ACCEPT", "REJECT", "NEEDS_EVIDENCE"]
     requested_additional_evidence: tuple[EvidenceNeed, ...] = Field(max_length=10)
+    uncertainty_reviews: tuple[UncertaintyReview, ...] = Field(default=(), max_length=20)
 
     @model_validator(mode="after")
     def recommendation_consistency(self):
@@ -186,7 +230,7 @@ class SpecialistContext(DiagnosticContext):
     run_purpose: Literal["INVESTIGATION", "DIAGNOSIS", "INTERVENTION_REVIEW"] = "INVESTIGATION"
     review_target_id: Reference | None = None
     review_target_hash: Reference | None = None
-    artifacts: tuple[Diagnosis | Intervention | ValidationVerdict, ...] = Field(default=(), max_length=10)
+    artifacts: tuple[Diagnosis | Intervention | ValidationVerdict | Hypothesis, ...] = Field(default=(), max_length=10)
     advisory_inputs: tuple[AdvisoryInput, ...] = Field(default=(), max_length=5)
 
     @model_validator(mode="after")

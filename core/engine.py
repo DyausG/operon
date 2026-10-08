@@ -51,6 +51,7 @@ from .reliability.lifecycle import (
     ReconciliationRequired, POLICY_VERSION as LIFECYCLE_POLICY,
 )
 from .reliability import models as m
+from .reliability.actors import ActorRefused
 from .reliability.models import ApprovalRequirement, IncidentPhase, Intervention, ModelSignal
 from .reliability.promotion import PromotionRefused
 from .reliability.repository import IncidentRepository, InvalidReference, StaleRevision
@@ -85,7 +86,8 @@ GUIDED_PHASE_STATUS = {
 }
 LIFECYCLE_ERRORS = (LifecycleRefused, ApprovalRefused, GovernanceBlocked, ExecutionRefused, ReconciliationRequired,
                     ExecutionBusy, PromotionRefused, StaleRevision, InvalidReference, LookupError, KeyError, TypeError,
-                    ValueError)
+                    ValueError, ActorRefused)
+TERMINAL_ALERT_PHASES = ("CLOSED", "CANCELLED")
 logger = logging.getLogger(__name__)
 
 
@@ -287,6 +289,11 @@ class DemoEngine:
             logger.warning("Incident %s requires execution reconciliation (claim %s); no automatic replay",
                            incident.id, status.claim_state)
 
+    def _rejected_back(self, incident) -> bool:
+        """F1: a rejection returns the case to PLANNING (default), INVESTIGATING or ESCALATED."""
+        return incident.phase in (IncidentPhase.PLANNING, IncidentPhase.INVESTIGATING, IncidentPhase.ESCALATED) \
+            and self._rejected(incident.id)
+
     def _rejected(self, incident_id: str) -> bool:
         return any(d.decision == "REJECT" for d in self.coordinator.repository.list_approval_decisions(incident_id))
 
@@ -396,9 +403,9 @@ class DemoEngine:
             if state.prog <= 0:
                 return "factory_healthy"
             return "risk_rising" if float(asset.get("failure_prob", 0)) >= config.WARN_THRESHOLD else "degrading"
+        if self._rejected_back(incident):
+            return "cancelled"  # the human rejected the plan: the scripted scenario ends there
         if incident.phase in GUIDED_PHASE_STATUS:
-            if incident.phase == IncidentPhase.ESCALATED and self._rejected(incident.id):
-                return "cancelled"
             return GUIDED_PHASE_STATUS[incident.phase]
         return guided.get("status") or "investigating"
 
@@ -430,7 +437,7 @@ class DemoEngine:
             elif incident.phase in (IncidentPhase.READY, IncidentPhase.EXECUTING, IncidentPhase.OBSERVING,
                                     IncidentPhase.CLOSED):
                 approval_state = "APPROVED"
-            elif incident.phase == IncidentPhase.ESCALATED and self._rejected(incident.id):
+            elif self._rejected_back(incident):
                 approval_state = "REJECTED"
         started = guided.get("started_at")
         return {
@@ -556,6 +563,8 @@ class DemoEngine:
         """
         if equipment_id not in self.sim.assets:
             return {"ok": False, "error": "unknown demo equipment"}
+        if config.environment() == "production":
+            return {"ok": False, "error": "the Guided Demo wipes data and is never available in production"}
         if self.legacy_demo:
             return {"ok": False, "error": "the Guided Demo requires the authoritative lifecycle (unset OPERON_LEGACY_DEMO)"}
         await self.reset(restart=False)
@@ -767,7 +776,7 @@ class DemoEngine:
             st = self.sim.assets[eid]
             resume_requested = eid in self._resume
             threshold_met = a["failure_prob"] >= config.TRIGGER_THRESHOLD
-            signal_condition = (threshold_met and eid not in self.alerts
+            signal_condition = (threshold_met and (eid not in self.alerts or self._alert_terminal(eid))
                                 and eid not in self._analyzing and st.mode == "degrading")
             should_admit = resume_requested or signal_condition
             if self._guided_owner == eid and self._guided_incident_id is None:
@@ -775,7 +784,7 @@ class DemoEngine:
                     skip_reason = None
                 elif not threshold_met:
                     skip_reason = "failure_probability_below_trigger"
-                elif eid in self.alerts:
+                elif eid in self.alerts and not self._alert_terminal(eid):
                     skip_reason = "active_alert_exists"
                 elif eid in self._analyzing:
                     skip_reason = "admission_already_in_progress"
@@ -1078,6 +1087,8 @@ class DemoEngine:
         runtime, specialist_runtime = self._base_runtime, self.specialist_runtime
         if runtime is None or incident is None or incident.phase != IncidentPhase.INVESTIGATING:
             return
+        if incident.analysis is not None and incident.analysis.suspended:
+            return  # F1: technical retry budget spent; only an explicit resume re-enables analysis
         if incident.id in self.prism.coordinator.active_incident_ids():
             # An operator-driven PRISM revision is reasoning over this incident: the autonomous
             # diagnosis would only supersede its claim. It resumes once the PRISM run is done.
@@ -1479,6 +1490,11 @@ class DemoEngine:
                 "outcome_result": view.get("outcome_result"),
                 "supervisor_available": self.runtime is not None,
                 "last_reason": reason or previous.get("lifecycle", {}).get("last_reason"),
+                # F1 descriptive state (never authority): where the case lives, technical
+                # retry/suspension, durable hypotheses, work facts, approver-visible uncertainty.
+                "environment": view.get("environment"), "analysis": view.get("analysis"),
+                "hypotheses": view.get("hypotheses", []), "work": view.get("work", []),
+                "material_uncertainties": (requirement or {}).get("material_uncertainties", []),
                 "read_model": self._incident_read_model(incident),
             },
         }
@@ -1654,7 +1670,8 @@ class DemoEngine:
                 intervention_hash=str(command["intervention_hash"]), context_revision=int(command["context_revision"]),
                 actor_id=str(command.get("actor_id") or "dashboard-operator"),
                 actor_role=str(command.get("actor_role") or "maintenance_approver"), decision="APPROVE",
-                rationale=str(command.get("rationale") or "approved in Operon dashboard"))
+                rationale=str(command.get("rationale") or "approved in Operon dashboard"),
+                actor_kind=command.get("actor_kind"))
         except LIFECYCLE_ERRORS as exc:
             await self._refresh_lifecycle(eid, "approval_refused", reason=str(exc))
             return {"ok": False, "error": str(exc), "incident": self.lifecycle.projection(incident.id)}
@@ -1715,11 +1732,16 @@ class DemoEngine:
                 intervention_hash=str(command["intervention_hash"]), context_revision=int(command["context_revision"]),
                 actor_id=str(command.get("actor_id") or "dashboard-operator"),
                 actor_role=str(command.get("actor_role") or "maintenance_approver"), decision="REJECT",
-                rationale=str(command.get("rationale") or "rejected in Operon dashboard"))
+                rationale=str(command.get("rationale") or "rejected in Operon dashboard"),
+                actor_kind=command.get("actor_kind"), return_to=str(command.get("return_to") or "PLANNING"))
         except LIFECYCLE_ERRORS as exc:
             await self._refresh_lifecycle(eid, "rejection_refused", reason=str(exc))
             return {"ok": False, "error": str(exc), "incident": self.lifecycle.projection(incident.id)}
-        self.sim.set_mode(eid, "failing")   # demo run-to-failure scenario after human rejection
+        if self.coordinator.repository.fetch_incident(incident.id).phase == IncidentPhase.ESCALATED:
+            # Explicit escalation on rejection keeps the historical demo plant response
+            # (run to failure). The default rejection returns the case to planning and
+            # leaves the plant held while the plan is reworked. Plant response is F1.2.
+            self.sim.set_mode(eid, "failing")
         self.status_override[eid] = "CRITICAL"
         await self._refresh_lifecycle(eid, "rejected", message_type="rejected")
         if self._release_guided_ownership(eid, reason="approval_rejected"):
@@ -1772,6 +1794,46 @@ class DemoEngine:
         if eid:
             self.incidents[eid] = incident
             self.alerts[eid] = self._lifecycle_alert(eid)
+
+    def _alert_terminal(self, eid: str) -> bool:
+        """A CLOSED or CANCELLED case no longer blocks detection of a new case on its asset (F1)."""
+        return ((self.alerts.get(eid) or {}).get("lifecycle") or {}).get("phase") in TERMINAL_ALERT_PHASES
+
+    LIFECYCLE_COMMANDS = ("resume", "cancel", "escalate", "renew_approval", "return_to_planning",
+                          "retry_execution", "acknowledge_work", "report_work")
+
+    async def lifecycle_command(self, incident_id: str, command: str, **arguments) -> dict:
+        """Run one audited F1 lifecycle command; every transition is validated by LifecycleService."""
+        if command not in self.LIFECYCLE_COMMANDS:
+            return {"ok": False, "error": f"unknown lifecycle command {command!r}"}
+        eid = self._eid_for(incident_id)
+        try:
+            result = await asyncio.to_thread(getattr(self.lifecycle, command), incident_id, **arguments)
+        except LIFECYCLE_ERRORS + (PermissionError,) as exc:
+            if eid:
+                await self._refresh_lifecycle(eid, f"{command}_refused", reason=str(exc))
+            return {"ok": False, "error": str(exc), "incident": self.lifecycle.projection(incident_id)}
+        if eid:
+            incident = self.coordinator.repository.fetch_incident(incident_id)
+            if incident.phase == IncidentPhase.CANCELLED:
+                self._release_asset_hold(eid)
+            elif command == "resume" and incident.phase == IncidentPhase.INVESTIGATING:
+                self._reasoning_retries.pop(eid, None)
+            await self._refresh_lifecycle(eid, command, reason=arguments.get("rationale"))
+        return {"ok": True, "command": command,
+                "result_id": getattr(result, "id", None), "incident": self.lifecycle.projection(incident_id)}
+
+    def _release_asset_hold(self, eid: str):
+        """Undo the engine's analysis hold on a cancelled case's simulated asset.
+
+        Admission froze the simulated asset ("arrested"); cancelling abandons the case,
+        so the asset resumes its own profile and a persisting condition is detected as a
+        new case. This is the engine's hold, not a plant response to work (F1.2).
+        """
+        state = self.sim.assets.get(eid)
+        if state is not None and state.mode == "arrested":
+            self.sim.set_mode(eid, "degrading" if state.profile.scenario != "healthy" else "healthy")
+        self.status_override.pop(eid, None)
 
     def incident_view(self, incident_id: str) -> dict:
         projection = self.lifecycle.projection(incident_id)

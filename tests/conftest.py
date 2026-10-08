@@ -25,7 +25,8 @@ os.environ["GOOGLE_API_KEY"] = ""
 for _k in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_PROFILE", "AWS_BEARER_TOKEN_BEDROCK",
            "SENTINEL_LLM_PROVIDER", "OPERON_AI_PROVIDER", "OPERON_OLLAMA_MODEL", "OPERON_OLLAMA_BASE_URL",
            "OPERON_GEMINI_MODEL", "OPERON_SPECIALIST_MODEL_ID", "OPERON_TRUSTED_SUBMISSIONS",
-           "POC_FORCE_DETERMINISTIC", "OPERON_REASONING_BACKEND"):
+           "POC_FORCE_DETERMINISTIC", "OPERON_REASONING_BACKEND", "OPERON_ENVIRONMENT",
+           "OPERON_TECHNICAL_RETRY_ATTEMPTS"):
     os.environ.pop(_k, None)
 # A developer's ~/.aws/credentials must not make Bedrock look configured in tests.
 os.environ["AWS_SHARED_CREDENTIALS_FILE"] = str(pathlib.Path(_TMP_ROOT.name) / "no-aws-credentials")
