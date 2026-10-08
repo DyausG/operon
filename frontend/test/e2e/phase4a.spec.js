@@ -96,7 +96,7 @@ test.describe("decision surface (screen 8)", () => {
       await route.fulfill({ status: 409, json: { ok: false, error: "requirement is already EXPIRED" } });
     });
     await page.goto(`/app/cases/${INCIDENT}#decision`);
-    await page.getByRole("button", { name: "Reject and escalate…" }).click();
+    await page.getByRole("button", { name: "Reject and return to planning…" }).click();
     await page.getByRole("button", { name: "Confirm rejection" }).click();
     await expect(page.getByText("A reason is required to reject.")).toBeVisible();
     await expect(page.getByLabel("Rationale")).toBeFocused();

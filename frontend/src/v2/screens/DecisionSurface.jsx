@@ -133,7 +133,7 @@ export function DecisionSurface({ c, session, roleLabel, connected, now, trigger
       <section className="wb-decision is-recorded" aria-labelledby="wb-decision-title" role="status">
         <div className="wb-decision-head">
           <h3 className="wb-decision-title" id="wb-decision-title">
-            {recorded.decision === "APPROVE" ? "Approved" : "Rejected and escalated"} by {session?.name || "declared operator"} at {clock(recorded.at, { seconds: true })}
+            {recorded.decision === "APPROVE" ? "Approved" : "Rejected; returned to planning"} by {session?.name || "declared operator"} at {clock(recorded.at, { seconds: true })}
           </h3>
         </div>
         <p>{recorded.decision === "APPROVE" ? "Dispatching the bound work package…" : "Automated progress has stopped; an engineering decision is required."} The record updates when the backend confirms.</p>
@@ -208,13 +208,13 @@ export function DecisionSurface({ c, session, roleLabel, connected, now, trigger
         </Button>
         <Button variant="danger" size="lg" icon={IconSquareX} inactive={!connected} reasonId={reasonId} onBlocked={block?.focus}
           aria-expanded={rejectOpen} onClick={() => setRejectOpen((o) => !o)}>
-          Reject and escalate…
+          Reject and return to planning…
         </Button>
         {block ? <span className="wb-decision-reason" aria-hidden="true">{block.text}</span> : null}
       </div>
       {rejectOpen ? (
         <div className="wb-reject" role="group" aria-label="Confirm rejection">
-          <p>Rejecting escalates this case. Automated progress stops until an engineer resolves it, which isn’t available in this version (G2). A reason is required and is recorded with your declared identity.</p>
+          <p>Rejecting withdraws this plan and returns the case to planning; nothing is dispatched. A reason is required and is recorded with your declared identity.</p>
           <div className="wb-reject-controls">
             <Button variant="danger" size="md" inactive={!connected} reasonId={reasonId} onBlocked={block?.focus}
               busy={busy === "REJECT"} busyLabel="Recording rejection…" onClick={() => decide("REJECT")}>Confirm rejection</Button>
@@ -222,7 +222,7 @@ export function DecisionSurface({ c, session, roleLabel, connected, now, trigger
           </div>
         </div>
       ) : null}
-      <p className="wb-decision-foot">Request changes isn’t available in this version (G4). Rejecting escalates this case; automated progress stops until an engineer resolves it, which isn’t available yet (G2).</p>
+      <p className="wb-decision-foot">Rejecting returns the case to planning for a revised plan. Escalation is a separate action.</p>
     </section>
   );
 }

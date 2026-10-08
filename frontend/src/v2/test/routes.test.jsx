@@ -75,7 +75,7 @@ describe("decision surface (screen 8) over the AWAITING_APPROVAL fixture", () =>
     const text = html.replace(/<!-- -->/g, "");
     expect(text).toContain(`Binding <span class="wb-mono">${lc.intervention_hash.slice(0, 6)} · R${lc.context_revision}</span>`);
     expect(text.indexOf("Binding <span")).toBeLessThan(text.indexOf("<span>Approve and dispatch</span>"));
-    expect(html).toContain("Request changes isn’t available in this version (G4)");
+    expect(html).toContain("Rejecting returns the case to planning for a revised plan."); // F1: reject no longer escalates
     expect(html).toContain("declared, not verified: G8");
   });
 
