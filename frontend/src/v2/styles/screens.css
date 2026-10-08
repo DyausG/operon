@@ -253,7 +253,9 @@
   .wb-case-main { grid-template-columns: minmax(0, 1fr); }
   .wb-casenav { position: static; padding: 6px var(--space-gutter) 0; border-bottom: 1px solid var(--color-border-subtle); overflow-x: auto; }
   .wb-casenav ol { flex-direction: row; gap: 0; }
-  .wb-casenav-item { white-space: nowrap; border-left: 0; border-bottom: 2px solid transparent; padding: 8px 10px; }
+  /* Items keep their width and the strip scrolls; they never shrink into each other. */
+  .wb-casenav li { flex: none; }
+  .wb-casenav-item { grid-template-columns: 16px auto; white-space: nowrap; border-left: 0; border-bottom: 2px solid transparent; padding: 8px 10px; }
   .wb-casenav-item.is-selected { border-bottom-color: var(--color-text-primary); background: transparent; }
   .wb-casenav-meta { display: none; }
   .wb-case-content { border-left: 0; padding-left: var(--space-gutter); }

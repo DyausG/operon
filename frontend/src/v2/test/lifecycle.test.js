@@ -169,6 +169,16 @@ describe("stage line and navigator", () => {
     const replanning = alert({ phase: "PLANNING", read_model: { events: [ev("APPROVAL_RECORDED", { decision: "REJECT", return_to: "PLANNING" }, 5)] } });
     expect(stageLineOf(replanning).context).toEqual(["returned to planning after rejection"]);
   });
+  it("a rejection's context follows its return_to; an escalation by rejection says no more than its origin", () => {
+    const rejected = (return_to, phase) => alert({ phase, read_model: { events: [ev("APPROVAL_RECORDED", { decision: "REJECT", return_to }, 5), ev("PHASE_CHANGED", { from: "AWAITING_APPROVAL", to: phase }, 6)] } });
+    expect(stageLineOf(rejected("ESCALATED", "ESCALATED")).context).toEqual([]);
+    expect(stageLineOf(rejected("INVESTIGATING", "INVESTIGATING")).context).toEqual(["returned to investigation after rejection"]);
+    expect(stageLineOf(alert({ phase: "PLANNING", read_model: { events: [ev("APPROVAL_RECORDED", { decision: "REJECT" }, 5)] } })).context)
+      .toEqual(["returned to planning after rejection"]); // pre-F1.1 records carry no return_to: PLANNING is the default
+  });
+  it("READY is in the In work stage but says nothing was dispatched", () => {
+    expect(stageLineOf(alert({ phase: "READY" }))).toMatchObject({ text: "In work · stage 6 of 8", context: ["approved, not dispatched"] });
+  });
   it("routes legacy and V2 hashes: #decision opens Now while a decision is pending", () => {
     expect(sectionForHash("#decision", { decisionPending: true })).toBe("now");
     expect(sectionForHash("#decision", { decisionPending: false })).toBe("decision");

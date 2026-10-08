@@ -54,6 +54,7 @@ describe("Now over real exception frames", () => {
     expect(page).toContain("Escalated from Awaiting decision");
     expect(page).toContain("human rejected the promoted intervention; returned to ESCALATED");
     expect(page).not.toContain("human approval required"); // the stale last_reason is never shown as the cause
+    expect(page).not.toContain("returned to planning"); // this rejection's return_to was ESCALATED
     expect(page).toContain("This asset can’t open a new case until this one is resumed or cancelled.");
     expect(actionsOf(html)).toEqual(["Resume investigation…", "Cancel case…"]);
   });
@@ -114,6 +115,7 @@ describe("Now over real exception frames", () => {
     const html = now(READY);
     const page = text(html);
     expect(page).toContain("Approved; waiting for dispatch");
+    expect(page).toContain("In work · stage 6 of 8 · approved, not dispatched");
     expect(page).toContain("Waiting on Approver");
     expect(actionsOf(html)).toEqual(["Dispatch approved work package…", "Return to planning…", "Escalate…", "Cancel case…"]);
   });

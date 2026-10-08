@@ -87,7 +87,7 @@ function Situation({ c, now, trigger, decide }) {
       const from = cause?.from ? stageOf(cause.from) : null;
       return (
         <NowBlock tone="exception" id="now-escalated" title={`Escalated${from && !from.exception ? ` from ${from.label}` : ""}`}>
-          {cause?.reason ? <p>{cause.reason}.</p> : null}
+          {cause?.reason ? <p><span className="wb-ledger-key">Recorded reason</span> {cause.reason}</p> : null}
           {rejectionOf(rm) && cause?.from === "AWAITING_APPROVAL" ? <p className="wb-secondary">{rejectionLine(rejectionOf(rm))}</p> : null}
           <p>Evidence, the diagnosis and the plan state are kept. {(rm.execution_receipts || []).length ? "The dispatch receipts below stay on record." : "Nothing was dispatched."} This asset can’t open a new case until this one is resumed or cancelled.</p>
         </NowBlock>

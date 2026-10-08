@@ -184,8 +184,15 @@ export function stageLineOf(alert) {
   if (inspections > 1) context.push(`inspection requested ${inspections}×`);
   const notRecovered = events(rm, "OUTCOME_RECORDED").filter((e) => e.payload?.result === "NOT_RECOVERED").length;
   if (notRecovered) context.push(`reinvestigating after not recovered${notRecovered > 1 ? ` (${notRecovered}×)` : ""}`);
-  const rejections = events(rm, "APPROVAL_RECORDED").filter((e) => e.payload?.decision === "REJECT").length;
-  if (rejections && lc.phase !== "AWAITING_APPROVAL") context.push(`returned to planning after rejection${rejections > 1 ? ` (${rejections}×)` : ""}`);
+  // A rejection's destination is its return_to (F1.1 default PLANNING); an escalation by rejection is
+  // already said by "from Awaiting decision".
+  const rejections = events(rm, "APPROVAL_RECORDED").filter((e) => e.payload?.decision === "REJECT");
+  for (const [to, words] of [["PLANNING", "returned to planning after rejection"], ["INVESTIGATING", "returned to investigation after rejection"]]) {
+    const n = rejections.filter((e) => (e.payload?.return_to || "PLANNING") === to).length;
+    if (n && lc.phase !== "AWAITING_APPROVAL") context.push(`${words}${n > 1 ? ` (${n}×)` : ""}`);
+  }
+  // READY sits in the "In work" stage but nothing has been dispatched (dispatch is explicit).
+  if (lc.phase === "READY") context.unshift("approved, not dispatched");
   if (s.exception) {
     const from = s.key === "ESCALATED" ? lastPhaseChange(rm, "ESCALATED")?.payload?.from : s.key === "DISPATCH_FAILED" ? "EXECUTING" : null;
     const fromStage = from ? stageOf(from) : null;
