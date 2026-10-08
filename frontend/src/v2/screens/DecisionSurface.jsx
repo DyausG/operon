@@ -136,7 +136,7 @@ export function DecisionSurface({ c, session, roleLabel, connected, now, trigger
             {recorded.decision === "APPROVE" ? "Approved" : "Rejected; returned to planning"} by {session?.name || "declared operator"} at {clock(recorded.at, { seconds: true })}
           </h3>
         </div>
-        <p>{recorded.decision === "APPROVE" ? "Dispatching the bound work package…" : "Automated progress has stopped; an engineering decision is required."} The record updates when the backend confirms.</p>
+        <p>{recorded.decision === "APPROVE" ? "Dispatching the bound work package…" : "The case returned to planning. The rejected plan is no longer awaiting approval, and nothing was dispatched as a result of this rejection."} The record updates when the backend confirms.</p>
       </section>
     );
   }

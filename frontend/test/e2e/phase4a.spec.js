@@ -87,6 +87,25 @@ test.describe("decision surface (screen 8)", () => {
     });
   });
 
+  test("a recorded rejection says the case returned to planning and nothing was dispatched", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await boot(page);
+    let body = null;
+    await page.route(`**/api/incidents/${INCIDENT}/approval`, async (route) => {
+      body = route.request().postDataJSON();
+      await route.fulfill({ json: { ok: true } });
+    });
+    await page.goto(`/app/cases/${INCIDENT}#decision`);
+    await page.getByRole("button", { name: "Reject and return to planning…" }).click();
+    await page.getByLabel("Rationale").fill("maintenance window clashes with a planned shutdown");
+    await page.getByRole("button", { name: "Confirm rejection" }).click();
+    await expect(page.getByText(/^Rejected; returned to planning by Reviewer at/)).toBeVisible();
+    await expect(page.getByText("The case returned to planning. The rejected plan is no longer awaiting approval, "
+      + "and nothing was dispatched as a result of this rejection.", { exact: false })).toBeVisible();
+    await expect(page.getByText(/engineering decision is required/)).toHaveCount(0);
+    expect(body).toMatchObject({ decision: "REJECT" });
+  });
+
   test("Reject requires a reason; a short reason warns; refusals are shown verbatim", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await boot(page);
