@@ -2,6 +2,7 @@
 // `alerts[].lifecycle.read_model` already carries the incident record, requirements, evidence,
 // hypotheses, verdicts, runs and the last 80 events, so the workspace renders without a fetch.
 import { attentionOf, conditionOf, expiryOf, responseFor, stageOf, waitingOn } from "./status.js";
+import { approvalStateOf, suspensionOf } from "./lifecycle.js";
 import { dayClock, score } from "./format.js";
 
 export function pendingRequirement(alert) {
@@ -25,9 +26,14 @@ export function deriveCase(alert, { fleetById = {}, warn, trigger, now = Date.no
   const asset = fleetById[alert.equipment_id] || {};
   const failureProb = Number.isFinite(asset.failure_prob) ? asset.failure_prob : null;
   const condition = conditionOf(failureProb, { warn, trigger });
-  const requirement = pendingRequirement(alert);
-  const expiry = requirement ? expiryOf(requirement.expires_at, now, requirement.status) : null;
-  const expired = expiry?.state === "expired";
+  // The projection carries only a PENDING requirement; an expired one is read from the read model.
+  const approval = approvalStateOf(alert, now);
+  const requirement = approval.requirement || pendingRequirement(alert);
+  const expiry = requirement ? expiryOf(requirement.expires_at, now, approval.state === "expired" ? "EXPIRED" : requirement.status) : null;
+  const expired = approval.state === "expired";
+  const invalidated = approval.state === "invalidated";
+  const suspension = suspensionOf(lc);
+  const suspended = !!suspension;
   const demo = !!demoIncidentId && demoIncidentId === alert.incident_id;
   return {
     alert,
@@ -38,9 +44,12 @@ export function deriveCase(alert, { fleetById = {}, warn, trigger, now = Date.no
     criticality: alert.criticality || asset.criticality || null,
     phase,
     stage: stageOf(phase),
-    waiting: waitingOn(phase),
-    response: responseFor(phase, { expired }),
-    attention: attentionOf({ phase, condition, expired, outcomeResult: lc.outcome_result, analysisPaused: analysisPaused && !demo }),
+    waiting: waitingOn(phase, { suspended }),
+    response: responseFor(phase, { expired, invalidated, suspended }),
+    attention: attentionOf({ phase, condition, expired, invalidated, suspended, outcomeResult: lc.outcome_result, analysisPaused: analysisPaused && !demo }),
+    approval,
+    suspension,
+    environment: lc.environment || null,
     analysisPaused: analysisPaused && !demo,
     condition,
     failureProb,
@@ -75,6 +84,8 @@ export function compareCases(a, b) {
 /** One-line reason from backend facts only (07 §12.5 item 3). */
 export function reasonLine(c, { trigger }) {
   const parts = [];
+  if (c.suspension) parts.push(`Analysis suspended after ${c.suspension.attempts ?? "repeated"} technical failures`);
+  if (c.approval?.state === "invalidated") parts.push("Approval invalidated by newer evidence");
   if (c.attention === "risk" && c.analysisPaused && c.waiting?.key === "analysis") parts.push("Analysis paused: no model provider configured");
   if (Number.isFinite(c.failureProb)) {
     parts.push(`Risk score ${score(c.failureProb)}${Number.isFinite(trigger) && c.failureProb >= trigger ? ` ≥ gate ${score(trigger)}` : ""}`);
@@ -82,7 +93,7 @@ export function reasonLine(c, { trigger }) {
   const dx = c.rm?.diagnosis;
   if (dx?.status === "ACCEPTED" && dx.failure_mode_code) parts.push(`diagnosis accepted (${dx.failure_mode_code})`);
   else if (c.alert?.predicted_mode_label) parts.push(`predicted ${c.alert.predicted_mode_label.toLowerCase()} (model output)`);
-  if (c.response?.gap) parts.push(`${c.response.gap === "G1" ? "submission from this UI not available" : "resolution not available"} (${c.response.gap})`);
+  if (c.response?.gap === "G1") parts.push("submission from this interface not available (G1)");
   return parts.join(" · ");
 }
 

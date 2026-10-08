@@ -23,7 +23,8 @@ describe("stage mapping (14 phases → 8 stages + exceptions)", () => {
 
 describe("waiting-on and attention", () => {
   it.each([
-    ["INVESTIGATING", "analysis", false], ["AWAITING_EVIDENCE", "technician", true], ["DIAGNOSIS_VALIDATED", "approver", true],
+    // F0 #19 (intentional F4.1 change): resource confirmation is a planning input, not an approval.
+    ["INVESTIGATING", "analysis", false], ["AWAITING_EVIDENCE", "technician", true], ["DIAGNOSIS_VALIDATED", "planner", true],
     ["AWAITING_APPROVAL", "approver", true], ["EXECUTING", "dispatch", false], ["OBSERVING", "verification", false],
     ["ESCALATED", "reliability_engineer", true], ["EXECUTION_FAILED", "approver", true], ["CLOSED", "none", false],
   ])("%s waits on %s", (phase, key, human) => {

@@ -13,10 +13,11 @@ export const STAGES = [
   { key: "CLOSED", label: "Closed", n: 8, next: "No further action." },
 ];
 
+// F1.1 made the exits callable (resume, cancel, retry_execution); the copy says what a person can do.
 export const EXCEPTIONS = {
-  ESCALATED: { key: "ESCALATED", label: "Escalated", next: "A person resumes or cancels the case. Resolving escalations isn't available in this version (G2)." },
-  DISPATCH_FAILED: { key: "DISPATCH_FAILED", label: "Dispatch failed", next: "Retry, reinvestigate or cancel. Not available in this version (G3)." },
-  CANCELLED: { key: "CANCELLED", label: "Cancelled", next: "No further action." },
+  ESCALATED: { key: "ESCALATED", label: "Escalated", next: "A person resumes the investigation or cancels the case." },
+  DISPATCH_FAILED: { key: "DISPATCH_FAILED", label: "Dispatch failed", next: "Once the dispatch outcome is definitive: retry the dispatch, reinvestigate or cancel." },
+  CANCELLED: { key: "CANCELLED", label: "Cancelled", next: "No further action. The asset can open a new case." },
 };
 
 const AWAITING_INSPECTION = { key: "AWAITING_INSPECTION", label: "Awaiting inspection", n: 2, loop: true,
@@ -55,10 +56,13 @@ export function stageCompact(phase) {
   return s.n ? `${s.label} · ${s.n}/8` : s.label;
 }
 
-/** Waiting-on roles (07 §12.2). `human` roles take the decision cue. */
+/** Waiting-on roles (07 §12.2). `human` roles take the decision cue. "Maintenance planner" extends
+ *  the 07 vocabulary (F0 #19): resource confirmation and the work-package draft are planning inputs,
+ *  not an approval. No declarable session role maps to it yet, so it is never "mine". */
 export const ROLES = {
   analysis: { key: "analysis", label: "Analysis (automated)", short: "Analysis", human: false },
   technician: { key: "technician", label: "Technician", short: "Technician", human: true },
+  planner: { key: "planner", label: "Maintenance planner", short: "Planner", human: true },
   approver: { key: "approver", label: "Approver", short: "Approver", human: true, sessionRole: "maintenance_approver" },
   reliability_engineer: { key: "reliability_engineer", label: "Reliability engineer", short: "Reliability engineer", human: true, sessionRole: "reliability_engineer" },
   dispatch: { key: "dispatch", label: "Dispatch (system)", short: "Dispatch", human: false },
@@ -66,28 +70,39 @@ export const ROLES = {
   none: { key: "none", label: "No one", short: "No one", human: false },
 };
 
+// READY persists only when nothing dispatches it (after a restart or an explicit retry): dispatch is
+// an explicit act then (`POST /execute`, never automatic), so a person is the blocker (F0 #19).
 const PHASE_WAITING = {
   OPEN: "analysis", INVESTIGATING: "analysis", AWAITING_EVIDENCE: "technician",
-  DIAGNOSIS_VALIDATED: "approver", PLANNING: "analysis", INTERVENTION_VALIDATED: "analysis",
-  AWAITING_APPROVAL: "approver", READY: "dispatch", EXECUTING: "dispatch", OBSERVING: "verification",
+  DIAGNOSIS_VALIDATED: "planner", PLANNING: "analysis", INTERVENTION_VALIDATED: "analysis",
+  AWAITING_APPROVAL: "approver", READY: "approver", EXECUTING: "dispatch", OBSERVING: "verification",
   CLOSED: "none", ESCALATED: "reliability_engineer", EXECUTION_FAILED: "approver", CANCELLED: "none",
 };
 
-export function waitingOn(phase) {
+export const TERMINAL = new Set(["CLOSED", "CANCELLED"]);
+
+/** Who the case waits on. `suspended` (F1.1 analysis suspension) needs a person to resume it. */
+export function waitingOn(phase, { suspended = false } = {}) {
+  if (suspended && !TERMINAL.has(phase)) return ROLES.reliability_engineer;
   return ROLES[PHASE_WAITING[phase]] || null;
 }
 
-/** Required response for human-blocked phases (08 screen 3 response types). */
+/** Required response for human-blocked states (08 screen 3 response types). `gap` only where the
+ *  interface still can't do it (G1: inspection and resource inputs are sandbox-only, no UI yet). */
 const RESPONSES = {
-  AWAITING_APPROVAL: { verb: "Approve work package", gap: null, section: "decision" },
-  AWAITING_EVIDENCE: { verb: "Inspect asset", gap: "G1", section: "evidence" },
-  DIAGNOSIS_VALIDATED: { verb: "Confirm resources", gap: "G1", section: "decision" },
-  ESCALATED: { verb: "Resolve escalation", gap: "G2", section: "summary" },
-  EXECUTION_FAILED: { verb: "Resolve dispatch failure", gap: "G3", section: "work" },
+  AWAITING_APPROVAL: { verb: "Approve work package", gap: null, section: "now" },
+  AWAITING_EVIDENCE: { verb: "Inspect asset", gap: "G1", section: "now" },
+  DIAGNOSIS_VALIDATED: { verb: "Confirm resources", gap: "G1", section: "now" },
+  READY: { verb: "Dispatch approved work package", gap: null, section: "now" },
+  ESCALATED: { verb: "Resolve escalation", gap: null, section: "now" },
+  EXECUTION_FAILED: { verb: "Resolve dispatch failure", gap: null, section: "now" },
 };
 
-export function responseFor(phase, { expired = false } = {}) {
-  if (phase === "AWAITING_APPROVAL" && expired) return { verb: "Approval expired", gap: "G11", section: "decision" };
+export function responseFor(phase, { expired = false, invalidated = false, suspended = false } = {}) {
+  if (TERMINAL.has(phase)) return null;
+  if (suspended) return { verb: "Resume suspended analysis", gap: null, section: "now" };
+  if (phase === "AWAITING_APPROVAL" && invalidated) return { verb: "Review invalidated plan", gap: null, section: "now" };
+  if (phase === "AWAITING_APPROVAL" && expired) return { verb: "Renew or withdraw expired approval", gap: null, section: "now" };
   return RESPONSES[phase] || null;
 }
 
@@ -103,8 +118,8 @@ export const CONDITION_LABEL = { normal: "Normal", elevated: "Elevated", critica
 export const CONDITION_RANK = { critical: 4, stale: 3, unknown: 3, elevated: 2, normal: 1 };
 
 /** Attention (07 §12.5). `ctx.analysisPaused` means reasoning is unavailable for this case. */
-export function attentionOf({ phase, condition, expired = false, outcomeResult = null, analysisPaused = false }) {
-  if (phase && responseFor(phase, { expired })) return "action";
+export function attentionOf({ phase, condition, expired = false, invalidated = false, suspended = false, outcomeResult = null, analysisPaused = false }) {
+  if (phase && responseFor(phase, { expired, invalidated, suspended })) return "action";
   if (outcomeResult === "REGRESSED") return "risk";
   const role = waitingOn(phase);
   if (phase && role && !role.human && role.key !== "none") {
