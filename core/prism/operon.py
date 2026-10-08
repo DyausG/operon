@@ -217,46 +217,106 @@ class OperonSlowPathAdapter:
                 reasons.extend(change.reason for change in revalidate(conn, snapshot.source_dependency_manifest))
         return reasons
 
+    # Audit record of what one fenced PRISM apply did to the incident.
+    #   audit_version 2 (F1): ``disposition`` is the action PRISM actually APPLIED: PROMOTED,
+    #   NEEDS_EVIDENCE (the case was parked) or NOT_APPLIED. The lifecycle's own classification of
+    #   the report (disposition, category, code, reason) is kept separately under ``classification``.
+    #   Records without ``audit_version`` predate F1: their ``disposition`` was the classification
+    #   label (RETRY, ESCALATED, UNRESOLVED were recorded although no such action was taken). They
+    #   are never rewritten and must be read with that meaning.
+    SETTLEMENT_AUDIT_VERSION = 2
+
+    @staticmethod
+    def _classification(settlement) -> dict:
+        return {"disposition": settlement.disposition, "category": settlement.category, "code": settlement.code,
+                "reason": settlement.reason}
+
+    def _audit(self, conn, incident_id, settlement, *, disposition, reason, promotion_id=None) -> dict:
+        incident = self.repository._fetch(conn, incident_id)
+        return {"audit_version": self.SETTLEMENT_AUDIT_VERSION, "disposition": disposition, "reason": reason,
+                "classification": self._classification(settlement), "promotion_id": promotion_id,
+                "incident_phase": incident.phase.value, "incident_revision": incident.revision}
+
+    def _not_applied(self, conn, incident_id, settlement, *, revision: int) -> dict:
+        """Record a classification PRISM did not act on, saying what was (not) done and why."""
+        phase = self.repository._fetch(conn, incident_id).phase.value
+        what = {
+            "RETRY": (f"classified {settlement.category} ({settlement.code}) as retryable, but PRISM scheduled no "
+                      "retry and did not spend the lifecycle technical retry budget (no ANALYSIS_* event); "
+                      "any further attempt is decided by the normal lifecycle analysis path"),
+            "ESCALATED": (f"classified {settlement.category} ({settlement.code}), but an operator-driven PRISM run "
+                          "never escalates: no transition was made"),
+            "NEEDS_EVIDENCE": (f"classified {settlement.category} ({settlement.code}), but the case was not "
+                               "INVESTIGATING when the candidate applied, so it was not parked"),
+        }.get(settlement.disposition, f"classified {settlement.disposition}; PRISM applied no lifecycle action")
+        return self._audit(conn, incident_id, settlement, disposition="NOT_APPLIED",
+                           reason=f"{what}; the case stays {phase} (PRISM revision {revision})")
+
     def _settle(self, conn, incident_id: str, report, revision: int) -> dict:
         """Apply the lifecycle's deterministic settlement for a *current* report, inside the apply transaction.
 
         PROMOTE runs the unchanged diagnosis gates (trusted confirmation required); NEEDS_EVIDENCE parks
-        the incident in AWAITING_EVIDENCE exactly as ``LifecycleService.diagnose`` does. Unlike the
-        autonomous lifecycle, an operator-driven PRISM run never escalates an incident: a blocked or
-        failed candidate is recorded and left to the operator.
+        the incident in AWAITING_EVIDENCE exactly as ``LifecycleService.diagnose`` does, registering the
+        run's hypotheses. Unlike the autonomous lifecycle, an operator-driven PRISM run never escalates
+        an incident and never schedules a retry: those classifications are recorded as NOT_APPLIED.
+
+        Deferred limitation (F1.1): a technical failure of a PRISM-initiated run does not consume the
+        lifecycle's technical retry budget, so it cannot by itself trigger the analysis suspension that
+        ``LifecycleService.diagnose`` applies. Unifying the budget across entry points is later work.
         """
+        from core.reliability.lifecycle import Settlement
         from core.reliability.promotion import CONFIRM_MECHANISM, PromotionRefused
-        disposition, reason = self.lifecycle._settle(incident_id, report, "DIAGNOSIS")
-        outcome = {"disposition": disposition, "reason": reason, "promotion_id": None}
-        if disposition == "PROMOTE":
+        settlement = self.lifecycle._settle(incident_id, report, "DIAGNOSIS")
+        if settlement.disposition == "PROMOTE":
             confirmation_id = None
             for key in report.evidence_manifest:
                 artifact = self.repository._artifact(conn, incident_id, key)
                 if getattr(artifact, "source_capability", None) == CONFIRM_MECHANISM:
                     confirmation_id = key
             if confirmation_id is None:
-                disposition, reason = "NEEDS_EVIDENCE", "trusted technical confirmation has not been supplied"
+                settlement = Settlement(disposition="NEEDS_EVIDENCE", category="EVIDENCE", code="CONFIRMATION_REQUIRED",
+                                        reason="trusted technical confirmation has not been supplied")
             else:
                 try:
                     promotion = self.promotion.promote_diagnosis(
                         incident_id, report_id=report.id, confirmation_id=confirmation_id,
                         expected_revision=report.checkpoint_revision, conn=conn)
-                    outcome.update(disposition="PROMOTED", reason="application promoted the diagnosis",
-                                   promotion_id=promotion.id)
-                    disposition = "PROMOTED"
+                    return self._audit(conn, incident_id, settlement, disposition="PROMOTED",
+                                       reason="application promoted the diagnosis", promotion_id=promotion.id)
                 except PromotionRefused as exc:
-                    disposition = "NEEDS_EVIDENCE" if exc.disposition == "NEEDS_EVIDENCE" else "UNRESOLVED"
-                    reason = str(exc)
-        if disposition == "NEEDS_EVIDENCE":
+                    # Same classification as LifecycleService._refusal; staleness is already excluded
+                    # inside the fence (the report has no stale reasons and the revision is fenced).
+                    if exc.disposition == "NEEDS_EVIDENCE":
+                        settlement = Settlement(disposition="NEEDS_EVIDENCE", category="EVIDENCE",
+                                                code="GATE_NEEDS_EVIDENCE", reason=str(exc))
+                    else:
+                        code = exc.code or ("CONTRACT_VIOLATION" if exc.disposition == "CONTRACT"
+                                            else "APPLICATION_GATE_REFUSED")
+                        settlement = Settlement(disposition="RETRY", category="TECHNICAL", code=code,
+                                                reason=f"application diagnosis gate refused the advisory output: {exc}")
+        if settlement.disposition == "NEEDS_EVIDENCE":
             incident = self.repository._fetch(conn, incident_id)
             if incident.phase == m.IncidentPhase.INVESTIGATING:
-                self.repository.transition_in(conn, incident_id, m.IncidentPhase.AWAITING_EVIDENCE,
-                                              expected_revision=incident.revision,
-                                              reason=f"{reason} (PRISM revision {revision})")
-        outcome.update(disposition=disposition, reason=reason)
-        incident = self.repository._fetch(conn, incident_id)
-        outcome.update(incident_phase=incident.phase.value, incident_revision=incident.revision)
-        return outcome
+                # F1: park exactly as LifecycleService.diagnose does, giving the run's competing
+                # hypotheses durable references so a confirmation can name one.
+                self.promotion.register_hypotheses(incident_id, report_id=report.id,
+                                                   phase=m.IncidentPhase.AWAITING_EVIDENCE,
+                                                   reason=f"{settlement.reason} (PRISM revision {revision})", conn=conn)
+            if self.repository._fetch(conn, incident_id).phase == m.IncidentPhase.AWAITING_EVIDENCE:
+                return self._audit(conn, incident_id, settlement, disposition="NEEDS_EVIDENCE", reason=settlement.reason)
+        return self._not_applied(conn, incident_id, settlement, revision=revision)
+
+    def _stale_settlement(self, conn, incident_id: str, report, revision: int) -> dict:
+        """A candidate whose frozen inputs changed is recorded as history only. Nothing is applied and
+        this run does not reason again (a fresh pass happens only before the fence, while passes remain)."""
+        from core.reliability.lifecycle import Settlement
+        settlement = Settlement(disposition="RETRY", category="TECHNICAL", code="STALE_INPUTS", counted=False,
+                                reason="run inputs changed during reasoning: " + ", ".join(report.stale_reasons))
+        phase = self.repository._fetch(conn, incident_id).phase.value
+        return self._audit(conn, incident_id, settlement, disposition="NOT_APPLIED",
+                           reason=("the run's frozen inputs changed during reasoning, so the candidate was recorded "
+                                   f"as history only; PRISM did not reason again for this run and the case stays {phase} "
+                                   f"(PRISM revision {revision})"))
 
     def _candidate(self, result, snapshot, description: dict, *, pass_no: int, request: dict,
                    timing: dict) -> SlowPathResult:
@@ -443,10 +503,7 @@ class OperonSlowPathAdapter:
                 if not report.stale_reasons:
                     applied["settlement"] = self._settle(conn, incident_id, report, execution.revision)
                 else:
-                    live = self.repository._fetch(conn, incident_id)
-                    applied["settlement"] = {"disposition": "RETRY", "reason": "run inputs changed during reasoning: "
-                                             + ", ".join(report.stale_reasons), "incident_phase": live.phase.value,
-                                             "incident_revision": live.revision, "promotion_id": None}
+                    applied["settlement"] = self._stale_settlement(conn, incident_id, report, execution.revision)
                 return applied
             decision = await execution.complete(candidate, apply=apply)
             await execution.report(stage="candidate_fenced", pass_no=pass_no,
