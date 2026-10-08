@@ -21,12 +21,13 @@ import { NotificationsPage } from "./pages/NotificationsPage.jsx";
 import { ProfilePage } from "./pages/ProfilePage.jsx";
 import { SettingsPage } from "./pages/SettingsPage.jsx";
 import { WbShell } from "./v2/shell/WbShell.jsx";
-import { WB_ROUTES } from "./v2/shell/routes.js";
+import { LEGACY_SEGMENTS, WB_PLANNED, WB_ROUTES, legacyCompatTarget } from "./v2/shell/routes.js";
 import { Overview } from "./v2/screens/Overview.jsx";
 import { MyActions } from "./v2/screens/MyActions.jsx";
 import { CaseWorkspace } from "./v2/screens/CaseWorkspace.jsx";
 import { Simulation } from "./v2/screens/Simulation.jsx";
 import { Specimen } from "./v2/screens/Specimen.jsx";
+import { NotFound, Planned } from "./v2/screens/Planned.jsx";
 
 // The design specimen is a development-only route (Phase 4A visual gate); never in production builds.
 const DEV = !!import.meta.env?.DEV;
@@ -52,20 +53,32 @@ export function Providers({ engine, session, settings, theme, children }) {
   );
 }
 
+/** Old /app/<legacy page> URLs (bookmarks, notifications) move to /legacy, keeping query and hash. */
+function ToLegacy() {
+  const location = useLocation();
+  return <Navigate to={legacyCompatTarget(location) || WB_ROUTES.overview} replace />;
+}
+
 export function AppRoutes() {
   return (
     <Routes>
       <Route path={ROUTES.login} element={<LoginPage />} />
-      {/* V2 workbench (Phase 4A visual gate). Legacy pages below stay reachable and unchanged. */}
-      <Route element={<RequireAuth><WbShell /></RequireAuth>}>
-        <Route path={WB_ROUTES.overview} element={<Overview />} />
-        <Route path={WB_ROUTES.actions} element={<MyActions />} />
-        <Route path="/app/cases/:incidentId" element={<CaseWorkspace />} />
-        <Route path={WB_ROUTES.simulation} element={<Simulation />} />
-        {DEV ? <Route path={WB_ROUTES.specimen} element={<Specimen />} /> : null}
-      </Route>
-      <Route path={ROUTES.app} element={<RequireAuth><AppShell /></RequireAuth>}>
+      <Route path="/" element={<Navigate to={WB_ROUTES.overview} replace />} />
+      {/* V2 workbench owns /app (08 §2). Nothing here falls through to a legacy page. */}
+      <Route path="/app" element={<RequireAuth><WbShell /></RequireAuth>}>
         <Route index element={<Navigate to={WB_ROUTES.overview} replace />} />
+        <Route path="overview" element={<Overview />} />
+        <Route path="actions" element={<MyActions />} />
+        <Route path="cases/:incidentId" element={<CaseWorkspace />} />
+        <Route path="system/simulation" element={<Simulation />} />
+        {DEV ? <Route path="dev/specimen" element={<Specimen />} /> : null}
+        {WB_PLANNED.map((p) => <Route key={p.path} path={p.path} element={<Planned label={p.label} legacy={p.legacy} />} />)}
+        <Route path="*" element={<NotFound />} />
+      </Route>
+      {LEGACY_SEGMENTS.map((s) => <Route key={s} path={`/app/${s}/*`} element={<ToLegacy />} />)}
+      {/* Legacy portal, unchanged, under its own namespace. */}
+      <Route path={ROUTES.app} element={<RequireAuth><AppShell /></RequireAuth>}>
+        <Route index element={<Navigate to={ROUTES.dashboard} replace />} />
         <Route path="dashboard" element={<DashboardPage />} />
         <Route path="machines" element={<MachinesPage />} />
         <Route path="machines/:id" element={<MachineDetailPage />} />
@@ -80,7 +93,7 @@ export function AppRoutes() {
         <Route path="settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to={ROUTES.dashboard} replace />} />
       </Route>
-      <Route path="*" element={<Navigate to={ROUTES.dashboard} replace />} />
+      <Route path="*" element={<Navigate to={WB_ROUTES.overview} replace />} />
     </Routes>
   );
 }
@@ -89,6 +102,6 @@ export function AppRoutes() {
  *  `initialEntries` renders a route without a DOM history (server-side smoke test). */
 export default function App({ engine, session, settings, theme, router = "browser", initialEntries }) {
   const tree = <Providers engine={engine} session={session} settings={settings} theme={theme}><AppRoutes /></Providers>;
-  if (router === "memory") return <MemoryRouter initialEntries={initialEntries || [ROUTES.dashboard]}>{tree}</MemoryRouter>;
+  if (router === "memory") return <MemoryRouter initialEntries={initialEntries || [WB_ROUTES.overview]}>{tree}</MemoryRouter>;
   return <BrowserRouter>{tree}</BrowserRouter>;
 }

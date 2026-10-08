@@ -238,7 +238,7 @@ function UserMenu() {
       <MenuItem to={ROUTES.profile} icon={Icons.user({})} onClick={() => setOpen(false)}>Profile</MenuItem>
       <MenuItem to={ROUTES.settings} icon={Icons.settings({})} onClick={() => setOpen(false)}>Settings</MenuItem>
       <MenuRule />
-      <MenuItem icon={Icons.logout({})} onClick={() => { setOpen(false); signOut(); navigate(ROUTES.login); }}>Sign out</MenuItem>
+      <MenuItem icon={Icons.logout({})} onClick={() => { setOpen(false); signOut(); navigate(ROUTES.login, { state: { from: ROUTES.dashboard } }); }}>Sign out</MenuItem>
     </Menu>
   );
 }

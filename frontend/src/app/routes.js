@@ -1,19 +1,20 @@
-// Route table. Every page lives under /app; /login is the only public route.
+// Route table for the legacy portal. Every legacy page lives under /legacy (the V2 workbench owns
+// /app, 08 §2); /login is the only public route. Old /app/<page> URLs redirect here (App.jsx).
 export const ROUTES = {
   login: "/login",
-  app: "/app",
-  dashboard: "/app/dashboard",
-  machines: "/app/machines",
-  machine: (id) => `/app/machines/${encodeURIComponent(id)}`,
-  incidents: "/app/incidents",
-  incident: (id) => `/app/incidents/${encodeURIComponent(id)}`,
-  agent: "/app/agent",
-  maintenance: "/app/maintenance",
-  analytics: "/app/analytics",
-  activity: "/app/activity",
-  notifications: "/app/notifications",
-  profile: "/app/profile",
-  settings: "/app/settings",
+  app: "/legacy",
+  dashboard: "/legacy/dashboard",
+  machines: "/legacy/machines",
+  machine: (id) => `/legacy/machines/${encodeURIComponent(id)}`,
+  incidents: "/legacy/incidents",
+  incident: (id) => `/legacy/incidents/${encodeURIComponent(id)}`,
+  agent: "/legacy/agent",
+  maintenance: "/legacy/maintenance",
+  analytics: "/legacy/analytics",
+  activity: "/legacy/activity",
+  notifications: "/legacy/notifications",
+  profile: "/legacy/profile",
+  settings: "/legacy/settings",
 };
 
 /** Sidebar order. `badge` names a live counter computed in the shell. */

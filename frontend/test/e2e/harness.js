@@ -9,12 +9,12 @@ export const INCIDENT = APPROVAL.alerts[0].incident_id;
 
 const SESSION = { email: "reviewer@example.com", name: "Reviewer", role: "maintenance_approver", remember: true, signedInAt: "2026-09-15T18:40:00Z", mode: "demo" };
 
-export async function boot(page, { frame = APPROVAL, theme = "light" } = {}) {
+export async function boot(page, { frame = APPROVAL, theme = "light", signedIn = true } = {}) {
   await page.clock.install({ time: new Date("2026-09-15T18:45:00Z") });
   await page.addInitScript(([session, t]) => {
-    localStorage.setItem("operon.session", JSON.stringify(session));
+    if (session) localStorage.setItem("operon.session", JSON.stringify(session));
     if (!localStorage.getItem("operon.v2.theme")) localStorage.setItem("operon.v2.theme", JSON.stringify(t));
-  }, [SESSION, theme]);
+  }, [signedIn ? SESSION : null, theme]);
   const sockets = [];
   let refuse = false;
   await page.routeWebSocket(/\/ws$/, (ws) => {

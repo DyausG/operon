@@ -17,6 +17,7 @@ import { OUTCOME, PROVENANCE_LABEL, provenanceOf, stageCompact, withoutConfidenc
 import { clock, dayClock, duration, score, sentence, shortId, when, zoneAbbr } from "../model/format.js";
 import { curatedRecord, eventCopy, nextStepSentence } from "./caseCopy.js";
 import { DecisionSurface } from "./DecisionSurface.jsx";
+import { WB_ROUTES } from "../shell/routes.js";
 
 const SECTIONS = [
   { id: "summary", n: "01", title: "Summary & next step" },
@@ -288,8 +289,8 @@ function Investigation({ c }) {
         </ul>
       ) : null}
       <p className="wb-caption">
-        Directing the investigation (PRISM instruction revisions) stays in the current agent workspace for now:{" "}
-        <Link to={`/app/agent?incident=${encodeURIComponent(c.incidentId)}`}>open it <Icon as={IconArrowUpRight} size={16} /></Link>. No chain-of-thought is shown; raw run outputs stay in the inspector.
+        Directing the investigation (PRISM instruction revisions) stays in the agent workspace of the legacy portal for now:{" "}
+        <Link to={`/legacy/agent?incident=${encodeURIComponent(c.incidentId)}`} data-legacy-exit="">open it in the legacy portal <Icon as={IconArrowUpRight} size={16} /></Link>. No chain-of-thought is shown; raw run outputs stay in the inspector.
       </p>
     </>
   );
@@ -410,7 +411,7 @@ export function CaseWorkspace() {
       <div className="wb-page">
         <h1 className="wb-page-title">{state.frames ? "Couldn’t load the case record" : "Loading case record…"}</h1>
         {missing ? <p className="wb-secondary">{missing}</p> : null}
-        <p><Link to="/app/actions">Back to My actions</Link></p>
+        <p><Link to={WB_ROUTES.actions}>Back to My actions</Link></p>
       </div>
     );
   }
@@ -469,7 +470,7 @@ export function CaseWorkspace() {
       ) : null}
       <header className="wb-case-head" ref={headRef}>
         <nav className="wb-crumbs" aria-label="Breadcrumb">
-          <Link to="/app/incidents">Cases</Link><span aria-hidden="true"> / </span><span className="wb-mono" aria-current="page">{c.ref}</span>
+          <Link to={WB_ROUTES.cases}>Cases</Link><span aria-hidden="true"> / </span><span className="wb-mono" aria-current="page">{c.ref}</span>
         </nav>
         <div className="wb-case-titlerow">
           <h1 className="wb-page-title">Model risk above action gate · {c.assetName}</h1>

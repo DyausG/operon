@@ -19,8 +19,8 @@ function routesFor(state) {
   const machine = focus || "AC-COMP-01";
   const inc = incident?.incident_id || "DEMO-INCIDENT-01";
   return [
-    "/app/dashboard", "/app/machines", `/app/machines/${machine}`, "/app/incidents", `/app/incidents/${inc}`, `/app/incidents/UNKNOWN-1`,
-    `/app/agent?incident=${inc}`, "/app/maintenance", "/app/analytics", "/app/activity", "/app/notifications", "/app/profile", "/app/settings",
+    "/legacy/dashboard", "/legacy/machines", `/legacy/machines/${machine}`, "/legacy/incidents", `/legacy/incidents/${inc}`, `/legacy/incidents/UNKNOWN-1`,
+    `/legacy/agent?incident=${inc}`, "/legacy/maintenance", "/legacy/analytics", "/legacy/activity", "/legacy/notifications", "/legacy/profile", "/legacy/settings",
   ];
 }
 
@@ -34,8 +34,8 @@ export function run(frames, artifacts) {
     try { const html = render("/login", state, null, theme); if (!html.includes("login-card")) throw new Error("login card missing"); lines.push(`ok   login (${theme})`.padEnd(50) + ` html ${String(html.length).padStart(6)}`); }
     catch (err) { failures++; lines.push(`FAIL login ${theme}: ${err.stack}`); }
   }
-  // <Navigate> commits on the client, so a signed-out render of /app must simply not expose the shell.
-  try { const html = render("/app/dashboard", state, null); if (html.includes('class="app')) throw new Error("shell rendered without a session"); lines.push("ok   signed-out /app renders no shell (redirect is client-side)"); }
+  // <Navigate> commits on the client, so a signed-out render must simply not expose either shell.
+  try { for (const p of ["/legacy/dashboard", "/app/overview"]) { const html = render(p, state, null); if (html.includes('class="app') || html.includes('class="wb-root"')) throw new Error(`shell rendered without a session on ${p}`); } lines.push("ok   signed-out /legacy and /app render no shell (redirect is client-side)"); }
   catch (err) { failures++; lines.push(`FAIL auth guard: ${err.stack}`); }
 
   for (const frame of frames) {
@@ -51,7 +51,7 @@ export function run(frames, artifacts) {
         const html = render(path, state);
         if (!html.includes('class="app')) throw new Error(`shell missing on ${path}`);
         total += html.length;
-        if (path === "/app/dashboard") lastHtml = html;
+        if (path === "/legacy/dashboard") lastHtml = html;
       }
       lines.push(`ok   ${label.padEnd(44)} routes ${routesFor(state).length}  html ${String(total).padStart(7)}  entries ${String(entries.length).padStart(2)}  step ${pm.current?.key || pm.branch?.key}`);
     } catch (err) { failures++; lines.push(`FAIL ${label}: ${err.stack}`); }
@@ -79,12 +79,12 @@ export function run(frames, artifacts) {
     s = reduce(s, { type: "prism", prism_version: 1, session: prismSession, event: { event_id: 9, session_id: prismSession.session_id, revision: 1, run_id: "aaaaaaaa-0000-0000-0000-000000000001", event_type: "stale_result_discarded", payload: { reason: "stale_revision" }, created_at: "2026-09-16T09:00:01Z" } });
     if (!s.prism.sessions[prismSession.session_id] || s.prism.events[0].event_type !== "stale_result_discarded") throw new Error("prism reducer did not mirror the session");
     if (!deriveAgentRuntime(incidentFor(s, focusAsset(s, null)), s).prism) throw new Error("agent runtime did not pick up the prism session");
-    const agentHtml = render(`/app/agent?incident=${inc}`, s);
+    const agentHtml = render(`/legacy/agent?incident=${inc}`, s);
     if (!agentHtml.includes("PRISM session") || !agentHtml.includes("stale result")) throw new Error("PRISM panel not rendered");
     if (s.eventLog.length < 5) throw new Error("event log not populated");
-    const html = render("/app/notifications", s);
+    const html = render("/legacy/notifications", s);
     if (!html.includes("ntf-row")) throw new Error("notifications not rendered");
-    render("/app/activity", s);
+    render("/legacy/activity", s);
     lines.push(`ok   stream event log → notifications (${s.eventLog.length} entries)`);
   } catch (err) { failures++; lines.push(`FAIL event log: ${err.stack}`); }
 

@@ -8,7 +8,7 @@ const KEY = "operon.settings";
 const Ctx = createContext(null);
 
 export const DEFAULT_SETTINGS = {
-  general: { timeMode: "utc", density: "comfortable", landing: "/app/dashboard" },
+  general: { timeMode: "utc", density: "comfortable", landing: "/legacy/dashboard" },
   notifications: { critical: true, approvals: true, maintenance: true, agent: true, connection: true, sound: false },
   agent: { showAdvisoryLane: true, confirmBeforeApprove: true, autoOpenDeepLink: true, defaultIncidentView: "auto" },
   plant: { showEconomics: true, sparklineWindow: 26 },
@@ -17,6 +17,8 @@ export const DEFAULT_SETTINGS = {
 function merge(saved) {
   const out = {};
   for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) out[k] = { ...v, ...(saved?.[k] || {}) };
+  // Legacy pages moved from /app to /legacy; a landing page saved before the move follows them.
+  out.general.landing = String(out.general.landing).replace(/^\/app\//, "/legacy/");
   return out;
 }
 

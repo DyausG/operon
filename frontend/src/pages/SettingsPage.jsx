@@ -89,14 +89,14 @@ export function SettingsPage() {
               <div className="row-wrap">
                 <Btn small onClick={() => navigate(ROUTES.profile)}>{Icons.user({})} Edit profile</Btn>
                 <Btn small quiet onClick={() => setConfirm("clear")}>{Icons.close({})} Clear local data…</Btn>
-                <Btn small quiet onClick={() => { signOut(); navigate(ROUTES.login); }}>{Icons.logout({})} Sign out</Btn>
+                <Btn small quiet onClick={() => { signOut(); navigate(ROUTES.login, { state: { from: ROUTES.dashboard } }); }}>{Icons.logout({})} Sign out</Btn>
               </div>
             </Section>
           </div>
         </div>
         <Modal open={confirm === "reset-prefs"} onClose={() => setConfirm(null)} title="Reset preferences?" actions={<><Btn onClick={() => setConfirm(null)}>Cancel</Btn><Btn primary onClick={() => { reset(); setConfirm(null); }}>Reset</Btn></>}><p className="t2">Restores the defaults for general, notification, agent and plant preferences. Theme and session are kept.</p></Modal>
         <Modal open={confirm === "reset-engine"} onClose={() => setConfirm(null)} title="Reset the engine?" actions={<><Btn onClick={() => setConfirm(null)}>Cancel</Btn><Btn primary onClick={() => { resetEngine(); setConfirm(null); }}>Reset</Btn></>}><p className="t2">Clears projected incidents and telemetry and starts a new artifact generation. Committed database records are kept.</p></Modal>
-        <Modal open={confirm === "clear"} onClose={() => setConfirm(null)} title="Clear local Operon data?" actions={<><Btn onClick={() => setConfirm(null)}>Cancel</Btn><Btn primary onClick={() => { clearOperonKeys(); setConfirm(null); signOut(); navigate(ROUTES.login); }}>Clear and sign out</Btn></>}><p className="t2">Removes the session, theme, preferences, sidebar state and notification read marks from this browser. Nothing on the engine changes.</p></Modal>
+        <Modal open={confirm === "clear"} onClose={() => setConfirm(null)} title="Clear local Operon data?" actions={<><Btn onClick={() => setConfirm(null)}>Cancel</Btn><Btn primary onClick={() => { clearOperonKeys(); setConfirm(null); signOut(); navigate(ROUTES.login, { state: { from: ROUTES.dashboard } }); }}>Clear and sign out</Btn></>}><p className="t2">Removes the session, theme, preferences, sidebar state and notification read marks from this browser. Nothing on the engine changes.</p></Modal>
       </div>
     </div>
   );
