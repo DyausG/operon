@@ -31,13 +31,13 @@ export function usePreviewMode() {
   return docked ? "docked" : tablet ? "modal" : "phone";
 }
 
-export function DockedPane({ title, titleId, onClose, children }) {
+export function DockedPane({ title, titleId, onClose, children, closeLabel = "Close preview", className = "" }) {
   return (
-    <aside className="wb-pane" role="complementary" aria-labelledby={titleId}
+    <aside className={`wb-pane ${className}`} role="complementary" aria-labelledby={titleId}
       onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); onClose(); } }}>
       <div className="wb-pane-head">
         <h2 className="wb-pane-title" id={titleId}>{title}</h2>
-        <IconButton icon={IconX} label="Close preview" onClick={onClose} />
+        <IconButton icon={IconX} label={closeLabel} onClick={onClose} />
       </div>
       <div className="wb-pane-body">{children}</div>
     </aside>
@@ -46,7 +46,7 @@ export function DockedPane({ title, titleId, onClose, children }) {
 
 const FOCUSABLE = 'a[href], button:not([disabled]), textarea, input, select, [tabindex]:not([tabindex="-1"])';
 
-export function ModalDrawer({ title, titleId, onClose, children, portalTarget }) {
+export function ModalDrawer({ title, titleId, onClose, children, portalTarget, closeLabel = "Close preview", className = "" }) {
   const panel = useRef(null);
   const heading = useRef(null);
   useEffect(() => {
@@ -72,10 +72,10 @@ export function ModalDrawer({ title, titleId, onClose, children, portalTarget })
   const node = (
     <div className="wb-drawer-layer">
       <div className="wb-scrim" onClick={onClose} aria-hidden="true" />
-      <div className="wb-drawer" role="dialog" aria-modal="true" aria-labelledby={titleId} ref={panel}>
+      <div className={`wb-drawer ${className}`} role="dialog" aria-modal="true" aria-labelledby={titleId} ref={panel}>
         <div className="wb-pane-head">
           <h2 className="wb-pane-title" id={titleId} tabIndex={-1} ref={heading}>{title}</h2>
-          <IconButton icon={IconX} label="Close preview" onClick={onClose} />
+          <IconButton icon={IconX} label={closeLabel} onClick={onClose} />
         </div>
         <div className="wb-pane-body">{children}</div>
       </div>

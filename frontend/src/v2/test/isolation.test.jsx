@@ -89,6 +89,8 @@ describe.each(states.map((s, i) => [i, s]))("link audit, frame %i", (_i, state) 
   const paths = [WB_ROUTES.overview, WB_ROUTES.actions, WB_ROUTES.simulation, ...planned, "/app/not-a-page"];
   // F4.1 layout D renders one case section at a time: audit every section, not just Now.
   if (id) paths.push(WB_ROUTES.case(id), ...["evidence", "investigation", "decision", "work", "record"].map((s) => WB_ROUTES.case(id, s)), `${WB_ROUTES.actions}?preview=${id}`);
+  // …and the inspector views that carry links.
+  if (id) paths.push(`${WB_ROUTES.case(id)}?inspect=evidence`, `${WB_ROUTES.case(id)}?inspect=asset#evidence`);
 
   it.each(paths)("every link on %s stays in the workbench or is an explicit legacy exit", (path) => {
     for (const a of anchors(render(path, state))) {

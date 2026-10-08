@@ -18,7 +18,17 @@ export const RECOVERY_FRAMES = load("demo-frames-recovery.json");
 export const SUSPENDED_FRAME = load("demo-frames-suspended.json")[0];
 export const EXPIRED_FRAME = load("demo-frames-expired.json")[0];
 export const DISPATCH_FRAMES = load("demo-frames-dispatch.json");
+export const ARTIFACTS = load("demo-artifacts.json"); // GET /api/demo/artifacts/{id} for the demo incident
 export const incidentOf = (frame) => frame.alerts[0].incident_id;
+
+/** Answers the artifact detail endpoint from the captured artifacts; unknown ids get the server's 404. */
+export async function serveArtifacts(page) {
+  await page.route(/\/api\/demo\/artifacts\/[^/?#]+$/, (route) => {
+    const id = decodeURIComponent(new URL(route.request().url()).pathname.split("/").pop());
+    const hit = ARTIFACTS[id];
+    return hit ? route.fulfill({ json: hit }) : route.fulfill({ status: 404, json: { ok: false, error: "unknown demo artifact" } });
+  });
+}
 export const lifecycleOf = (frame) => frame.alerts[0].lifecycle;
 const NOW = fixtureNow(FRAMES);
 

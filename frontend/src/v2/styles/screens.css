@@ -106,6 +106,22 @@
 .wb-case-section-title { font: var(--type-heading); margin-bottom: 10px; }
 .wb-case-section-title:focus:not(:focus-visible) { outline: none; }
 
+/* Inspector (?inspect=…): docked beside the case ≥ 1280 (the case scrolls on its own), drawer below. */
+.wb-case.is-d.has-inspector { display: flex; height: 100%; padding-bottom: 0; }
+.wb-case.has-inspector .wb-case-scroll { flex: 1 1 auto; min-width: 0; overflow-y: auto; padding-bottom: 64px; }
+.wb-case.has-inspector .wb-pane { position: sticky; top: 0; height: 100%; }
+.wb-case-inspect { color: var(--color-text-secondary); }
+.wb-inspector .wb-ledger { grid-template-columns: minmax(96px, 128px) minmax(0, 1fr); column-gap: 12px; font: var(--type-body-compact); }
+.wb-inspector .wb-ledger-key, .wb-inspector .wb-ledger-val { padding: 5px 0; }
+.wb-inspector .wb-pane-body { display: flex; flex-direction: column; gap: 12px; }
+.wb-inspector-tools { display: flex; flex-direction: column; gap: 8px; }
+.wb-inspector-filter .wb-input { width: 100%; }
+.wb-inspector-kind { font: var(--type-label); color: var(--color-text-tertiary); }
+.wb-inspector-list { display: flex; flex-direction: column; font: var(--type-body-compact); }
+.wb-inspector-list li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: baseline; padding: 6px 0; border-bottom: 1px solid var(--color-border-subtle); }
+.wb-inspector-list li.is-adv { color: var(--color-text-secondary); }
+.wb-pre { font: var(--type-mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--color-surface-sunken); padding: 8px 10px; max-height: 420px; overflow: auto; }
+
 /* Now: the current-stage workspace. Rules, not frames; the decision surface is the one frame. */
 .wb-now { display: flex; flex-direction: column; gap: 12px; max-width: 980px; }
 .wb-now-waiting { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; font: var(--type-body-compact); }

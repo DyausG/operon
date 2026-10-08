@@ -3,7 +3,7 @@
 // and one section at a time. The decision surface lives in Now when a decision is pending. Section
 // selection is the URL hash, so Back / Forward, reload and the existing deep links (#decision,
 // #work, #summary) keep working.
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { useWb } from "../shell/WbContext.jsx";
 import { usePageTitle, useRoleScope } from "../shell/WbShell.jsx";
@@ -11,6 +11,9 @@ import { useSession } from "../../state/session.jsx";
 import { ConditionMarker, FreshnessIndicator, SeverityMarker, SimulatedTag, WaitingOn } from "../components/ui.jsx";
 import { Shape } from "../components/glyphs.jsx";
 import { StageLine } from "../components/StageLine.jsx";
+import { DockedPane, ModalDrawer, usePreviewMode } from "../components/Overlay.jsx";
+import { inspectHref, parseInspect } from "../model/inspect.js";
+import { CaseInspector, inspectorTitle } from "./CaseInspector.jsx";
 import { openRequests } from "../model/cases.js";
 import { SECTIONS, sectionForHash, sectionStates } from "../model/lifecycle.js";
 import { postJson } from "../model/refusal.js";
@@ -68,6 +71,32 @@ export function CaseWorkspace() {
     headingRef.current?.scrollIntoView?.({ block: "nearest" });
   }, [section]);
 
+  // Inspector (?inspect=…): opening pushes a history entry so Back closes it; moving between
+  // records while open replaces. Focus returns to the control that opened it.
+  const mode = usePreviewMode();
+  const target = parseInspect(new URLSearchParams(location.search).get("inspect"));
+  const inspectKey = target ? `${target.kind}:${target.id || ""}` : "";
+  const opener = useRef(null);
+  const openInspector = (t) => (e) => {
+    e?.preventDefault();
+    if (!target) opener.current = e?.currentTarget || null;
+    navigate(inspectHref(location, t), { replace: !!target, state: { inspectorPushed: target ? !!location.state?.inspectorPushed : true } });
+  };
+  const closeInspector = useCallback(() => {
+    if (location.state?.inspectorPushed) navigate(-1);
+    else navigate(inspectHref(location, null), { replace: true });
+  }, [location, navigate]);
+  const wasOpen = useRef(inspectKey);
+  useEffect(() => {
+    if (wasOpen.current && !inspectKey) {
+      const el = opener.current;
+      (el && el.isConnected ? el : headingRef.current)?.focus();
+      opener.current = null;
+    }
+    wasOpen.current = inspectKey;
+  }, [inspectKey]);
+  const inspect = { link: (t, label) => <a href={inspectHref(location, t)} onClick={openInspector(t)}>{label}</a> };
+
   // Not projected over the stream (e.g. after a reset): ask the case endpoint, show a safe reason.
   const missing = useMissing(c, incidentId, state.frames);
 
@@ -96,60 +125,78 @@ export function CaseWorkspace() {
   };
 
   let content;
-  if (section === "evidence") content = <EvidenceSection c={c} history={history} latestTick={state.tick} warn={warn} trigger={trigger} />;
+  if (section === "evidence") content = <EvidenceSection c={c} history={history} latestTick={state.tick} warn={warn} trigger={trigger} inspect={inspect} />;
   else if (section === "investigation") content = <InvestigationSection c={c} />;
   else if (section === "decision") content = <PlanSection c={c} trigger={trigger} decisionPending={decisionPending} goNow={go("now")} />;
   else if (section === "work") content = <WorkSection c={c} />;
-  else if (section === "record") content = <RecordSection c={c} />;
+  else if (section === "record") content = <RecordSection c={c} inspect={inspect} />;
   else {
     content = <CaseNow c={c} now={now} trigger={trigger}
       decide={{ session, roleId: role.id, roleLabel: role.label, connected, onDecide }}
       actions={<RecoveryActions key={c.incidentId} c={c} session={session} role={role} connected={connected} now={now} decisionPending={decisionPending} />} />;
   }
 
+  const docked = !!target && mode === "docked";
+  const inspector = target ? (
+    <CaseInspector c={c} target={target} link={inspect.link} history={history} latestTick={state.tick} warn={warn} trigger={trigger} />
+  ) : null;
+
   return (
-    <div className="wb-case is-d">
-      <header className="wb-case-id">
-        <nav className="wb-crumbs" aria-label="Breadcrumb">
-          <Link to={WB_ROUTES.cases}>Cases</Link><span aria-hidden="true"> / </span><span className="wb-mono" aria-current="page">{c.ref}</span>
-        </nav>
-        <div className="wb-case-titlerow">
-          <h1 className="wb-page-title">Model risk above action gate · {c.assetName}</h1>
-          <span className="wb-header-fill" />
-          <FreshnessIndicator fresh={fresh} />
-          {decisionPending && section !== "now" ? <a className="wb-btn wb-btn-primary wb-btn-md" href="#now" onClick={go("now")}><span>Go to decision</span></a> : null}
+    <div className={`wb-case is-d ${docked ? "has-inspector" : ""}`}>
+      <div className="wb-case-scroll">
+        <header className="wb-case-id">
+          <nav className="wb-crumbs" aria-label="Breadcrumb">
+            <Link to={WB_ROUTES.cases}>Cases</Link><span aria-hidden="true"> / </span><span className="wb-mono" aria-current="page">{c.ref}</span>
+          </nav>
+          <div className="wb-case-titlerow">
+            <h1 className="wb-page-title">Model risk above action gate · {c.assetName}</h1>
+            <span className="wb-header-fill" />
+            <FreshnessIndicator fresh={fresh} />
+            {decisionPending && section !== "now" ? <a className="wb-btn wb-btn-primary wb-btn-md" href="#now" onClick={go("now")}><span>Go to decision</span></a> : null}
+          </div>
+          <p className="wb-case-facts">
+            <span className="wb-fact"><ConditionMarker condition={c.condition} /> <span className="wb-num">{score(c.failureProb)}</span></span>
+            <span className="wb-fact">{c.severity ? <SeverityMarker value={c.severity} /> : <SeverityMarker value={c.criticality} basis="Asset criticality" />}</span>
+            <span className="wb-fact"><WaitingOn role={c.waiting} prefix /></span>
+            <span className="wb-fact"><Deadline c={c} now={now} /></span>
+            <span className="wb-fact wb-mono-sm">R{c.revision ?? "?"}</span>
+            {c.demo ? <span className="wb-fact"><SimulatedTag /></span> : null}
+            {c.environment === "SANDBOX" || c.environment === "PRODUCTION" ? <span className="wb-fact wb-envword">{c.environment === "SANDBOX" ? "Sandbox" : "Production"}</span> : null}
+            <span className="wb-fact wb-case-inspect">Inspect: {inspect.link({ kind: "asset" }, "asset")} · {inspect.link({ kind: "identifiers" }, "identifiers")} · {inspect.link({ kind: "record" }, "full record")}</span>
+          </p>
+          <StageLine alert={c.alert} />
+        </header>
+        <div className="wb-case-main">
+          <nav className="wb-casenav" aria-label="Case sections">
+            <ol>
+              {sections.map((s) => (
+                <li key={s.id}>
+                  <a href={`#${s.id}`} className={`wb-casenav-item is-${s.state} ${s.id === section ? "is-selected" : ""}`}
+                    aria-current={s.id === section ? "page" : undefined} onClick={go(s.id)}>
+                    <NavMarker state={s.state} />
+                    <span className="wb-casenav-label">{s.label}</span>
+                    {s.meta ? <span className="wb-casenav-meta">{s.meta}</span> : null}
+                  </a>
+                </li>
+              ))}
+            </ol>
+          </nav>
+          <section className="wb-case-content" aria-labelledby="wb-case-section">
+            <h2 className="wb-case-section-title" id="wb-case-section" tabIndex={-1} ref={headingRef}>{current.label}</h2>
+            {content}
+          </section>
         </div>
-        <p className="wb-case-facts">
-          <span className="wb-fact"><ConditionMarker condition={c.condition} /> <span className="wb-num">{score(c.failureProb)}</span></span>
-          <span className="wb-fact">{c.severity ? <SeverityMarker value={c.severity} /> : <SeverityMarker value={c.criticality} basis="Asset criticality" />}</span>
-          <span className="wb-fact"><WaitingOn role={c.waiting} prefix /></span>
-          <span className="wb-fact"><Deadline c={c} now={now} /></span>
-          <span className="wb-fact wb-mono-sm">R{c.revision ?? "?"}</span>
-          {c.demo ? <span className="wb-fact"><SimulatedTag /></span> : null}
-          {c.environment === "SANDBOX" || c.environment === "PRODUCTION" ? <span className="wb-fact wb-envword">{c.environment === "SANDBOX" ? "Sandbox" : "Production"}</span> : null}
-        </p>
-        <StageLine alert={c.alert} />
-      </header>
-      <div className="wb-case-main">
-        <nav className="wb-casenav" aria-label="Case sections">
-          <ol>
-            {sections.map((s) => (
-              <li key={s.id}>
-                <a href={`#${s.id}`} className={`wb-casenav-item is-${s.state} ${s.id === section ? "is-selected" : ""}`}
-                  aria-current={s.id === section ? "page" : undefined} onClick={go(s.id)}>
-                  <NavMarker state={s.state} />
-                  <span className="wb-casenav-label">{s.label}</span>
-                  {s.meta ? <span className="wb-casenav-meta">{s.meta}</span> : null}
-                </a>
-              </li>
-            ))}
-          </ol>
-        </nav>
-        <section className="wb-case-content" aria-labelledby="wb-case-section">
-          <h2 className="wb-case-section-title" id="wb-case-section" tabIndex={-1} ref={headingRef}>{current.label}</h2>
-          {content}
-        </section>
       </div>
+      {docked ? (
+        <DockedPane title={inspectorTitle(target, c)} titleId="wb-inspector-title" onClose={closeInspector} closeLabel="Close inspector" className="wb-inspector">
+          {inspector}
+        </DockedPane>
+      ) : null}
+      {target && !docked ? (
+        <ModalDrawer title={inspectorTitle(target, c)} titleId="wb-inspector-title" onClose={closeInspector} closeLabel="Close inspector" className="wb-inspector">
+          {inspector}
+        </ModalDrawer>
+      ) : null}
     </div>
   );
 }
