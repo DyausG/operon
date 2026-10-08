@@ -81,6 +81,12 @@ const PHASE_WAITING = {
 
 export const TERMINAL = new Set(["CLOSED", "CANCELLED"]);
 
+/** What a declarable role's queue holds (My actions), from PHASE_WAITING and waitingOn above. */
+export const ROLE_QUEUE = {
+  approver: "approval decisions, expired or invalidated approvals, approved work awaiting dispatch and dispatch failures",
+  reliability_engineer: "escalations and suspended analysis",
+};
+
 /** Who the case waits on. `suspended` (F1.1 analysis suspension) needs a person to resume it. */
 export function waitingOn(phase, { suspended = false } = {}) {
   if (suspended && !TERMINAL.has(phase)) return ROLES.reliability_engineer;

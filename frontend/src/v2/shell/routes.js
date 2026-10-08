@@ -20,7 +20,6 @@ export const WB_ROUTES = {
 /** Planned V2 destinations without a screen yet (08 §2, §9). `legacy` names the current page an
  *  explicit, labelled link may open in the legacy portal. */
 export const WB_PLANNED = [
-  { path: "cases", label: "Cases", legacy: { to: "/legacy/incidents", label: "Incidents" } },
   { path: "assets", label: "Assets", legacy: { to: "/legacy/machines", label: "Machines" } },
   { path: "assets/:equipmentId", label: "Asset", legacy: { to: "/legacy/machines", label: "Machines" } },
   { path: "work-orders", label: "Work orders", legacy: { to: "/legacy/maintenance", label: "Maintenance" } },

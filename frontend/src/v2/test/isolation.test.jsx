@@ -30,7 +30,7 @@ const withCase = states.find((s) => Object.values(s.alerts || {}).length) || fin
 const incidentId = Object.values(withCase.alerts)[0]?.incident_id || "DEMO-INCIDENT-01";
 
 const planned = WB_PLANNED.map((p) => `/app/${p.path.replace(":equipmentId", "AC-COMP-01").replace(":section", "analysis")}`);
-const V2_PATHS = [WB_ROUTES.overview, WB_ROUTES.actions, WB_ROUTES.simulation, WB_ROUTES.case(incidentId), `${WB_ROUTES.actions}?preview=${incidentId}`, ...planned, "/app/not-a-page", "/app/cases/x/y/z"];
+const V2_PATHS = [WB_ROUTES.overview, WB_ROUTES.actions, WB_ROUTES.cases, `${WB_ROUTES.cases}?status=all&preview=${incidentId}`, WB_ROUTES.simulation, WB_ROUTES.case(incidentId), `${WB_ROUTES.actions}?preview=${incidentId}`, ...planned, "/app/not-a-page", "/app/cases/x/y/z"];
 const LEGACY_PATHS = ["/legacy/dashboard", "/legacy/machines", "/legacy/machines/AC-COMP-01", "/legacy/incidents", `/legacy/incidents/${incidentId}`,
   `/legacy/agent?incident=${incidentId}`, "/legacy/maintenance", "/legacy/analytics", "/legacy/activity", "/legacy/notifications", "/legacy/profile", "/legacy/settings"];
 
@@ -54,8 +54,12 @@ describe("route ownership", () => {
   });
 
   it("the audit is not vacuous: placeholders and the case expose their exits and in-shell links", () => {
-    const cases = anchors(render(WB_ROUTES.cases, withCase));
-    expect(cases.filter((a) => a.exit).map((a) => a.href)).toEqual(["/legacy/incidents"]);
+    const assets = anchors(render(WB_ROUTES.assets, withCase));
+    expect(assets.filter((a) => a.exit).map((a) => a.href)).toEqual(["/legacy/machines"]);
+    // F4.1: Cases is a V2 screen now. It links to cases in the workbench and has no legacy exit.
+    const cases = anchors(render(`${WB_ROUTES.cases}?status=all`, withCase));
+    expect(cases.filter((a) => a.exit)).toEqual([]);
+    expect(cases.some((a) => a.href === WB_ROUTES.case(incidentId) && !a.exit)).toBe(true);
     expect(cases.some((a) => a.href === WB_ROUTES.cases && !a.exit)).toBe(true); // the rail item
     const kase = anchors(render(WB_ROUTES.case(incidentId), withCase));
     // F4.1 layout D: the PRISM legacy exit lives in the Investigation section.
@@ -86,7 +90,8 @@ describe("route ownership", () => {
 
 describe.each(states.map((s, i) => [i, s]))("link audit, frame %i", (_i, state) => {
   const id = Object.values(state.alerts || {})[0]?.incident_id;
-  const paths = [WB_ROUTES.overview, WB_ROUTES.actions, WB_ROUTES.simulation, ...planned, "/app/not-a-page"];
+  const paths = [WB_ROUTES.overview, WB_ROUTES.actions, `${WB_ROUTES.cases}?status=all`, WB_ROUTES.simulation, ...planned, "/app/not-a-page"];
+  if (id) paths.push(`${WB_ROUTES.cases}?status=all&preview=${id}`);
   // F4.1 layout D renders one case section at a time: audit every section, not just Now.
   if (id) paths.push(WB_ROUTES.case(id), ...["evidence", "investigation", "decision", "work", "record"].map((s) => WB_ROUTES.case(id, s)), `${WB_ROUTES.actions}?preview=${id}`);
   // …and the inspector views that carry links.

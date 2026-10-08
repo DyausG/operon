@@ -39,6 +39,20 @@
 .wb-queue-page.has-preview .wb-queue-main { overflow-y: auto; }
 .wb-queue-page.has-preview .wb-pane { position: sticky; top: 0; height: 100%; }
 .wb-filters { display: flex; align-items: center; gap: 16px; margin-bottom: 8px; flex-wrap: wrap; }
+
+/* ===== Cases list (screen 4, today's variant): latest case per asset ===== */
+.wb-scope-note { font: var(--type-body-compact); color: var(--color-text-secondary); border-left: 2px solid var(--color-border-strong); padding-left: 10px; max-width: 90ch; }
+.wb-cl-filters { align-items: flex-end; gap: 12px 16px; margin-bottom: 12px; }
+.wb-cl-filter { display: flex; flex-direction: column; gap: 4px; }
+.wb-cl-filter .wb-input { width: 180px; min-height: var(--size-control-md); }
+.wb-cl-table tbody tr.is-selected { background: var(--color-surface-selected); box-shadow: inset 2px 0 0 var(--color-text-primary); }
+.wb-cl-table tbody tr:hover { background: var(--color-surface-hover); }
+.wb-cl-row { display: flex; flex-direction: column; gap: 2px; text-align: left; width: 100%; padding: 2px 0 2px 8px; font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+.wb-cl-asset { font-weight: 500; }
+.wb-cl-ref { color: var(--color-text-tertiary); }
+.wb-cl-stage { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
+.wb-cl-sub { display: block; font: var(--type-caption); color: var(--color-text-secondary); }
+.wb-cl-empty { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
 .wb-filters-meta { font: var(--type-caption); color: var(--color-text-tertiary); }
 .wb-q-list { border-top: 1px solid var(--color-border-subtle); }
 .wb-q-item { border-bottom: 1px solid var(--color-border-subtle); position: relative; }

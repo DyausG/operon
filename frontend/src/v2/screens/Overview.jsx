@@ -12,6 +12,7 @@ import { aggregateConditions, conditionOf, CONDITION_LABEL, stageCompact } from 
 import { clock, when, duration, score } from "../model/format.js";
 import { reasonLine } from "../model/cases.js";
 import { OUTCOME } from "../model/status.js";
+import { fieldStatus } from "../model/workBoundary.js";
 
 function DeadlineCell({ c, now }) {
   const r = c.requirement;
@@ -151,7 +152,9 @@ export function Overview() {
   const caseAssets = new Set(active.map((c) => c.assetId));
   const watchAssets = assets.filter((a) => !caseAssets.has(a.equipment_id) && conditionOf(a.failure_prob, { warn, trigger }) === "elevated");
   const verifying = cases.filter((c) => c.phase === "OBSERVING");
-  const working = cases.filter((c) => (c.rm?.execution_receipts || []).length > 0 && !["CLOSED", "CANCELLED"].includes(c.phase));
+  // A committed work order is a CONFIRMED dispatch receipt; a failed or unknown one is not work.
+  const confirmedReceipt = (c) => (c.rm?.execution_receipts || []).filter((r) => r.status === "CONFIRMED").slice(-1)[0] || null;
+  const working = cases.filter((c) => confirmedReceipt(c) && !["CLOSED", "CANCELLED"].includes(c.phase));
   const outcomes = cases.filter((c) => c.outcomeResult);
   const lags = assets.map((a) => assetLag(state.histories?.[a.equipment_id], state.tick));
   const stale = lags.filter((l) => l.stale).length;
@@ -221,6 +224,7 @@ export function Overview() {
           <section className="wb-region" aria-labelledby="ov-cases">
             <SectionHeading index="02" id="ov-cases" title="Active cases" meta={`${active.length}`} />
             {active.length ? <ActiveCasesTable cases={active} now={now} /> : <EmptyLine>No open cases. A case opens when an asset’s model risk score reaches the action gate ({score(trigger)}).</EmptyLine>}
+            <p className="wb-caption"><Link to={WB_ROUTES.cases}>All cases, with filters</Link> (latest case per asset)</p>
           </section>
         </div>
 
@@ -252,14 +256,14 @@ export function Overview() {
             {working.length === 0 ? <EmptyLine>No committed work orders.</EmptyLine> : (
               <ul className="wb-list">
                 {working.map((c) => {
-                  const rec = (c.rm.execution_receipts || [])[0];
+                  const rec = confirmedReceipt(c);
                   const wo = rec?.external_ids?.wo_number || rec?.external_ids?.wo_id;
                   return (
                     <li key={c.incidentId} className="wb-list-row">
                       <Shape name="committed" size={14} decorative />
                       <span className="wb-mono">{wo || "Work order"}</span>
-                      <span className="wb-mono">{c.assetId}</span>
-                      <span className="wb-secondary">committed {rec?.completed_at ? clock(rec.completed_at) : ""} · field completion not reported (G10)</span>
+                      <Link className="wb-mono" to={WB_ROUTES.case(c.incidentId, "work")}>{c.assetId}</Link>
+                      <span className="wb-secondary">committed {rec?.completed_at ? clock(rec.completed_at) : ""} · {fieldStatus(c.alert?.lifecycle)}</span>
                     </li>
                   );
                 })}

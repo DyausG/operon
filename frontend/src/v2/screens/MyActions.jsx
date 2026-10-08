@@ -10,7 +10,7 @@ import { WB_ROUTES } from "../shell/routes.js";
 import { ConditionMarker, EmptyLine, FreshnessIndicator, Icon, Muted, Segmented, TitleBlock, WaitingOn } from "../components/ui.jsx";
 import { Shape } from "../components/glyphs.jsx";
 import { DockedPane, ModalDrawer, usePreviewMode } from "../components/Overlay.jsx";
-import { ROLES, stageCompact } from "../model/status.js";
+import { ROLES, ROLE_QUEUE, stageCompact } from "../model/status.js";
 import { reasonLine } from "../model/cases.js";
 import { clock, when, duration } from "../model/format.js";
 import { CasePreview } from "./CasePreview.jsx";
@@ -157,7 +157,7 @@ export function MyActions() {
           <section aria-labelledby="q-mine">
             <h2 className="wb-group-head" id="q-mine">
               {scope === "all" ? `Requires a person · ${primary.length}` : `Requires you · ${role.label} · ${primary.length}`}
-              {scope === "mine" ? <span className="wb-group-reason"> · approvals, resource confirmations and dispatch failures</span> : null}
+              {scope === "mine" && ROLE_QUEUE[myRoleKey] ? <span className="wb-group-reason"> · {ROLE_QUEUE[myRoleKey]}</span> : null}
             </h2>
             {primary.length ? (
               <ul className="wb-q-list">

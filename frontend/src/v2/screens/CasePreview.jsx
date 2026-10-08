@@ -6,9 +6,19 @@ import { WB_ROUTES } from "../shell/routes.js";
 import { ConditionMarker, Ledger, Muted, Provenance, WaitingOn } from "../components/ui.jsx";
 import { Shape } from "../components/glyphs.jsx";
 import { assessment, latestRun } from "../model/cases.js";
+import { exceptionWords } from "../model/caseList.js";
 import { provenanceOf, stageCompact } from "../model/status.js";
 import { clock, when, duration, score } from "../model/format.js";
 import { curatedRecord, nextStepSentence } from "./caseCopy.js";
+
+/** The approval deadline only while a decision is pending; an expired or invalidated approval says so. */
+function deadlineRow(c, now) {
+  const r = c.requirement;
+  if (c.approval?.state === "pending" && r?.expires_at) return { label: "Deadline", value: <>{when(r.expires_at)} · in {duration(Date.parse(r.expires_at) - now)}</> };
+  if (c.approval?.state === "expired") return { label: "Deadline", value: <>Expired{r?.expires_at ? ` ${when(r.expires_at)}` : ""}</> };
+  if (c.approval?.state === "invalidated") return { label: "Deadline", value: <Muted>None: the plan was invalidated</Muted> };
+  return { label: "Deadline", value: <Muted>No deadline</Muted> };
+}
 
 export function CasePreview({ c, now }) {
   const rm = c.rm || {};
@@ -17,21 +27,21 @@ export function CasePreview({ c, now }) {
   const run = latestRun(rm, "DIAGNOSIS");
   const lead = (assessment(run, "diagnostic")?.competing_hypotheses || [])[0];
   const events = curatedRecord(rm.events).slice(-5).reverse();
-  const r = c.requirement;
+  const why = exceptionWords(c);
   return (
     <div className="wb-preview">
       <p className="wb-preview-ref"><span className="wb-mono">{c.ref}</span></p>
       <p className="wb-preview-name">{c.assetName}</p>
       <Ledger className="is-compact" rows={[
         { label: "Asset condition", value: <><ConditionMarker condition={c.condition} /> <span className="wb-num">{score(c.failureProb)}</span></> },
-        { label: "Stage", value: stageCompact(c.phase) },
-        { label: "Waiting on", value: <WaitingOn role={c.waiting} /> },
-        r?.expires_at ? { label: "Deadline", value: <>{when(r.expires_at)} · in {duration(Date.parse(r.expires_at) - now)}</> } : { label: "Deadline", value: <Muted>No deadline</Muted> },
+        { label: "Stage", value: <>{stageCompact(c.phase)}{why ? <span className="wb-secondary"> · {why}</span> : null}</> },
+        { label: "Waiting on", value: <><WaitingOn role={c.waiting} />{c.response && c.waiting?.human ? <span className="wb-secondary"> · {c.response.verb}</span> : null}</> },
+        deadlineRow(c, now),
       ]} />
       <p className="wb-preview-next">{nextStepSentence(c)}</p>
       <div className="wb-preview-actions">
         <Link className="wb-btn wb-btn-primary wb-btn-md" to={WB_ROUTES.case(c.incidentId)}><span>Open case</span></Link>
-        {c.phase === "AWAITING_APPROVAL" ? <Link className="wb-btn wb-btn-secondary wb-btn-md" to={WB_ROUTES.case(c.incidentId, "decision")}><span>Go to decision</span></Link> : null}
+        {c.approval?.state === "pending" ? <Link className="wb-btn wb-btn-secondary wb-btn-md" to={WB_ROUTES.case(c.incidentId, "decision")}><span>Go to decision</span></Link> : null}
       </div>
 
       <h3 className="wb-preview-h">Finding</h3>

@@ -25,6 +25,7 @@ import { LEGACY_SEGMENTS, WB_PLANNED, WB_ROUTES, legacyCompatTarget } from "./v2
 import { Overview } from "./v2/screens/Overview.jsx";
 import { MyActions } from "./v2/screens/MyActions.jsx";
 import { CaseWorkspace } from "./v2/screens/CaseWorkspace.jsx";
+import { CasesList } from "./v2/screens/CasesList.jsx";
 import { Simulation } from "./v2/screens/Simulation.jsx";
 import { Specimen } from "./v2/screens/Specimen.jsx";
 import { NotFound, Planned } from "./v2/screens/Planned.jsx";
@@ -69,6 +70,7 @@ export function AppRoutes() {
         <Route index element={<Navigate to={WB_ROUTES.overview} replace />} />
         <Route path="overview" element={<Overview />} />
         <Route path="actions" element={<MyActions />} />
+        <Route path="cases" element={<CasesList />} />
         <Route path="cases/:incidentId" element={<CaseWorkspace />} />
         <Route path="system/simulation" element={<Simulation />} />
         {DEV ? <Route path="dev/specimen" element={<Specimen />} /> : null}

@@ -37,16 +37,17 @@ test.describe("V2 navigation stays in the workbench", () => {
 
   test("unfinished destinations say so; the legacy page is only an explicit, labelled link", async ({ page }) => {
     await start(page);
-    await page.goto("/app/cases");
+    // F4.1: Cases is a V2 screen now; Assets is still a placeholder with a labelled legacy exit.
+    await page.goto("/app/assets");
     await v2(page);
-    await expect(page.locator("h1")).toHaveText("Cases");
-    await expect(page.getByText("Cases isn’t available in this version of the workbench yet.")).toBeVisible();
-    await expect(page.getByRole("navigation", { name: "Primary" }).getByRole("link", { name: "Cases" })).toHaveClass(/is-active/);
-    await page.getByRole("link", { name: "open Incidents in the legacy portal" }).click();
-    await at(page, "/legacy/incidents");
+    await expect(page.locator("h1")).toHaveText("Assets");
+    await expect(page.getByText("Assets isn’t available in this version of the workbench yet.")).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "Primary" }).getByRole("link", { name: "Assets" })).toHaveClass(/is-active/);
+    await page.getByRole("link", { name: "open Machines in the legacy portal" }).click();
+    await at(page, "/legacy/machines");
     await legacy(page);
     await page.goBack();
-    await at(page, "/app/cases");
+    await at(page, "/app/assets");
     await v2(page);
   });
 

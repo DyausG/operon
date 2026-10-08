@@ -22,7 +22,7 @@ const NAV = [
   { group: "Operate", items: [
     { key: "overview", label: "Overview", to: WB_ROUTES.overview, icon: IconLayoutDashboard },
     { key: "actions", label: "My actions", to: WB_ROUTES.actions, icon: IconChecklist, count: true },
-    { key: "cases", label: "Cases", to: WB_ROUTES.cases, icon: IconFolders, planned: true },
+    { key: "cases", label: "Cases", to: WB_ROUTES.cases, icon: IconFolders },
     { key: "assets", label: "Assets", to: WB_ROUTES.assets, icon: IconBuildingFactory2, planned: true },
     { key: "work", label: "Work orders", to: WB_ROUTES.workOrders, icon: IconTool, planned: true },
   ] },
