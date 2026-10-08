@@ -22,13 +22,13 @@ const NAV = [
   { group: "Operate", items: [
     { key: "overview", label: "Overview", to: WB_ROUTES.overview, icon: IconLayoutDashboard },
     { key: "actions", label: "My actions", to: WB_ROUTES.actions, icon: IconChecklist, count: true },
-    { key: "cases", label: "Cases", to: "/app/incidents", icon: IconFolders, legacy: true },
-    { key: "assets", label: "Assets", to: "/app/machines", icon: IconBuildingFactory2, legacy: true },
-    { key: "work", label: "Work orders", to: "/app/maintenance", icon: IconTool, legacy: true },
+    { key: "cases", label: "Cases", to: WB_ROUTES.cases, icon: IconFolders, planned: true },
+    { key: "assets", label: "Assets", to: WB_ROUTES.assets, icon: IconBuildingFactory2, planned: true },
+    { key: "work", label: "Work orders", to: WB_ROUTES.workOrders, icon: IconTool, planned: true },
   ] },
   { group: "Review", secondary: true, items: [
-    { key: "reliability", label: "Reliability", to: "/app/analytics", icon: IconChartLine, legacy: true },
-    { key: "audit", label: "Audit log", to: "/app/activity", icon: IconHistory, legacy: true },
+    { key: "reliability", label: "Reliability", to: WB_ROUTES.reliability, icon: IconChartLine, planned: true },
+    { key: "audit", label: "Audit log", to: WB_ROUTES.audit, icon: IconHistory, planned: true },
   ] },
 ];
 
@@ -95,7 +95,7 @@ function AccountMenu() {
             <Segmented label="Theme" value={mode} onChange={setMode}
               options={[{ value: "system", label: "System" }, { value: "light", label: "Light" }, { value: "dark", label: "Dark" }]} />
           </div>
-          <Link role="menuitem" className="wb-menu-item" to="/app/profile">Preferences (current page)</Link>
+          <Link role="menuitem" className="wb-menu-item" to={WB_ROUTES.preferences}>Preferences</Link>
           <button role="menuitem" type="button" className="wb-menu-item" onClick={signOut}>Sign out</button>
         </div>
       ) : null}
@@ -110,7 +110,7 @@ function Rail({ collapsed, onToggle }) {
   const item = (it) => (
     <li key={it.key}>
       <NavLink to={it.to} className={({ isActive }) => `wb-nav-item ${isActive ? "is-active" : ""}`}
-        title={collapsed ? it.label : it.legacy ? `${it.label} (current page; V2 redesign follows Phase 4A)` : undefined}
+        title={collapsed ? it.label : it.planned ? `${it.label} (not yet available in this version)` : undefined}
         aria-label={collapsed ? `${it.label}${it.count && count ? `, ${count} require action` : ""}` : undefined}>
         <Icon as={it.icon} size={20} />
         <span className="wb-nav-label">{it.label}</span>
@@ -204,7 +204,7 @@ function ShellFrame() {
           <span className="wb-plant">{state.meta?.plant || "Plant not reported"}</span>
           <span className="wb-header-fill" />
           <StatusIndicator />
-          <Link className="wb-iconbtn" to="/app/notifications" aria-label="Updates (this session only, G7)" title="Updates (this session only, G7)">
+          <Link className="wb-iconbtn" to={WB_ROUTES.updates} aria-label="Updates (this session only, G7)" title="Updates (this session only, G7)">
             <Icon as={IconBell} size={20} />
           </Link>
           <AccountMenu />

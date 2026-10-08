@@ -17,7 +17,9 @@ def client(monkeypatch):
 def test_client_routes_resolve_to_the_document(client):
     from core import config
     html_expected = (config.FRONTEND_BUILD / "index.html").exists()
-    for path in ("/login", "/app/dashboard", "/app/incidents/DEMO-INCIDENT-01", "/app/settings"):
+    for path in ("/login", "/app/dashboard", "/app/incidents/DEMO-INCIDENT-01", "/app/settings",
+                 "/app/overview", "/app/cases/DEMO-INCIDENT-01", "/app/cases",
+                 "/legacy/dashboard", "/legacy/incidents/DEMO-INCIDENT-01"):
         r = client.get(path)
         assert r.status_code == 200, path
         assert r.headers["content-type"].startswith("text/html"), path
