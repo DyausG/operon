@@ -10,6 +10,7 @@ import os
 import pathlib
 import tempfile
 import socket
+import threading
 
 # --- isolate BEFORE importing core (config resolves paths/creds at import) ----
 _TMP_ROOT = tempfile.TemporaryDirectory(prefix="operon-pytest-")
@@ -37,6 +38,15 @@ import pytest  # noqa: E402
 from core.db import init_schema  # noqa: E402
 from core.seed_data import seed  # noqa: E402
 
+_LOOPBACK = ("127.0.0.1", "::1")
+# Set only while socket.socketpair() runs on this thread. Windows has no AF_UNIX socketpair, so
+# CPython's fallback connects to its own loopback listener; asyncio's event loop needs that pair.
+_socketpair_scope = threading.local()
+
+
+def _socketpair_self_connect(address) -> bool:
+    return getattr(_socketpair_scope, "active", False) and isinstance(address, tuple) and address[0] in _LOOPBACK
+
 
 @pytest.fixture(autouse=True)
 def _isolate_database_and_network(tmp_path, monkeypatch):
@@ -48,19 +58,28 @@ def _isolate_database_and_network(tmp_path, monkeypatch):
 
     original_connect = socket.socket.connect
     original_connect_ex = socket.socket.connect_ex
+    original_socketpair = socket.socketpair
 
     def guarded_connect(sock, address):
-        if sock.family in (socket.AF_INET, socket.AF_INET6):
+        if sock.family in (socket.AF_INET, socket.AF_INET6) and not _socketpair_self_connect(address):
             raise AssertionError(f"network access is blocked in tests: {address}")
         return original_connect(sock, address)
 
     def guarded_connect_ex(sock, address):
-        if sock.family in (socket.AF_INET, socket.AF_INET6):
+        if sock.family in (socket.AF_INET, socket.AF_INET6) and not _socketpair_self_connect(address):
             raise AssertionError(f"network access is blocked in tests: {address}")
         return original_connect_ex(sock, address)
 
+    def scoped_socketpair(*args, **kwargs):
+        _socketpair_scope.active = True
+        try:
+            return original_socketpair(*args, **kwargs)
+        finally:
+            _socketpair_scope.active = False
+
     monkeypatch.setattr(socket.socket, "connect", guarded_connect)
     monkeypatch.setattr(socket.socket, "connect_ex", guarded_connect_ex)
+    monkeypatch.setattr(socket, "socketpair", scoped_socketpair)
 
     def blocked_dns(*args, **kwargs):
         raise AssertionError("DNS/network access is blocked in tests")
