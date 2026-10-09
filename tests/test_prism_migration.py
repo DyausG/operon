@@ -23,7 +23,8 @@ def versions(path: Path) -> list[str]:
 def test_fresh_database_gets_the_prism_schema(tmp_path):
     path = tmp_path / "fresh.db"
     db.init_schema(path)
-    assert PRISM_TABLES <= tables(path) and versions(path)[-1] == "008_prism_runtime"
+    # F1.2 (intentional change): migration 009 follows 008, so 008 is present rather than last.
+    assert PRISM_TABLES <= tables(path) and "008_prism_runtime" in versions(path)
     with db.get_conn(path) as conn:
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         triggers = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'")}
@@ -46,7 +47,7 @@ def test_existing_pre_prism_database_is_migrated_in_place(tmp_path):
             conn.execute(f"DROP TABLE IF EXISTS {table}")
     assert "008_prism_runtime" not in versions(path) and not (PRISM_TABLES & tables(path))
     db.init_schema(path)
-    assert PRISM_TABLES <= tables(path) and versions(path)[-1] == "008_prism_runtime"
+    assert PRISM_TABLES <= tables(path) and "008_prism_runtime" in versions(path)  # F1.2: 009 follows
     with db.get_conn(path) as conn:
         assert conn.execute("SELECT plant_name FROM plant").fetchone()[0] == "Existing plant"
 

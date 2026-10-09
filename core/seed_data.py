@@ -153,6 +153,7 @@ def seed(reset: bool = False) -> None:
             # child/transactional tables first so foreign keys never block the wipe
             for t in RELIABILITY_RESET_TABLES + ("labor_booking", "part_reservation", "work_package", "notification",
                       "alert", "maintenance_event", "work_order", "health_score", "sensor_reading",
+                      "simulator_asset_state",
                       "equipment_part", "sensor", "part", "technician", "failure_mode",
                       "equipment", "assembly_line", "plant"):
                 conn.execute(f"DELETE FROM {t};")

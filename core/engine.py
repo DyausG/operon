@@ -30,7 +30,7 @@ reasoning runtime: every run snapshot freezes the backend/provider/model that ra
 from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 import time
@@ -38,6 +38,8 @@ import time
 from . import config, agent, services
 from .db import get_conn, reset_transactional
 from .model import load_or_train
+from .field_crew import ACTOR as CREW_ACTOR, SimulatedFieldCrew
+from .plant import PlantEffect, SimulatorStateStore, actuator_for
 from .simulator import PlantSimulator
 from .seed_data import CLASS_DEFAULT_MODE, SENSOR_FEATURES
 from .tools import get_failure_mode_by_code
@@ -112,6 +114,16 @@ class DemoEngine:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self.model = load_or_train()
         self.sim = PlantSimulator()
+        # F1.2: the sandbox plant remembers its own state (a restart never resets an asset to
+        # healthy), and the lifecycle changes it only through the PlantActuator port.
+        self.plant_state = SimulatorStateStore()
+        self._plant_restored = self.sim.restore(self.plant_state.load())
+        self.actuator = actuator_for(config.environment(), lambda: self.sim, self.plant_state)
+        # F1.2 (D6): the sandbox scenario's simulated field crew. Never in production; it acts
+        # for the Guided Demo asset, and for every asset only when explicitly enabled.
+        self.field_crew = (None if config.environment() == "production" else SimulatedFieldCrew(
+            ack_after=timedelta(seconds=2 * config.TICK_SECONDS), report_after=timedelta(seconds=3 * config.TICK_SECONDS)))
+        self.field_crew_enabled = config.simulated_field_crew_enabled()
         self.clients: set = set()
         self.running = False
         self.tick_i = 0
@@ -149,6 +161,8 @@ class DemoEngine:
         self._monotonic = time.monotonic
         # Outcome messages produced by the synchronous tick progression, flushed by the tick.
         self._pending_broadcasts: list[dict] = []
+        # F1.2 (D4): blocked pre-version-2 cases already reported in the log.
+        self._blocked_reported: set[str] = set()
         # Monitoring peer results per active alert set; refreshed off the event loop.
         self._monitoring_cache: dict[frozenset, dict] = {}
         self._monitoring_tasks: dict[frozenset, asyncio.Task] = {}
@@ -157,6 +171,8 @@ class DemoEngine:
         self._reasoning_lock = asyncio.Lock()
         self._model_version = model_version(config.MODEL_PATH)
         self._observed_at = self._clock()
+        # Plant time continues from the restored simulator (it is not reset by a restart).
+        self.tick_i = max([self.tick_i, *(self.sim.assets[eid].tick for eid in self._plant_restored)])
         self._recover_incidents()
         # PRISM runtime: sessions/revisions/runs over the same database; events ride /ws. Stage 2 gives
         # it the production Slow Path around this engine's real reasoning stack (role ``slow``).
@@ -268,26 +284,72 @@ class DemoEngine:
         self._retriage()
 
     def _recover_lifecycle(self, eid: str, incident):
-        """Reconstruct from durable pointers and lineage. Never dispatches automatically."""
+        """Reconstruct from durable pointers and lineage. Never dispatches automatically.
+
+        F1.2: a restart never "responds" to a dispatch. The simulator resumed from its durable
+        state. An active case keeps its asset held (or, after an escalated rejection, failing)
+        unless the plant is already responding to applied work; this also repairs a hold that
+        was applied inside a tick and not yet saved. Only an eligible work report whose plant
+        effect was not yet recorded (a crash between the report and its actuation) is
+        applied, once, before the first tick.
+        """
         status = self.lifecycle.reconcile(incident.id)
         incident = self.coordinator.repository.fetch_incident(incident.id)
         self.incidents[eid] = incident
         if incident.phase in (IncidentPhase.OPEN, IncidentPhase.INVESTIGATING):
             self._resume.add(eid)
-        mode, override = "arrested", "CRITICAL"
-        if incident.phase == IncidentPhase.OBSERVING:
-            # Simulated plant response to the confirmed package, not verified recovery:
-            # verification resumes from durable evidence on the next tick.
-            mode, override = self.sim.respond_to_intervention(eid), "SCHEDULED"
-        elif incident.phase == IncidentPhase.ESCALATED and self._rejected(incident.id):
-            mode, override = "failing", "CRITICAL"
-        if mode != self.sim.assets[eid].mode:
-            self.sim.set_mode(eid, mode)
-        self.status_override[eid] = override
+        failing = incident.phase == IncidentPhase.ESCALATED and self._rejected(incident.id)
+        if eid not in self._plant_restored:
+            self._restore_held_asset(eid, incident, failing=failing)
+        elif not (incident.phase == IncidentPhase.OBSERVING and self.lifecycle.dispatch_actuated(incident.id)):
+            target = "failing" if failing else "arrested"
+            if self.sim.assets[eid].mode != target:
+                self._plant(PlantEffect("RUN_TO_FAILURE" if failing else "ANALYSIS_HOLD", eid))
+        for report in self.lifecycle.pending_actuations(incident.id):
+            self._actuate_work(incident.id, report)
+        self.status_override[eid] = "SCHEDULED" if incident.phase == IncidentPhase.OBSERVING else "CRITICAL"
         self.alerts[eid] = self._lifecycle_alert(eid, status=status)
         if status.reconciliation_required:
             logger.warning("Incident %s requires execution reconciliation (claim %s); no automatic replay",
                            incident.id, status.claim_state)
+
+    def _restore_held_asset(self, eid: str, incident, *, failing: bool):
+        """Pre-F1.2 database (no durable plant memory): keep the asset's held condition, never reset it.
+
+        Progress is estimated deterministically from the asset's last persisted telemetry and
+        the hold (or the explicit run-to-failure) is reapplied through the actuator.
+        """
+        estimate = self.plant_state.estimate(self.sim, eid)
+        state = self.sim.assets[eid]
+        if estimate is not None:
+            state.prog, state.tick = estimate[0], max(state.tick, estimate[1])
+        self._plant(PlantEffect("RUN_TO_FAILURE" if failing else "ANALYSIS_HOLD", eid))
+        logger.warning("No durable simulator state for %s (incident %s, pre-F1.2 database): progress %s "
+                       "estimated from persisted telemetry and held", eid, incident.id,
+                       f"{state.prog:.3f}" if estimate is not None else "unavailable")
+
+    def _plant(self, effect: PlantEffect, *, durable: bool = True):
+        """Apply one non-work plant effect (hold / release / run-to-failure); never raises into the loop."""
+        try:
+            return self.actuator.apply(effect, durable=durable)
+        except Exception:  # noqa: BLE001 - a simulator fault must not stop the loop; it is logged
+            logger.exception("Plant actuator failed for %s (%s)", effect.equipment_id, effect.cause)
+            return None
+
+    def _actuate_work(self, incident_id: str, report):
+        """The (simulated) plant responds to one eligible work report; the result is recorded once.
+
+        Runs synchronously on the engine loop right after the report commit, so no tick can
+        observe the pre-work plant after the report's observation boundary.
+        """
+        effect = PlantEffect("WORK_PERFORMED", report.equipment_ids[0], work_result=report.result, report_id=report.id)
+        try:
+            result = self.actuator.apply(effect)
+        except Exception as exc:  # noqa: BLE001 - recorded; the report stays pending and is replayed at restart
+            logger.exception("Plant actuation failed for work report %s", report.id)
+            self.lifecycle.record_actuation_failure(incident_id, report_id=report.id, error=f"{type(exc).__name__}: {exc}")
+            return None
+        return self.lifecycle.record_actuation(incident_id, report_id=report.id, result=result)
 
     def _rejected_back(self, incident) -> bool:
         """F1: a rejection returns the case to PLANNING (default), INVESTIGATING or ESCALATED."""
@@ -382,6 +444,7 @@ class DemoEngine:
         self._reasoning_retries = {}
         self._reasoning_diagnostics = []
         self._pending_broadcasts = []
+        self._blocked_reported = set()
         await self.broadcast({"type": "reset"})
         if restore_factory:
             # Reconstruct a complete normal-factory projection before a public
@@ -881,6 +944,10 @@ class DemoEngine:
                 c.executemany("INSERT INTO health_score "
                               "(equipment_id, scored_at, health_score, failure_prob, predicted_mode) "
                               "VALUES (?,?,?,?,?)", healths)
+                # F1.2: the simulated plant's durable memory advances with the scores it produced
+                # (same commit). In-tick holds are persisted by the next tick's save; restart
+                # re-asserts holds for active cases (see _recover_lifecycle).
+                self.plant_state.save(self.sim, conn=c)
         except Exception:
             result["health_scores"] = False
             logger.exception(
@@ -951,7 +1018,7 @@ class DemoEngine:
                 admission_skip_reason=None,
             )
         self._analyzing.add(eid)
-        self.sim.set_mode(eid, "arrested")
+        self._plant(PlantEffect("ANALYSIS_HOLD", eid), durable=False)  # in-tick: saved with the next tick
         self.status_override[eid] = "CRITICAL"
         if created:
             try:
@@ -1277,8 +1344,66 @@ class DemoEngine:
                 self.incidents[eid] = current
                 self.alerts[eid] = self._lifecycle_alert(eid)
             if current.phase == IncidentPhase.OBSERVING:
+                before = ((self.alerts.get(eid) or {}).get("lifecycle") or {}).get("verification") or {}
+                self._crew_step(eid)
                 self._verify_outcome(eid)
+                self._refresh_verification(eid, before)
             self._schedule_diagnosis(eid)
+
+    def _refresh_verification(self, eid: str, before: dict):
+        """Keep an OBSERVING case's projection current; announce verification sub-state changes.
+
+        Post-work scores arrive every tick without an incident write, so the verification
+        view is recomputed here. The (large) alert is broadcast only when the sub-state
+        changes (e.g. AWAITING_WORK -> COLLECTING -> EVALUATING), not for every score.
+        """
+        incident = self.coordinator.repository.fetch_incident(self.incidents[eid].id)
+        if incident.phase != IncidentPhase.OBSERVING:
+            return
+        current = self.lifecycle.verification(incident.id, now=self._clock())
+        if (current.get("state"), current.get("post_score_count"), current.get("plan_id")) == (
+                before.get("state"), before.get("post_score_count"), before.get("plan_id")):
+            return
+        self.incidents[eid] = incident
+        self.alerts[eid] = self._lifecycle_alert(eid)
+        if current.get("state") != before.get("state"):
+            self._pending_broadcasts.append({"type": "alert", "alert": self.alerts[eid], "equipment_id": eid,
+                                             "phase": "verification", "triage": self._triage_msg()})
+
+    def _crew_acts_on(self, eid: str) -> bool:
+        return self.field_crew is not None and (self.field_crew_enabled or self._guided_owner == eid)
+
+    def _crew_step(self, eid: str):
+        """One deterministic simulated-crew step through the ordinary, audited work commands (D6).
+
+        Disabled crew (the default outside the Guided Demo): nothing happens and the case
+        truthfully waits for work.
+        """
+        if not self._crew_acts_on(eid):
+            return
+        incident = self.coordinator.repository.fetch_incident(self.incidents[eid].id)
+        current = [item for item in self.lifecycle.work_status(incident.id) if item["current"]]
+        if incident.phase != IncidentPhase.OBSERVING or not current:
+            return
+        guided = self._guided_owner == eid
+        delay = timedelta(seconds=self.demo_step_delay) if guided else None
+        action = self.field_crew.next_action(current[-1], self.sim.assets[eid].profile.field_response, self._clock(),
+                                             ack_after=delay, report_after=delay)
+        if action is None:
+            return
+        try:
+            result = getattr(self.lifecycle, action.command)(incident.id, expected_revision=incident.revision,
+                                                              actor=CREW_ACTOR, **action.arguments)
+            if action.command == "report_work" and any(
+                    item.id == result.id for item in self.lifecycle.pending_actuations(incident.id)):
+                self._actuate_work(incident.id, result)
+        except LIFECYCLE_ERRORS + (PermissionError,) as exc:
+            logger.warning("Simulated field crew %s refused for %s (incident %s): %s", action.command, eid, incident.id, exc)
+            return
+        self.incidents[eid] = self.coordinator.repository.fetch_incident(incident.id)
+        self.alerts[eid] = self._lifecycle_alert(eid, reason=f"simulated field crew: {action.command}")
+        self._pending_broadcasts.append({"type": "alert", "alert": self.alerts[eid], "equipment_id": eid,
+                                         "phase": action.command, "triage": self._triage_msg()})
 
     def _verify_outcome(self, eid: str):
         """Deterministic, model-free outcome verification of one OBSERVING incident (tick-driven).
@@ -1296,27 +1421,37 @@ class DemoEngine:
             self.incidents[eid] = self.coordinator.repository.fetch_incident(incident.id)
             self.alerts[eid] = self._lifecycle_alert(eid, reason=f"outcome verification refused: {exc}")
             return None
-        if verification.disposition in ("OBSERVING", "RETRY"):
+        if verification.disposition == "BLOCKED" and incident.id not in self._blocked_reported:
+            # D4: a pre-version-2 case is never evaluated; say so once, then keep it visible in the projection.
+            self._blocked_reported.add(incident.id)
+            logger.warning("Outcome verification BLOCKED for %s (incident %s, %s): %s", eid, incident.id,
+                           verification.code, verification.reason)
+        if verification.disposition in ("OBSERVING", "RETRY", "AWAITING_WORK", "BLOCKED"):
             return verification
-        self._apply_outcome(eid, verification)
+        self._apply_outcome(eid, verification, durable=False)  # in-tick: saved with the next tick
         return verification
 
-    def _apply_outcome(self, eid: str, verification):
+    def _apply_outcome(self, eid: str, verification, *, durable: bool = True):
         """Project an authoritative lifecycle outcome onto the demo state. Grants nothing."""
         self.incidents[eid] = self.coordinator.repository.fetch_incident(verification.incident_id)
         alert = self.alerts.get(eid) or {}
         result = dict(alert.get("result") or {})
         result.update({"outcome": verification.result, "outcome_id": verification.outcome_id,
-                       "verification_reason": verification.reason, "policy_version": verification.policy_version})
+                       "verification_reason": verification.reason, "policy_version": verification.policy_version,
+                       "recovery_verified": verification.result == "VERIFIED_RECOVERY"})
+        if verification.result == "VERIFIED_RECOVERY":
+            # D5: the attributed value is the one the verified Outcome itself carries.
+            outcome = self.coordinator.repository.get_artifact(verification.incident_id, verification.outcome_id)
+            result.update({"recovered_value": outcome.estimated_avoided_loss or 0,
+                           "value_basis": "ESTIMATED_AVOIDED_LOSS_OF_VERIFIED_OUTCOME"})
+        else:
+            result.update({"value_basis": "NO_VALUE_WITHOUT_VERIFIED_RECOVERY"})
         alert["result"] = result
         if verification.disposition == "CLOSED":
             # The plant status is no longer overridden: the fleet shows what the model scores now.
             self.status_override.pop(eid, None)
-        elif verification.disposition == "REINVESTIGATE":
-            self.sim.set_mode(eid, "arrested")
-            self.status_override[eid] = "CRITICAL"
-        elif verification.disposition == "ESCALATED":
-            self.sim.set_mode(eid, "arrested")
+        elif verification.disposition in ("REINVESTIGATE", "ESCALATED"):
+            self._plant(PlantEffect("HOLD_REAPPLIED", eid), durable=durable)
             self.status_override[eid] = "CRITICAL"
         self.alerts[eid] = self._lifecycle_alert(eid, reason=verification.reason)
         self.alerts[eid]["result"] = result
@@ -1339,7 +1474,7 @@ class DemoEngine:
                 await self._refresh_lifecycle(eid, "outcome_refused", reason=str(exc))
                 return {"ok": False, "error": str(exc), "incident": self.lifecycle.projection(incident_id)}
             return {"ok": False, "error": str(exc)}
-        if eid and verification.disposition not in ("OBSERVING", "RETRY"):
+        if eid and verification.disposition not in ("OBSERVING", "RETRY", "AWAITING_WORK", "BLOCKED"):
             self._apply_outcome(eid, verification)
             for message in self._pending_broadcasts:
                 await self.broadcast(message)
@@ -1425,6 +1560,10 @@ class DemoEngine:
             "execution_receipts": [item.model_dump(mode="json") for item in repo.list_execution_receipts(incident.id)],
             "observation_plans": [item.model_dump(mode="json") for item in plans],
             "outcomes": [item.model_dump(mode="json") for item in outcomes],
+            # F1.2: work facts and the (simulated) plant's response; none of them is recovery.
+            "work_assignments": [item.model_dump(mode="json") for item in of_type(m.WorkAssignment)],
+            "work_reports": [item.model_dump(mode="json") for item in of_type(m.WorkReport)],
+            "plant_actuations": [item.model_dump(mode="json") for item in of_type(m.PlantActuation)],
             "agent_actions": [item.model_dump(mode="json") for item in actions], "agent_runs": agent_runs,
             "correlation": {"incident_id": incident.id, "active_run_id": incident.active_run_id,
                             "demo_run_id": incident.demo_run_id,
@@ -1435,7 +1574,7 @@ class DemoEngine:
         """UI projection of durable state. Carries exact approval identifiers, never authority."""
         incident = self.incidents[eid]
         previous = self.alerts.get(eid) or {}
-        view = self.lifecycle.projection(incident.id)
+        view = self.lifecycle.projection(incident.id, now=self._clock(), actuator_kind=self.actuator.kind)
         meta = self.meta.get(eid, {})
         a = self.assets.get(eid, {})
         mode = ctx["failure_mode"] if ctx else None
@@ -1495,6 +1634,9 @@ class DemoEngine:
                 "environment": view.get("environment"), "analysis": view.get("analysis"),
                 "hypotheses": view.get("hypotheses", []), "work": view.get("work", []),
                 "material_uncertainties": (requirement or {}).get("material_uncertainties", []),
+                # F1.2: verification sub-state (AWAITING_WORK is not "verifying") and the
+                # (simulated) plant's response to eligible work, which is never evidence.
+                "verification": view.get("verification"), "plant": view.get("plant"),
                 "read_model": self._incident_read_model(incident),
             },
         }
@@ -1699,21 +1841,26 @@ class DemoEngine:
                     "external_objects": execution.external_objects}
         al = self.alerts[eid]
         intervention = self.coordinator.repository.get_artifact(incident_id, intervention_id)
-        # Simulated plant response to a dispatched package (profile-dependent). Execution
-        # SUCCESS means the commanded work-package action was confirmed, not that the
-        # machine recovered; only lifecycle outcome verification can establish that.
-        self.sim.respond_to_intervention(eid)
+        # F1.2: a confirmed dispatch commits the work package and assigns work. It changes
+        # nothing in the (simulated) plant: only an eligible work report, through the
+        # PlantActuator, does that, and only outcome verification can establish recovery.
         self.status_override[eid] = "SCHEDULED"
         wo = execution.external_objects
+        # Compatibility shape for legacy consumers. The value figures are the plan's estimate,
+        # explicitly unverified; business totals count them only after a verified outcome (D5).
         al["result"] = {"outcome": "DISPATCHED", "wo_number": wo.get("wo_number"),
                         "package_number": wo.get("package_number"),
                         "recovered_value": intervention.estimated_avoided_loss,
                         "downtime_hours_avoided": round(config.UNPLANNED_OUTAGE_HOURS - config.PLANNED_SWAP_HOURS, 2),
                         "oee_before": config.OEE_BASELINE,
-                        "oee_after": min(config.OEE_TARGET, config.OEE_BASELINE + 0.031)}
-        await self._refresh_lifecycle(eid, "dispatched", message_type="resolved")
-        await self.broadcast({"type": "resolved", "equipment_id": eid, "result": al["result"],
-                              "business": self._business_summary(), "triage": self._triage_msg()})
+                        "oee_after": min(config.OEE_TARGET, config.OEE_BASELINE + 0.031),
+                        "recovery_verified": False, "value_basis": "ESTIMATE_PENDING_VERIFICATION"}
+        # One canonical lifecycle update (phase "dispatched") and one compatible `resolved`.
+        await self._refresh_lifecycle(eid, "dispatched")
+        await self.broadcast({"type": "resolved", "equipment_id": eid, "result": al["result"], "alert": self.alerts[eid],
+                              "phase": "dispatched", "business": self._business_summary(), "triage": self._triage_msg()})
+        if self._guided_owner == eid:
+            await self._broadcast_demo()
         return {"ok": True, "result": al["result"], "phase": execution.phase.value,
                 "receipt_ids": list(execution.receipt_ids)}
 
@@ -1739,9 +1886,9 @@ class DemoEngine:
             return {"ok": False, "error": str(exc), "incident": self.lifecycle.projection(incident.id)}
         if self.coordinator.repository.fetch_incident(incident.id).phase == IncidentPhase.ESCALATED:
             # Explicit escalation on rejection keeps the historical demo plant response
-            # (run to failure). The default rejection returns the case to planning and
-            # leaves the plant held while the plan is reworked. Plant response is F1.2.
-            self.sim.set_mode(eid, "failing")
+            # (run to failure), through the actuator. The default rejection returns the case
+            # to planning and leaves the plant held while the plan is reworked.
+            self._plant(PlantEffect("RUN_TO_FAILURE", eid))
         self.status_override[eid] = "CRITICAL"
         await self._refresh_lifecycle(eid, "rejected", message_type="rejected")
         if self._release_guided_ownership(eid, reason="approval_rejected"):
@@ -1800,15 +1947,25 @@ class DemoEngine:
         return ((self.alerts.get(eid) or {}).get("lifecycle") or {}).get("phase") in TERMINAL_ALERT_PHASES
 
     LIFECYCLE_COMMANDS = ("resume", "cancel", "escalate", "renew_approval", "return_to_planning",
-                          "retry_execution", "acknowledge_work", "report_work")
+                          "retry_execution", "acknowledge_work", "report_work", "decline_work", "reassign_work")
 
     async def lifecycle_command(self, incident_id: str, command: str, **arguments) -> dict:
         """Run one audited F1 lifecycle command; every transition is validated by LifecycleService."""
         if command not in self.LIFECYCLE_COMMANDS:
             return {"ok": False, "error": f"unknown lifecycle command {command!r}"}
         eid = self._eid_for(incident_id)
+        # F1.2: an identical retry of a keyed work request is answered from the durable record.
+        replayed = self.lifecycle.request_recorded(incident_id, arguments.get("request_key"))
         try:
-            result = await asyncio.to_thread(getattr(self.lifecycle, command), incident_id, **arguments)
+            if command == "report_work":
+                # Synchronous on the engine loop (a short SQLite commit): the report and the plant's
+                # response to it happen with no tick in between, so no score at or after the
+                # report's observation boundary can come from the pre-work plant (D3).
+                result = self.lifecycle.report_work(incident_id, **arguments)
+                if any(item.id == result.id for item in self.lifecycle.pending_actuations(incident_id)):
+                    self._actuate_work(incident_id, result)
+            else:
+                result = await asyncio.to_thread(getattr(self.lifecycle, command), incident_id, **arguments)
         except LIFECYCLE_ERRORS + (PermissionError,) as exc:
             if eid:
                 await self._refresh_lifecycle(eid, f"{command}_refused", reason=str(exc))
@@ -1820,7 +1977,7 @@ class DemoEngine:
             elif command == "resume" and incident.phase == IncidentPhase.INVESTIGATING:
                 self._reasoning_retries.pop(eid, None)
             await self._refresh_lifecycle(eid, command, reason=arguments.get("rationale"))
-        return {"ok": True, "command": command,
+        return {"ok": True, "command": command, "replayed": replayed,
                 "result_id": getattr(result, "id", None), "incident": self.lifecycle.projection(incident_id)}
 
     def _release_asset_hold(self, eid: str):
@@ -1830,13 +1987,12 @@ class DemoEngine:
         so the asset resumes its own profile and a persisting condition is detected as a
         new case. This is the engine's hold, not a plant response to work (F1.2).
         """
-        state = self.sim.assets.get(eid)
-        if state is not None and state.mode == "arrested":
-            self.sim.set_mode(eid, "degrading" if state.profile.scenario != "healthy" else "healthy")
+        if eid in self.sim.assets:
+            self._plant(PlantEffect("HOLD_RELEASED", eid))
         self.status_override.pop(eid, None)
 
     def incident_view(self, incident_id: str) -> dict:
-        projection = self.lifecycle.projection(incident_id)
+        projection = self.lifecycle.projection(incident_id, now=self._clock(), actuator_kind=self.actuator.kind)
         incident = self.coordinator.repository.fetch_incident(incident_id)
         return {**projection, "read_model": self._incident_read_model(incident)}
 
@@ -1921,21 +2077,26 @@ class DemoEngine:
 
     # -- aggregates + snapshot --------------------------------------------
     def _business_summary(self) -> dict:
-        # Lifecycle incidents can be APPROVED (READY/EXECUTING) before any dispatch result exists.
-        # A verified closure keeps its dispatched result; NOT_RECOVERED/REGRESSED incidents leave
-        # the APPROVED status (re-investigation/escalation) and therefore drop out here.
+        # F1.2 (D5): value is attributed only to a verified outcome (VERIFIED_RECOVERY on the
+        # lifecycle path; the deprecated legacy demo's own PREVENTED), never to a dispatch.
+        # Dispatches are counted separately from the durable verification sub-state.
         prevented = [a for a in self.alerts.values() if a["status"] in ("APPROVED", "CLOSED") and a.get("result")
-                     and a["result"].get("outcome") in ("DISPATCHED", "PREVENTED", "VERIFIED_RECOVERY")]
+                     and a["result"].get("outcome") in ("PREVENTED", "VERIFIED_RECOVERY")]
         lost = [a for a in self.alerts.values() if a["status"] == "FAILED" and a.get("result")]
-        recovered = sum(a["result"]["recovered_value"] for a in prevented)
+        recovered = sum(a["result"].get("recovered_value") or 0 for a in prevented)
         loss = sum(a["result"]["loss"] for a in lost)
+        verification = [((a.get("lifecycle") or {}).get("verification") or {}).get("state") for a in self.alerts.values()]
         return {"events_prevented": len(prevented), "events_failed": len(lost),
                 "recovered_value": recovered, "loss_incurred": loss,
                 "net_value": recovered - loss,
                 "fleet_projection": round(recovered * config.FLEET_LINES, 0),
                 "oee_baseline": config.OEE_BASELINE, "oee_target": config.OEE_TARGET,
                 "downtime_cost_per_hour": config.DOWNTIME_COST_PER_HOUR,
-                "recovered_per_event": round(config.recovered_value(), 0)}
+                "recovered_per_event": round(config.recovered_value(), 0),
+                "value_basis": "VERIFIED_OUTCOMES_ONLY",
+                "events_dispatched": sum(1 for state in verification if state not in (None, "NOT_STARTED")),
+                "events_awaiting_verification": sum(1 for state in verification if state in (
+                    "AWAITING_WORK", "WORK_NOT_PERFORMED", "COLLECTING", "EVALUATING", "BLOCKED"))}
 
     def snapshot(self) -> dict:
         return {"type": "snapshot", "tick": self.tick_i, "running": self.running,

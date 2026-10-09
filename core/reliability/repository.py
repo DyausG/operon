@@ -44,7 +44,7 @@ ARTIFACT_TYPES = {cls.__name__: cls for cls in (
     m.Evidence, m.EvidenceRequest, m.Hypothesis, m.Diagnosis, m.ValidationVerdict,
     m.Intervention, m.AgentAction, m.ApprovalRequirement, m.Outcome, m.LegacyAlert,
     m.SupervisorRunSnapshot, m.SupervisorReport, m.PromotionRecord, m.WorkPackageBinding,
-    m.ObservationPlan, m.WorkAssignment, m.WorkReport,
+    m.ObservationPlan, m.WorkAssignment, m.WorkReport, m.PlantActuation,
 )}
 PROMOTION_OWNED_TYPES = (m.SupervisorRunSnapshot, m.SupervisorReport, m.PromotionRecord, m.WorkPackageBinding)
 # Step 14: outcome authority records are authored only by the lifecycle outcome
@@ -52,8 +52,9 @@ PROMOTION_OWNED_TYPES = (m.SupervisorRunSnapshot, m.SupervisorReport, m.Promotio
 # ``add_artifact`` refuses them exactly as it refuses promotion-owned records.
 OUTCOME_OWNED_TYPES = (m.ObservationPlan, m.Outcome)
 # F1: work facts are written only by LifecycleService commands (assignment at the
-# confirmed dispatch receipt, reports by the work-report command).
-WORK_OWNED_TYPES = (m.WorkAssignment, m.WorkReport)
+# confirmed dispatch receipt, reports by the work-report command). F1.2: so are the
+# records of what the plant actuator did in response to an eligible report.
+WORK_OWNED_TYPES = (m.WorkAssignment, m.WorkReport, m.PlantActuation)
 # Trusted confirmation capabilities and the one evidence kind each produces. The
 # public ``add_artifact`` refuses them, so such records reach ``_store_artifact`` only
 # through the private promotion boundary (PromotionService._submit_evidence).
@@ -71,6 +72,9 @@ REFERENCE_TYPES = {
     "request_id": m.EvidenceRequest,
     "plan_id": m.ObservationPlan, "baseline_evidence_ids": m.Evidence, "baseline_signal_evidence_id": m.Evidence,
     "assignment_id": m.WorkAssignment,
+    # F1.2: reassignment history, the work report a plan/outcome/actuation is bound to.
+    "supersedes_assignment_id": m.WorkAssignment, "work_assignment_id": m.WorkAssignment,
+    "report_id": m.WorkReport, "work_report_id": m.WorkReport,
 }
 
 

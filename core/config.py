@@ -123,6 +123,15 @@ def technical_retry_attempts() -> int:
     return min(max(value, 1), 10)
 
 
+def simulated_field_crew_enabled() -> bool:
+    """F1.2 (D6): the deterministic simulated field crew acts on every dispatched case.
+
+    Opt-in and never in production. Without it, only the Guided Demo asset has a crew and
+    every other dispatched case truthfully waits for a work report (AWAITING_WORK).
+    """
+    return _flag("OPERON_SIMULATED_FIELD_CREW") and environment() != "production"
+
+
 # ---------------------------------------------------------------------------
 # Agentic AI — provider-agnostic model layer (see core/providers and docs/PROVIDERS.md).
 #

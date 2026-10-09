@@ -164,6 +164,41 @@ with. Start the demo from the Engine menu in the header, from
 Approve the plan when the approval card appears and watch execution, observation and
 verified closure. **Reset engine** returns to the live simulation.
 
+### Dispatch, work and verification (F1.2)
+
+Approval and dispatch are **not** recovery, and neither is a work report:
+
+1. **Dispatch** commits the work order. That means the work package, parts, labour and
+   notification, plus a work assignment. The simulated plant does not change.
+2. The **assignee** acknowledges the assignment. Then they either decline it, or report
+   COMPLETED, PARTIAL or NOT_PERFORMED work.
+3. **Only an eligible report** opens verification (policy `operon-work-eligibility-1`):
+   - COMPLETED or PARTIAL, acknowledged first;
+   - physical work attested (`asset_intervened`);
+   - a bounded `performed_at`;
+   - PARTIAL also names the completed instructions and the remaining work.
+
+   When the report is accepted, the simulated plant responds as its scenario profile
+   dictates (RECOVERS or PERSISTS).
+4. **Verification** observes persisted risk scores **after** the server-recorded report
+   time. Only that telemetry closes the case, re-investigates it or escalates it.
+
+In the Guided Demo, the scenario's **simulated field crew** acknowledges and reports
+through the same audited commands. It acts as a `SCENARIO` actor and its work is
+labelled `SIMULATED`, never presented as physical work. For other cases, either:
+- set `OPERON_SIMULATED_FIELD_CREW=1` (sandbox and local only); or
+- with `OPERON_ENVIRONMENT=sandbox`, use the work API:
+  - `POST /api/incidents/{id}/work/{assignment_id}/acknowledge`
+  - `POST /api/incidents/{id}/work/{assignment_id}/decline`
+  - `POST /api/incidents/{id}/work/{assignment_id}/response`
+  - `POST /api/incidents/{id}/commands/reassign_work`
+
+Without a crew, a dispatched case truthfully waits in `AWAITING_WORK`.
+
+The simulated plant keeps a **durable state** (`simulator_asset_state`). Restarting Operon
+resumes every asset where it was, so a restart can never fake a recovery. **Reset engine**
+(or `--reset-demo`) clears it with the rest of the demo data.
+
 ## Recommended reviewer walkthrough (about 5 minutes)
 
 1. `./demo.sh` → open the portal → sign in.

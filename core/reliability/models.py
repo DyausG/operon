@@ -27,7 +27,11 @@ SourceDomain = Literal["asset_registry", "health_score_latest", "sensor_inventor
 # authors these; INCONCLUSIVE is a verification disposition and is never persisted
 # as authoritative outcome.
 OutcomeResult = Literal["VERIFIED_RECOVERY", "NOT_RECOVERED", "REGRESSED", "INCONCLUSIVE"]
-OUTCOME_POLICY = "operon-outcome-1"
+# F1.2: version 2 observes only after an eligible work report (server-recorded time);
+# version 1 (Step 14) observed from the dispatch receipt and is kept for history only.
+OUTCOME_POLICY_V1 = "operon-outcome-1"
+OUTCOME_POLICY = "operon-outcome-2"
+OutcomePolicy = Literal["operon-outcome-1", "operon-outcome-2"]
 OUTCOME_VERIFIER = "operon.application.outcome"
 # F1: where a record lives. UNSPECIFIED is the historical local mode (and every
 # pre-F1 incident); it is never silently treated as SANDBOX or PRODUCTION.
@@ -142,7 +146,11 @@ class Artifact(Record):
                       "source_dependency_manifest",
                       # F1 additive metadata (absent on pre-F1 records).
                       "reference", "source_run_id", "source_key", "link_basis", "uncertainties",
-                      "material_uncertainties", "actor_kind"):
+                      "material_uncertainties", "actor_kind",
+                      # F1.2 additive metadata (absent on pre-F1.2 records).
+                      "supersedes_assignment_id", "asset_intervened", "completed_instructions",
+                      "work_assignment_id", "work_report_id", "work_result", "work_reported_at",
+                      "work_performed_at_claimed", "work_eligibility_policy"):
             if field in value and value[field] in (None, {}, (), []):
                 value.pop(field)
         return value
@@ -653,14 +661,17 @@ class ExecutionClaim(Contract):
 
 
 class ObservationPlan(Artifact):
-    """Application-frozen post-intervention observation boundary and baseline (Step 14).
+    """Application-frozen post-work observation boundary and baseline (Step 14, F1.2).
 
     Created by the lifecycle outcome verifier only, exactly once per CONFIRMED
-    execution receipt. ``observation_start`` is derived from the durable receipt (the
-    first fully elapsed second after confirmation), so a restart reconstructs the
-    identical boundary; samples stamped before it can never count as recovery. The
-    baseline is the promoted diagnosis packet's model signal (and telemetry/context
-    where present), frozen here before any outcome authority exists.
+    execution receipt. Under ``operon-outcome-2`` (F1.2) the plan is frozen only after
+    an eligible work report on the dispatch's current assignment, and
+    ``observation_start`` is the first fully elapsed second after the server-recorded
+    report time, so a restart reconstructs the identical boundary and samples stamped
+    before it can never count as recovery. ``operon-outcome-1`` plans (receipt-bound,
+    no work evidence) are history only and are never evaluated again. The baseline is
+    the promoted diagnosis packet's model signal (and telemetry/context where present),
+    frozen here before any outcome authority exists.
     """
     equipment_ids: tuple[Identifier, ...] = Field(min_length=1)
     asset_id: Identifier
@@ -681,9 +692,16 @@ class ObservationPlan(Artifact):
     baseline_evidence_ids: tuple[Identifier, ...] = Field(min_length=1)
     baseline_metrics: dict[str, float]
     diagnosed_failure_mode_code: str | None = None
-    policy_version: Literal["operon-outcome-1"] = OUTCOME_POLICY
+    policy_version: OutcomePolicy = OUTCOME_POLICY
     verifier_identity: Literal["operon.application.outcome"] = OUTCOME_VERIFIER
     policy_parameters: dict[str, float]
+    # F1.2 (operon-outcome-2): the eligible work report that opened observation.
+    work_assignment_id: Identifier | None = None
+    work_report_id: Identifier | None = None
+    work_result: Literal["COMPLETED", "PARTIAL"] | None = None
+    work_reported_at: AwareDatetime | None = None
+    work_performed_at_claimed: AwareDatetime | None = None
+    work_eligibility_policy: Identifier | None = None
 
     @model_validator(mode="after")
     def validate_boundary(self):
@@ -691,6 +709,17 @@ class ObservationPlan(Artifact):
             raise ValueError("observation must begin strictly after confirmed execution")
         if self.asset_id not in self.equipment_ids or self.baseline_signal_evidence_id not in self.baseline_evidence_ids:
             raise ValueError("plan scope and baseline are inconsistent")
+        work = (self.work_assignment_id, self.work_report_id, self.work_result, self.work_reported_at,
+                self.work_eligibility_policy)
+        if self.policy_version == OUTCOME_POLICY:
+            if any(value is None for value in work):
+                raise ValueError("an operon-outcome-2 plan must bind the eligible work report that opened observation")
+            if self.work_reported_at < self.confirmed_at:
+                raise ValueError("work cannot be reported before the confirmed dispatch")
+            if self.observation_start <= self.work_reported_at:
+                raise ValueError("observation must begin strictly after the server-recorded work report")
+        elif any(value is not None for value in work) or self.work_performed_at_claimed is not None:
+            raise ValueError("operon-outcome-1 plans are receipt-bound and carry no work evidence")
         return self
 
 
@@ -714,7 +743,7 @@ class Outcome(Artifact):
     execution_receipt_ids: tuple[Identifier, ...] = Field(min_length=1)
     result: OutcomeResult
     basis: Literal["OBSERVED", "SIMULATED"]
-    policy_version: Literal["operon-outcome-1"] = OUTCOME_POLICY
+    policy_version: OutcomePolicy = OUTCOME_POLICY
     verifier_identity: Literal["operon.application.outcome"] = OUTCOME_VERIFIER
     verification_evidence_ids: tuple[Identifier, ...] = Field(min_length=1)
     observation_start: AwareDatetime
@@ -729,6 +758,11 @@ class Outcome(Artifact):
     diagnosis_confirmed: bool | None = None
     lesson: str
     supersedes_id: str | None = None
+    # F1.2 (operon-outcome-2): the eligible work report whose observation this outcome decides.
+    # It bounds the window; it is never evidence of recovery.
+    work_assignment_id: Identifier | None = None
+    work_report_id: Identifier | None = None
+    work_result: Literal["COMPLETED", "PARTIAL"] | None = None
 
     @model_validator(mode="after")
     def validate_window(self):
@@ -738,6 +772,8 @@ class Outcome(Artifact):
             raise ValueError("inconclusive verification is never an authoritative outcome")
         if self.asset_id not in self.equipment_ids:
             raise ValueError("outcome asset outside scope")
+        if self.policy_version == OUTCOME_POLICY and (self.work_report_id is None or self.work_assignment_id is None):
+            raise ValueError("an operon-outcome-2 outcome must bind the work report that opened observation")
         return self
 
 
@@ -760,6 +796,9 @@ class WorkAssignment(Artifact):
     Created with the CONFIRMED execution receipt. Acknowledgement and reporting are
     separate later facts (WORK_ACKNOWLEDGED / WorkReport); none of them implies that
     the plant recovered, which only outcome verification can establish.
+
+    F1.2: a reassignment creates a new assignment for the same receipt that names the
+    one it supersedes; the superseded assignment and its facts stay as history.
     """
     equipment_ids: tuple[Identifier, ...] = Field(min_length=1)
     intervention_id: Identifier
@@ -773,10 +812,18 @@ class WorkAssignment(Artifact):
     instructions: tuple[str, ...] = ()
     window_start: AwareDatetime | None = None
     window_end: AwareDatetime | None = None
+    supersedes_assignment_id: Identifier | None = None
 
 
 class WorkReport(Artifact):
-    """What the assignee reports about performing the work (F1). Not verification."""
+    """What the assignee reports about performing the work (F1). Not verification.
+
+    ``created_at`` is the server-recorded report time (the F1.2 verification boundary);
+    ``performed_at`` is the reporter's attributed claim. ``asset_intervened`` attests that
+    physical work was performed on the asset and ``completed_instructions`` indexes the
+    assignment's instructions (F1.2; both absent on pre-F1.2 reports, which therefore
+    never qualify for verification).
+    """
     equipment_ids: tuple[Identifier, ...] = Field(min_length=1)
     assignment_id: Identifier
     result: WorkResult
@@ -785,11 +832,45 @@ class WorkReport(Artifact):
     performed_at: AwareDatetime | None = None
     actor: ActorRef
     provenance: Literal["OBSERVED", "SIMULATED"]
+    asset_intervened: bool | None = None
+    completed_instructions: tuple[int, ...] | None = None
 
     @model_validator(mode="after")
     def performed_requires_time(self):
         if self.result != "NOT_PERFORMED" and self.performed_at is None:
             raise ValueError("performed work requires performed_at")
+        return self
+
+
+class PlantActuation(Artifact):
+    """What the plant actuator did in response to one eligible work report (F1.2).
+
+    A fact about the (simulated) plant, written by the engine after the report and never
+    read by outcome verification. ``APPLIED`` with ``provenance=SIMULATED``: the sandbox
+    simulator applied its scenario response. ``NOT_SUPPORTED``: there is no actuator
+    (production); nothing was applied and no physical execution is implied.
+    """
+    equipment_ids: tuple[Identifier, ...] = Field(min_length=1)
+    report_id: Identifier
+    assignment_id: Identifier
+    cause: Literal["WORK_PERFORMED"] = "WORK_PERFORMED"
+    status: Literal["APPLIED", "NOT_SUPPORTED"]
+    actuator: Identifier
+    actuator_kind: Literal["simulator", "none"]
+    work_result: Literal["COMPLETED", "PARTIAL"]
+    response_profile: str | None = None
+    mode_before: str | None = None
+    mode_after: str | None = None
+    provenance: Literal["SIMULATED"] | None = None
+    reason: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def truthful_status(self):
+        if self.status == "APPLIED" and (self.actuator_kind != "simulator" or self.provenance != "SIMULATED"):
+            raise ValueError("only the sandbox simulator applies effects, and they are SIMULATED")
+        if self.status == "NOT_SUPPORTED" and (self.actuator_kind != "none" or self.provenance is not None
+                                               or self.mode_after is not None):
+            raise ValueError("a NOT_SUPPORTED actuation applied nothing")
         return self
 
 
@@ -833,5 +914,7 @@ class IncidentEvent(Contract):
                         # F1
                         "HYPOTHESES_REGISTERED", "ANALYSIS_RETRY_SCHEDULED", "ANALYSIS_SUSPENDED",
                         "ANALYSIS_RESUMED", "LIFECYCLE_COMMAND", "INCIDENT_CANCELLED",
-                        "WORK_ASSIGNED", "WORK_ACKNOWLEDGED", "WORK_REPORTED"]
+                        "WORK_ASSIGNED", "WORK_ACKNOWLEDGED", "WORK_REPORTED",
+                        # F1.2
+                        "WORK_DECLINED", "WORK_REASSIGNED", "PLANT_ACTUATION_RECORDED", "PLANT_ACTUATION_FAILED"]
     payload: dict[str, JsonValue]

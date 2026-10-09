@@ -47,8 +47,11 @@ def write_scores(path, asset_id, probs, *, start, step=timedelta(seconds=1), mod
                          "VALUES (?,?,?,?,?)", (asset_id, (start + offset * step).isoformat(), 1 - prob, prob, mode))
 
 
-def observing(flow, monkeypatch=None, adapter=None):
-    """READY -> execute -> OBSERVING with a CONFIRMED receipt. Returns (intervention, receipt)."""
+FIELD_TECHNICIAN = m.ActorRef(kind="DECLARED", id="tech-7", role="technician")
+
+
+def dispatched(flow, monkeypatch=None, adapter=None):
+    """READY -> execute -> OBSERVING with a CONFIRMED receipt and no work reported. Returns (intervention, receipt)."""
     if adapter is not None:
         use_cmms(monkeypatch, adapter)
     intervention, *_ = flow.ready()
@@ -59,8 +62,34 @@ def observing(flow, monkeypatch=None, adapter=None):
     return intervention, receipt
 
 
+def report_work(flow):
+    """Acknowledge and report the current assignment as eligible COMPLETED work (operon-work-eligibility-1)."""
+    work = next(item for item in flow.lifecycle.work_status(flow.incident_id) if item["current"])
+    flow.lifecycle.acknowledge_work(flow.incident_id, assignment_id=work["assignment_id"],
+                                    expected_revision=revision(flow), actor=FIELD_TECHNICIAN)
+    return flow.lifecycle.report_work(flow.incident_id, assignment_id=work["assignment_id"],
+                                      expected_revision=revision(flow), actor=FIELD_TECHNICIAN, result="COMPLETED",
+                                      summary="Reviewed work package performed", performed_at=utcnow(),
+                                      asset_intervened=True)
+
+
+def observing(flow, monkeypatch=None, adapter=None):
+    """F1.2 (intentional change): dispatch, then eligible reported work, so observation can begin.
+
+    Returns (intervention, receipt); ``boundary(receipt)`` is the report-derived observation start.
+    """
+    intervention, receipt = dispatched(flow, monkeypatch, adapter)
+    report_work(flow)
+    return intervention, receipt
+
+
 def boundary(receipt):
-    return oc.observation_start(receipt.completed_at)
+    """F1.2: observation starts after the server-recorded eligible work report, never at the receipt."""
+    service = LifecycleService(IncidentRepository())
+    with db.get_conn(service.repository.path) as conn:
+        work = service._qualifying_work(conn, service.repository._fetch(conn, receipt.incident_id), receipt)
+    assert work is not None, "no eligible work report on this dispatch"
+    return oc.observation_start(work[1].created_at)
 
 
 def post(flow, receipt, probs, *, offset=1):
@@ -315,7 +344,10 @@ def test_policy_is_deterministic_explicit_and_conservative():
                        approval_requirement_id="r", approval_decision_ids=("a",), execution_claim_key="k", receipt_id="rc",
                        receipt_operation_key="ok", receipt_attempt=1, confirmed_at=now, observation_start=oc.observation_start(now),
                        baseline_signal_evidence_id="s", baseline_evidence_ids=("s",), baseline_metrics={"risk_score": 0.91, "health_score": 0.09},
-                       policy_parameters=parameters)
+                       policy_parameters=parameters,
+                       # F1.2 (intentional change): an operon-outcome-2 plan binds the eligible work report.
+                       work_assignment_id="wa", work_report_id="wr", work_result="COMPLETED", work_reported_at=now,
+                       work_eligibility_policy="operon-work-eligibility-1")
     plan = m.ObservationPlan(**plan_fields)
     from core.reliability.evidence import EvidenceCapabilities
 
@@ -367,7 +399,8 @@ def test_policy_is_deterministic_explicit_and_conservative():
     assert oc.evaluate(flat, window((0.1, 0.1, 0.1))).result == "INCONCLUSIVE"
     # A window that is not the plan's frozen boundary never decides anything.
     other = m.ObservationPlan(**(plan_fields | {"observation_start": plan.observation_start + timedelta(seconds=1),
-                                                "confirmed_at": now + timedelta(seconds=1)}))
+                                                "confirmed_at": now + timedelta(seconds=1),
+                                                "work_reported_at": now + timedelta(seconds=1)}))
     assert oc.evaluate(other, window((0.1, 0.1, 0.1))).result == "INCONCLUSIVE"
 
 
@@ -409,6 +442,7 @@ def test_retry_after_definitive_failure_binds_the_confirmed_attempt(flow, monkey
     report = flow.lifecycle.execute(flow.incident_id, intervention.id)
     failed, confirmed = flow.repo.list_execution_receipts(flow.incident_id)
     assert (failed.status, failed.attempt, confirmed.status, confirmed.attempt) == ("FAILED", 1, "CONFIRMED", 2)
+    report_work(flow)  # F1.2 (intentional change): observation needs eligible reported work
     post(flow, confirmed, HEALTHY)
     result = verify(flow)
     plan, = plans(flow)
@@ -732,7 +766,9 @@ def test_callers_cannot_forge_outcome_authority(flow):
         intervention_hash=plan.intervention_hash, promotion_id=plan.promotion_id, execution_claim_key=plan.execution_claim_key,
         execution_receipt_ids=(receipt.id,), result="VERIFIED_RECOVERY", basis="SIMULATED",
         verification_evidence_ids=(flow.signal_id,), observation_start=plan.observation_start,
-        observation_end=plan.observation_start, verified_at=now, checks={"forged": True}, reason="forged", lesson="forged")
+        observation_end=plan.observation_start, verified_at=now, checks={"forged": True}, reason="forged", lesson="forged",
+        # F1.2: a v2 outcome binds the work report; the forger copies the plan's binding.
+        work_assignment_id=plan.work_assignment_id, work_report_id=plan.work_report_id, work_result=plan.work_result)
     before = state(flow)
     with pytest.raises(InvalidReference, match="outcome records require"):
         flow.repo.add_artifact(forged, expected_revision=revision(flow))

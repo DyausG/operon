@@ -22,10 +22,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, JsonValue
+from pydantic_core import to_jsonable_python
 
 from core import config, db
 from core.agents.contracts import CriticAssessment
@@ -40,7 +41,7 @@ from .freshness import revalidate
 from .investigation import (
     BASELINE_CAPABILITIES, PINNED_BOUNDARY, DeterministicInvestigator, InvestigationResult, baseline_parameters,
 )
-from .outcome import OutcomeVerification, OutcomeVerifier
+from .outcome import OutcomeVerification, OutcomeVerifier, observation_start as _observation_start
 from .promotion import (
     CONFIRM_MECHANISM, HYPOTHESIS_REF_MISSING, POLICY_VERSION as PROMOTION_POLICY, PromotionRefused, PromotionService,
 )
@@ -59,6 +60,46 @@ APPROVAL_TTL = timedelta(hours=24)
 # identity, attempt, status, adapter, executor, external_ids, error_code/message,
 # attempted_at) is consequential content and defines semantic equality.
 RECEIPT_REGENERATED_FIELDS = frozenset({"id", "created_at", "completed_at"})
+# F1.2 work boundary. A claimed performed_at may run ahead of the server clock by at most
+# this skew; the server-recorded report time, never the claim, bounds observation.
+WORK_ELIGIBILITY_POLICY = "operon-work-eligibility-1"
+PERFORMED_AT_SKEW = timedelta(seconds=60)
+# Derived attention flags only (no automatic transition in F1.2).
+WORK_ACK_GRACE = timedelta(minutes=30)
+WORK_REPORT_GRACE = timedelta(hours=8)
+VERIFICATION_STALL_AFTER = timedelta(minutes=2)
+
+
+def work_eligibility(assignment: m.WorkAssignment, report: m.WorkReport) -> tuple[bool, tuple[str, ...]]:
+    """``operon-work-eligibility-1`` over one immutable assignment and its report.
+
+    Only content is judged here; that the report is the single report on the current
+    assignment of an OBSERVING case's executed dispatch, acknowledged first, is enforced
+    by the work commands and by ``LifecycleService._qualifying_work``. An eligible
+    report may open outcome verification. It is never evidence that the plant recovered.
+    """
+    reasons: list[str] = []
+    if report.result == "NOT_PERFORMED":
+        reasons.append("NOT_PERFORMED")
+    else:
+        if report.asset_intervened is not True:
+            # Administrative-only completion, or a pre-F1.2 report that never attested physical work.
+            reasons.append("NO_PHYSICAL_INTERVENTION" if report.asset_intervened is False else "ATTESTATION_MISSING")
+        if (report.performed_at is None or report.performed_at < assignment.created_at
+                or report.performed_at > report.created_at + PERFORMED_AT_SKEW):
+            reasons.append("PERFORMED_AT_OUT_OF_BOUNDS")
+        total = len(assignment.instructions)
+        completed = tuple(sorted(set(report.completed_instructions or ())))
+        if any(not 0 <= index < total for index in completed):
+            reasons.append("INVALID_INSTRUCTIONS")
+        if report.result == "COMPLETED" and completed != tuple(range(total)):
+            reasons.append("INCOMPLETE_COVERAGE")
+        if report.result == "PARTIAL":
+            if not total or not completed:
+                reasons.append("NO_COMPLETED_INSTRUCTIONS")
+            if not any(item.strip() for item in report.findings):
+                reasons.append("REMAINING_WORK_NOT_STATED")
+    return not reasons, tuple(reasons)
 
 
 class LifecycleRefused(ValueError):
@@ -1105,13 +1146,14 @@ class LifecycleService:
     # Every command: one transaction, the caller's expected revision, an admissible
     # actor, a rationale, a graph-valid transition through _checkpoint and an audited
     # LIFECYCLE_COMMAND event. None of them writes authority or sets state directly.
-    def _command(self, conn, incident, *, command, actor: m.ActorRef, rationale, phase=None, events=(), **changes):
+    def _command(self, conn, incident, *, command, actor: m.ActorRef, rationale, phase=None, events=(), artifacts=(),
+                 extra: dict | None = None, **changes):
         _require(isinstance(rationale, str) and rationale.strip(), f"{command} requires a rationale")
         authorize(actor.kind, incident)
         target = phase or incident.phase
         payload = {"command": command, "actor": actor.public(), "rationale": rationale.strip(),
-                   "from": incident.phase.value, "to": target.value}
-        return self._checkpoint(conn, incident, phase=phase, reason=f"{command}: {rationale.strip()}",
+                   "from": incident.phase.value, "to": target.value, **(extra or {})}
+        return self._checkpoint(conn, incident, artifacts, phase=phase, reason=f"{command}: {rationale.strip()}",
                                 events=[("LIFECYCLE_COMMAND", payload), *events], **changes)
 
     def _open(self, conn, incident_id, expected_revision):
@@ -1126,11 +1168,17 @@ class LifecycleService:
           suspension; the next run starts with a fresh retry budget;
         * ESCALATED -> INVESTIGATING;
         * AWAITING_APPROVAL whose promoted plan was invalidated by newer evidence -> INVESTIGATING;
-        * EXECUTION_FAILED with only definitive FAILED claims -> INVESTIGATING (dispatch abandoned).
+        * EXECUTION_FAILED with only definitive FAILED claims -> INVESTIGATING (dispatch abandoned);
+        * F1.2, narrowly: OBSERVING whose current work was declined or reported without
+          qualifying (no observation can start), or whose verification is BLOCKED as a
+          pre-version-2 case -> INVESTIGATING. The dispatched intervention is consumed and
+          the abandoned work (with its external work-order references) is recorded.
         """
         with self.repository._write() as conn:
             incident = self._open(conn, incident_id, expected_revision)
             phase = incident.phase
+            if phase == m.IncidentPhase.OBSERVING:
+                return self._resume_observing(conn, incident, actor=actor, rationale=rationale)
             if incident.analysis is not None and incident.analysis.suspended:
                 return self._command(conn, incident, command="resume", actor=actor, rationale=rationale, analysis=None,
                                      events=[("ANALYSIS_RESUMED", {"previous": incident.analysis.model_dump(mode="json")})])
@@ -1165,11 +1213,13 @@ class LifecycleService:
             _require(incident.phase != m.IncidentPhase.EXECUTING,
                      "a dispatch is in flight; record or reconcile it before cancelling")
             claims = self._claims_for(conn, incident.id, incident.current_intervention_id) if incident.current_intervention_id else []
+            work = self._work_disposition(conn, incident)
             return self._command(conn, incident, command="cancel", actor=actor, rationale=rationale,
                                  phase=m.IncidentPhase.CANCELLED, active_run_id=None,
                                  events=[("INCIDENT_CANCELLED", {
                                      "actor": actor.public(), "rationale": rationale.strip(),
-                                     "claim_states": [item.state for item in claims]})])
+                                     "claim_states": [item.state for item in claims],
+                                     **({"work": work} if work else {})})])
 
     def escalate(self, incident_id: str, *, expected_revision: int, actor: m.ActorRef, rationale: str) -> m.Incident:
         """Explicit human escalation to higher authority (a separate act from rejection)."""
@@ -1177,8 +1227,9 @@ class LifecycleService:
             incident = self._open(conn, incident_id, expected_revision)
             _require(incident.phase not in {m.IncidentPhase.EXECUTING, m.IncidentPhase.ESCALATED},
                      f"cannot escalate from {incident.phase.value}")
+            work = self._work_disposition(conn, incident)
             return self._command(conn, incident, command="escalate", actor=actor, rationale=rationale,
-                                 phase=m.IncidentPhase.ESCALATED)
+                                 phase=m.IncidentPhase.ESCALATED, extra={"work": work} if work else None)
 
     def renew_approval(self, incident_id: str, *, expected_revision: int, actor: m.ActorRef,
                        rationale: str) -> m.ApprovalRequirement:
@@ -1221,11 +1272,16 @@ class LifecycleService:
             return self._command(conn, incident, command=command, actor=actor, rationale=reason,
                                  phase=m.IncidentPhase.PLANNING, current_intervention_id=None)
 
-    # --------------------------------------------------------------- work (F1)
-    # Work requested (WorkAssignment at the confirmed dispatch), acknowledged and
-    # reported are separate durable facts about people. None of them is evidence that
-    # the plant recovered; only outcome verification can establish that.
-    def _work_assignment(self, conn, incident, receipt) -> m.WorkAssignment:
+    # --------------------------------------------------------- work (F1, F1.2)
+    # Work requested (WorkAssignment at the confirmed dispatch), acknowledged, declined,
+    # reassigned and reported are separate durable facts about people. None of them is
+    # evidence that the plant recovered. F1.2: only an eligible report
+    # (operon-work-eligibility-1) on the current assignment of the executed dispatch
+    # opens outcome verification, and even then post-report telemetry alone decides.
+    # Every command: one transaction, the caller's expected revision (except an exact
+    # idempotent replay), an admissible actor and a typed WORK_* event.
+    def _work_assignment(self, conn, incident, receipt, *, assignee: m.WorkAssignee | None = None,
+                         supersedes: str | None = None) -> m.WorkAssignment:
         intervention = self.repository._artifact(conn, incident.id, receipt.intervention_id)
         step = next(item for item in intervention.steps if item.id == receipt.step_id)
         parameters = WorkPackageParameters.model_validate(step.parameters)
@@ -1233,20 +1289,46 @@ class LifecycleService:
             **_identity(incident.id), equipment_ids=tuple(step.equipment_ids), intervention_id=intervention.id,
             intervention_hash=receipt.intervention_hash, step_id=step.id, execution_claim_key=receipt.idempotency_key,
             receipt_id=receipt.id, external_refs=dict(receipt.external_ids),
-            assignee=m.WorkAssignee(kind="WORKER", reference=parameters.technician_id,
-                                    reference_system="operon.local.technician_roster"),
+            assignee=assignee or m.WorkAssignee(kind="WORKER", reference=parameters.technician_id,
+                                                reference_system="operon.local.technician_roster"),
             delivery_channel="operon.local", instructions=tuple(line for line in parameters.detail.split("\n") if line),
-            window_start=intervention.window_start, window_end=intervention.window_end)
+            window_start=intervention.window_start, window_end=intervention.window_end,
+            supersedes_assignment_id=supersedes)
+
+    def _dispatch_receipt(self, conn, incident) -> m.ExecutionReceipt | None:
+        """The CONFIRMED receipt of the current intervention (the executed dispatch), if any."""
+        if not incident.current_intervention_id:
+            return None
+        confirmed = [item for item in self._receipts(conn, incident.id)
+                     if item.status == "CONFIRMED" and item.intervention_id == incident.current_intervention_id]
+        return confirmed[-1] if confirmed else None
 
     def _work_states(self, conn, incident_id) -> dict[str, dict]:
+        """Durable work facts per assignment, in creation order. Descriptive only, never authority."""
         assignments = self._all(conn, incident_id, m.WorkAssignment)
-        states = {item.id: {"assignment_id": item.id, "state": "ASSIGNED", "assignee": item.assignee.model_dump(
-                    mode="json", exclude={"schema_version"}), "delivery_channel": item.delivery_channel,
-                    "external_refs": item.external_refs, "assigned_at": item.created_at.isoformat(),
-                    "acknowledged_at": None, "acknowledged_by": None, "report_id": None, "result": None,
-                    "reported_at": None, "reported_by": None} for item in assignments}
+        reports = {item.assignment_id: item for item in self._all(conn, incident_id, m.WorkReport)}
+        successors = {item.supersedes_assignment_id: item.id for item in assignments if item.supersedes_assignment_id}
+        confirmed = [item.id for item in self._receipts(conn, incident_id) if item.status == "CONFIRMED"]
+        latest_receipt = confirmed[-1] if confirmed else None
+        by_id = {item.id: item for item in assignments}
+        states = {item.id: {
+            "assignment_id": item.id, "state": "ASSIGNED",
+            "current": item.id not in successors and item.receipt_id == latest_receipt,
+            "receipt_id": item.receipt_id, "supersedes_assignment_id": item.supersedes_assignment_id,
+            "superseded_by": successors.get(item.id),
+            "assignee": item.assignee.model_dump(mode="json", exclude={"schema_version"}),
+            "delivery_channel": item.delivery_channel, "external_refs": item.external_refs,
+            "instructions": list(item.instructions),
+            "window_start": item.window_start.isoformat() if item.window_start else None,
+            "window_end": item.window_end.isoformat() if item.window_end else None,
+            "assigned_at": item.created_at.isoformat(), "acknowledged_at": None, "acknowledged_by": None,
+            "declined_at": None, "declined_by": None, "decline_reason": None,
+            "report_id": None, "result": None, "reported_at": None, "reported_by": None,
+            "performed_at_claimed": None, "asset_intervened": None, "completed_instructions": None,
+            "provenance": None, "eligible": None, "eligibility_reasons": [],
+        } for item in assignments}
         rows = conn.execute("SELECT created_at,event_type,payload_json FROM incident_event WHERE incident_id=? "
-                            "AND event_type IN ('WORK_ACKNOWLEDGED','WORK_REPORTED') ORDER BY event_id",
+                            "AND event_type IN ('WORK_ACKNOWLEDGED','WORK_DECLINED','WORK_REPORTED') ORDER BY event_id",
                             (incident_id,)).fetchall()
         for created_at, event_type, payload_json in rows:
             payload = json.loads(payload_json)
@@ -1255,49 +1337,474 @@ class LifecycleService:
                 continue
             if event_type == "WORK_ACKNOWLEDGED":
                 state.update(state="ACKNOWLEDGED", acknowledged_at=created_at, acknowledged_by=payload.get("actor"))
-            else:
-                state.update(state="REPORTED", report_id=payload.get("report_id"), result=payload.get("result"),
-                             reported_at=created_at, reported_by=payload.get("actor"))
+            elif event_type == "WORK_DECLINED":
+                state.update(state="DECLINED", declined_at=created_at, declined_by=payload.get("actor"),
+                             decline_reason=payload.get("reason"))
+        for assignment_id, report in reports.items():
+            state = states.get(assignment_id)
+            if state is None:
+                continue
+            eligible, reasons = work_eligibility(by_id[assignment_id], report)
+            # reported_at is the server-recorded report time: the F1.2 verification boundary.
+            state.update(state="REPORTED", report_id=report.id, result=report.result,
+                         reported_at=report.created_at.isoformat(), reported_by=report.actor.public(),
+                         performed_at_claimed=report.performed_at.isoformat() if report.performed_at else None,
+                         asset_intervened=report.asset_intervened,
+                         completed_instructions=(None if report.completed_instructions is None
+                                                 else list(report.completed_instructions)),
+                         provenance=report.provenance, eligible=eligible, eligibility_reasons=list(reasons))
         return states
 
     def work_status(self, incident_id: str) -> list[dict]:
         with db.get_conn(self.repository.path) as conn:
             return list(self._work_states(conn, incident_id).values())
 
+    def _current_work(self, conn, incident) -> dict | None:
+        """The current assignment state of the executed dispatch, or None."""
+        receipt = self._dispatch_receipt(conn, incident)
+        if receipt is None:
+            return None
+        current = [item for item in self._work_states(conn, incident.id).values()
+                   if item["current"] and item["receipt_id"] == receipt.id]
+        return current[-1] if current else None
+
+    def _qualifying_work(self, conn, incident, receipt) -> tuple[m.WorkAssignment, m.WorkReport] | None:
+        """The eligible report on the current assignment of ``receipt`` (operon-work-eligibility-1), or None."""
+        assignments = [item for item in self._all(conn, incident.id, m.WorkAssignment) if item.receipt_id == receipt.id]
+        superseded = {item.supersedes_assignment_id for item in assignments if item.supersedes_assignment_id}
+        current = [item for item in assignments if item.id not in superseded]
+        if not current:
+            return None
+        assignment = current[-1]
+        reports = [item for item in self._all(conn, incident.id, m.WorkReport) if item.assignment_id == assignment.id]
+        if len(reports) != 1 or not work_eligibility(assignment, reports[0])[0]:
+            return None
+        return assignment, reports[0]
+
+    def _work_disposition(self, conn, incident) -> dict | None:
+        """What leaving OBSERVING abandons: open assignments and the external work orders not recalled."""
+        receipt = self._dispatch_receipt(conn, incident)
+        if receipt is None or incident.phase != m.IncidentPhase.OBSERVING:
+            return None
+        states = [item for item in self._work_states(conn, incident.id).values() if item["receipt_id"] == receipt.id]
+        return {"receipt_id": receipt.id, "external_refs": dict(receipt.external_ids),
+                "assignments": [{"assignment_id": item["assignment_id"], "state": item["state"],
+                                 "eligible": item["eligible"]} for item in states],
+                "note": "OPERON has no work-order cancel capability; dispatched work orders are not recalled"}
+
+    def _work_guard(self, conn, incident, assignment_id) -> dict:
+        """A work command acts only on the current assignment of the executed dispatch of an OBSERVING case."""
+        _require(incident.phase == m.IncidentPhase.OBSERVING,
+                 f"work commands require OBSERVING; the case is {incident.phase.value}")
+        legacy = self._legacy_verification(conn, incident)
+        _require(legacy is None, (legacy or {}).get("reason", ""))
+        state = self._work_states(conn, incident.id).get(assignment_id)
+        _require(state is not None, "unknown work assignment")
+        _require(state["current"], f"work assignment {assignment_id} is not current"
+                 + (f"; it was superseded by {state['superseded_by']}" if state["superseded_by"] else ""))
+        return state
+
+    @staticmethod
+    def _request_digest(command: str, assignment_id: str, actor: m.ActorRef, **fields) -> str:
+        return content_hash({"command": command, "assignment_id": assignment_id,
+                             "actor": actor.model_dump(mode="json", exclude={"schema_version"}),
+                             "fields": to_jsonable_python(fields)})
+
+    def _replay(self, conn, incident_id, request_key, digest) -> dict | None:
+        """The recorded payload of an identical earlier work request, or None.
+
+        A client retry with the same ``request_key`` and identical content is answered
+        from the durable record (no second write, no revision check); the same key with
+        different content is refused. Keys are scoped to the case's work commands.
+        """
+        if request_key is None:
+            return None
+        _require(isinstance(request_key, str) and 0 < len(request_key.strip()) <= 128,
+                 "request_key must be 1-128 characters")
+        row = conn.execute("SELECT payload_json FROM incident_event WHERE incident_id=? AND event_type IN "
+                           "('WORK_ACKNOWLEDGED','WORK_DECLINED','WORK_REPORTED','WORK_REASSIGNED') "
+                           "AND json_extract(payload_json,'$.request_key')=? ORDER BY event_id LIMIT 1",
+                           (incident_id, request_key)).fetchone()
+        if row is None:
+            return None
+        payload = json.loads(row[0])
+        _require(payload.get("request_digest") == digest,
+                 "request_key was already used for a different work request", disposition="CONFLICT")
+        return payload
+
+    def request_recorded(self, incident_id: str, request_key: str | None) -> bool:
+        """Whether a work request with ``request_key`` is already durable (descriptive; for API replay flags)."""
+        if not request_key:
+            return False
+        with db.get_conn(self.repository.path) as conn:
+            return conn.execute("SELECT 1 FROM incident_event WHERE incident_id=? AND event_type IN "
+                                "('WORK_ACKNOWLEDGED','WORK_DECLINED','WORK_REPORTED','WORK_REASSIGNED') "
+                                "AND json_extract(payload_json,'$.request_key')=?",
+                                (incident_id, request_key)).fetchone() is not None
+
+    @staticmethod
+    def _keyed(request_key, digest) -> dict:
+        return {"request_key": request_key, "request_digest": digest} if request_key is not None else {}
+
     def acknowledge_work(self, incident_id: str, *, assignment_id: str, expected_revision: int, actor: m.ActorRef,
-                         note: str | None = None) -> m.Incident:
+                         note: str | None = None, request_key: str | None = None) -> m.Incident:
         """The assignee acknowledges the request. Separate from assignment; not performance."""
+        digest = self._request_digest("acknowledge_work", assignment_id, actor, note=note)
         with self.repository._write() as conn:
-            incident = self._open(conn, incident_id, expected_revision)
+            incident = self.repository._fetch(conn, incident_id)
+            if self._replay(conn, incident.id, request_key, digest) is not None:
+                return incident
+            self.repository._check(incident, expected_revision)
             authorize(actor.kind, incident)
-            state = self._work_states(conn, incident.id).get(assignment_id)
-            _require(state is not None, "unknown work assignment")
+            state = self._work_guard(conn, incident, assignment_id)
             _require(state["state"] == "ASSIGNED", f"work assignment is already {state['state']}")
             return self._checkpoint(conn, incident, events=[("WORK_ACKNOWLEDGED", {
-                "assignment_id": assignment_id, "actor": actor.public(), "note": (note or "").strip() or None})])
+                "assignment_id": assignment_id, "actor": actor.public(), "note": (note or "").strip() or None,
+                **self._keyed(request_key, digest)})])
+
+    def decline_work(self, incident_id: str, *, assignment_id: str, expected_revision: int, actor: m.ActorRef,
+                     reason: str, request_key: str | None = None) -> m.Incident:
+        """The assignee declines an unacknowledged request. The plant is never actuated; the
+        coordinator may reassign (history kept), resume to re-investigate, escalate or cancel."""
+        _require(isinstance(reason, str) and reason.strip(), "declining work requires a reason")
+        digest = self._request_digest("decline_work", assignment_id, actor, reason=reason.strip())
+        with self.repository._write() as conn:
+            incident = self.repository._fetch(conn, incident_id)
+            if self._replay(conn, incident.id, request_key, digest) is not None:
+                return incident
+            self.repository._check(incident, expected_revision)
+            authorize(actor.kind, incident)
+            state = self._work_guard(conn, incident, assignment_id)
+            _require(state["state"] == "ASSIGNED",
+                     f"only an unacknowledged assignment can be declined; it is {state['state']} "
+                     "(report NOT_PERFORMED after acknowledging)" if state["state"] == "ACKNOWLEDGED"
+                     else f"work assignment is already {state['state']}")
+            return self._checkpoint(conn, incident, events=[("WORK_DECLINED", {
+                "assignment_id": assignment_id, "actor": actor.public(), "reason": reason.strip(),
+                **self._keyed(request_key, digest)})])
 
     def report_work(self, incident_id: str, *, assignment_id: str, expected_revision: int, actor: m.ActorRef,
                     result: m.WorkResult, summary: str, findings: tuple[str, ...] = (), performed_at=None,
-                    provenance: Literal["OBSERVED", "SIMULATED"] = "OBSERVED") -> m.WorkReport:
-        """The assignee reports the work. Requires acknowledgement first; never verification."""
+                    provenance: Literal["OBSERVED", "SIMULATED"] = "OBSERVED", asset_intervened: bool | None = None,
+                    completed_instructions: tuple[int, ...] | None = None,
+                    request_key: str | None = None) -> m.WorkReport:
+        """The assignee reports the work. Requires acknowledgement first; never verification.
+
+        Malformed or contradictory reports are refused and write nothing. A well-formed
+        report is recorded exactly once per assignment; whether it may open outcome
+        verification is decided by ``work_eligibility`` (operon-work-eligibility-1) and
+        recorded on the WORK_REPORTED event. The report's ``created_at`` (server time) is
+        the observation boundary; ``performed_at`` is the reporter's attributed claim.
+        """
         from .actors import refuse_simulated_in_production
+        findings = tuple(item.strip() for item in findings if isinstance(item, str) and item.strip())
+        digest = self._request_digest(
+            "report_work", assignment_id, actor, result=result, summary=summary, findings=findings,
+            performed_at=performed_at, provenance=provenance, asset_intervened=asset_intervened,
+            completed_instructions=None if completed_instructions is None else tuple(completed_instructions))
         with self.repository._write() as conn:
-            incident = self._open(conn, incident_id, expected_revision)
+            incident = self.repository._fetch(conn, incident_id)
+            replay = self._replay(conn, incident.id, request_key, digest)
+            if replay is not None:
+                return self.promotion._get(conn, incident.id, replay["report_id"], m.WorkReport)
+            self.repository._check(incident, expected_revision)
             authorize(actor.kind, incident)
             refuse_simulated_in_production(incident, provenance)
-            state = self._work_states(conn, incident.id).get(assignment_id)
-            _require(state is not None, "unknown work assignment")
+            state = self._work_guard(conn, incident, assignment_id)
             _require(state["state"] == "ACKNOWLEDGED",
                      "work must be acknowledged before it is reported" if state["state"] == "ASSIGNED"
                      else f"work assignment is already {state['state']}")
             assignment = self.promotion._get(conn, incident.id, assignment_id, m.WorkAssignment)
+            completed = self._validated_work_report(assignment, result=result, findings=findings,
+                                                    performed_at=performed_at, asset_intervened=asset_intervened,
+                                                    completed_instructions=completed_instructions)
             report = m.WorkReport(**_identity(incident.id), equipment_ids=assignment.equipment_ids,
-                                  assignment_id=assignment.id, result=result, summary=summary, findings=tuple(findings),
-                                  performed_at=performed_at, actor=actor, provenance=provenance)
+                                  assignment_id=assignment.id, result=result, summary=summary, findings=findings,
+                                  performed_at=performed_at, actor=actor, provenance=provenance,
+                                  asset_intervened=asset_intervened, completed_instructions=completed)
+            eligible, reasons = work_eligibility(assignment, report)
             self._checkpoint(conn, incident, [report], events=[("WORK_REPORTED", {
                 "assignment_id": assignment.id, "report_id": report.id, "result": result, "actor": actor.public(),
-                "provenance": provenance})])
+                "provenance": provenance, "asset_intervened": asset_intervened,
+                "completed_instructions": None if completed is None else list(completed),
+                "performed_at_claimed": performed_at.isoformat() if performed_at else None,
+                "eligible": eligible, "eligibility_reasons": list(reasons),
+                "eligibility_policy": WORK_ELIGIBILITY_POLICY, **self._keyed(request_key, digest)})])
             return report
+
+    @staticmethod
+    def _validated_work_report(assignment, *, result, findings, performed_at, asset_intervened,
+                               completed_instructions) -> tuple[int, ...] | None:
+        """Refuse malformed or self-contradictory reports; return the resolved completed instructions."""
+        total = len(assignment.instructions)
+        given = None if completed_instructions is None else tuple(completed_instructions)
+        if given is not None:
+            _require(all(isinstance(index, int) and not isinstance(index, bool) and 0 <= index < total for index in given)
+                     and len(set(given)) == len(given),
+                     f"completed_instructions must be distinct indices of the {total} assignment instruction(s)")
+        if result == "NOT_PERFORMED":
+            _require(asset_intervened is not True, "NOT_PERFORMED contradicts asset_intervened=true")
+            _require(not given, "NOT_PERFORMED cannot list completed instructions")
+            _require(performed_at is None, "NOT_PERFORMED cannot carry a performed_at time")
+            return None
+        _require(isinstance(asset_intervened, bool),
+                 f"a {result} report must state asset_intervened (whether physical work was performed on the asset)")
+        _require(performed_at is not None, "performed work requires performed_at")
+        _require(performed_at >= assignment.created_at, "performed_at precedes the work assignment (the dispatch)")
+        _require(performed_at <= utcnow() + PERFORMED_AT_SKEW, "performed_at is in the future")
+        if result == "COMPLETED":
+            _require(given is None or set(given) == set(range(total)),
+                     "a COMPLETED report must cover every assignment instruction; report PARTIAL otherwise")
+            return tuple(range(total))
+        _require(total > 0, "PARTIAL requires assignment instructions to name the completed work")
+        _require(bool(given), "a PARTIAL report must name the completed instructions")
+        _require(bool(findings), "a PARTIAL report must state the remaining work in findings")
+        return tuple(sorted(given))
+
+    def reassign_work(self, incident_id: str, *, assignment_id: str, expected_revision: int, actor: m.ActorRef,
+                      rationale: str, assignee_reference: str | None = None,
+                      request_key: str | None = None) -> m.WorkAssignment:
+        """Issue a new assignment for the same dispatch after the current one was declined or
+        reported without qualifying. The superseded assignment and its facts stay as history."""
+        from .resources import ResourceUnavailable, require_qualified_technician
+        digest = self._request_digest("reassign_work", assignment_id, actor, rationale=(rationale or "").strip(),
+                                      assignee_reference=assignee_reference)
+        with self.repository._write() as conn:
+            incident = self.repository._fetch(conn, incident_id)
+            replay = self._replay(conn, incident.id, request_key, digest)
+            if replay is not None:
+                return self.promotion._get(conn, incident.id, replay["assignment_id"], m.WorkAssignment)
+            self.repository._check(incident, expected_revision)
+            authorize(actor.kind, incident)
+            state = self._work_guard(conn, incident, assignment_id)
+            _require(state["state"] == "DECLINED" or (state["state"] == "REPORTED" and state["eligible"] is False),
+                     "only a declined assignment or one whose report does not qualify for verification can be "
+                     f"reassigned; it is {state['state']}" + (" and its report qualifies" if state["eligible"] else ""))
+            previous = self.promotion._get(conn, incident.id, assignment_id, m.WorkAssignment)
+            assignee = previous.assignee
+            if assignee_reference is not None:
+                try:
+                    require_qualified_technician(conn, previous.equipment_ids[0], assignee_reference)
+                except ResourceUnavailable as exc:
+                    _require(False, f"assignee {assignee_reference} cannot take this work: {exc}")
+                assignee = m.WorkAssignee(kind="WORKER", reference=assignee_reference,
+                                          reference_system="operon.local.technician_roster")
+            receipt = self.repository._receipt(conn, incident.id, previous.receipt_id)
+            assignment = self._work_assignment(conn, incident, receipt, assignee=assignee, supersedes=previous.id)
+            self._command(conn, incident, command="reassign_work", actor=actor, rationale=rationale,
+                          artifacts=[assignment], extra={"from_assignment_id": previous.id, "assignment_id": assignment.id},
+                          events=[("WORK_REASSIGNED", {
+                              "from_assignment_id": previous.id, "assignment_id": assignment.id,
+                              "previous_state": state["state"], "actor": actor.public(),
+                              "rationale": (rationale or "").strip(), **self._keyed(request_key, digest)}),
+                                  ("WORK_ASSIGNED", {
+                              "assignment_id": assignment.id, "receipt_id": receipt.id,
+                              "supersedes_assignment_id": previous.id,
+                              "assignee": assignment.assignee.model_dump(mode="json", exclude={"schema_version"}),
+                              "delivery_channel": assignment.delivery_channel,
+                              "external_refs": assignment.external_refs})])
+            return assignment
+
+    def _resume_observing(self, conn, incident, *, actor: m.ActorRef, rationale: str) -> m.Incident:
+        """Narrow F1.2 resume from OBSERVING: only when no observation can start for this dispatch."""
+        legacy = self._legacy_verification(conn, incident)
+        if legacy is None:
+            current = self._current_work(conn, incident)
+            _require(current is not None and (current["state"] == "DECLINED"
+                                              or (current["state"] == "REPORTED" and current["eligible"] is False)),
+                     "resume from OBSERVING is allowed only after the current work was declined or reported without "
+                     "qualifying, or for a blocked pre-version-2 case; otherwise report the work, escalate or cancel")
+        extra = {"work": self._work_disposition(conn, incident)}
+        if legacy is not None:
+            extra["legacy_verification"] = legacy
+        return self._command(conn, incident, command="resume", actor=actor, rationale=rationale,
+                             phase=m.IncidentPhase.INVESTIGATING, current_intervention_id=None, extra=extra)
+
+    # ------------------------------------------------------ plant actuation (F1.2)
+    # The engine asks the PlantActuator to respond to an eligible report, outside any
+    # transaction, then records what the actuator did. These records describe the
+    # (simulated) plant; outcome verification never reads them.
+    def _eligible_reports(self, conn, incident_id) -> list[m.WorkReport]:
+        assignments = {item.id: item for item in self._all(conn, incident_id, m.WorkAssignment)}
+        return [item for item in self._all(conn, incident_id, m.WorkReport)
+                if item.assignment_id in assignments and work_eligibility(assignments[item.assignment_id], item)[0]]
+
+    def pending_actuations(self, incident_id: str) -> list[m.WorkReport]:
+        """Eligible work reports whose plant effect has not been recorded yet (replayed after a restart)."""
+        with db.get_conn(self.repository.path) as conn:
+            recorded = {item.report_id for item in self._all(conn, incident_id, m.PlantActuation)}
+            return [item for item in self._eligible_reports(conn, incident_id) if item.id not in recorded]
+
+    def dispatch_actuated(self, incident_id: str) -> bool:
+        """Whether the plant applied the eligible work of the case's current dispatch (sandbox fact)."""
+        with db.get_conn(self.repository.path) as conn:
+            incident = self.repository._fetch(conn, incident_id)
+            receipt = self._dispatch_receipt(conn, incident)
+            if receipt is None:
+                return False
+            assignments = {item.id for item in self._all(conn, incident.id, m.WorkAssignment)
+                           if item.receipt_id == receipt.id}
+            return any(item.status == "APPLIED" and item.assignment_id in assignments
+                       for item in self._all(conn, incident.id, m.PlantActuation))
+
+    def record_actuation(self, incident_id: str, *, report_id: str, result) -> m.PlantActuation:
+        """Record what the actuator did for one eligible report. Idempotent per report (index 009).
+
+        A SYSTEM fact about the plant, recorded whatever the case's phase now is: the
+        work was reported performed, so the plant's response is part of its history.
+        """
+        with self.repository._write() as conn:
+            incident = self.repository._fetch(conn, incident_id)
+            existing = [item for item in self._all(conn, incident.id, m.PlantActuation) if item.report_id == report_id]
+            if existing:
+                return existing[0]
+            report = self.promotion._get(conn, incident.id, report_id, m.WorkReport)
+            assignment = self.promotion._get(conn, incident.id, report.assignment_id, m.WorkAssignment)
+            _require(work_eligibility(assignment, report)[0], "only an eligible work report actuates the plant")
+            _require(result.cause == "WORK_PERFORMED" and result.equipment_id in report.equipment_ids,
+                     "actuation result does not belong to this work report")
+            actuation = m.PlantActuation(
+                **_identity(incident.id), equipment_ids=report.equipment_ids, report_id=report.id,
+                assignment_id=report.assignment_id, status=result.status, actuator=result.actuator,
+                actuator_kind=result.actuator_kind, work_result=report.result, response_profile=result.response_profile,
+                mode_before=result.mode_before, mode_after=result.mode_after,
+                provenance="SIMULATED" if result.applied else None, reason=result.reason)
+            self._checkpoint(conn, incident, [actuation], events=[("PLANT_ACTUATION_RECORDED", {
+                "actuation_id": actuation.id, "report_id": report.id, "assignment_id": report.assignment_id,
+                "status": actuation.status, "actuator": actuation.actuator, "actuator_kind": actuation.actuator_kind,
+                "mode_before": actuation.mode_before, "mode_after": actuation.mode_after,
+                "response_profile": actuation.response_profile, "provenance": actuation.provenance,
+                "actor": m.ActorRef(kind="SYSTEM", id="operon.plant-actuator").public()})])
+            return actuation
+
+    def record_actuation_failure(self, incident_id: str, *, report_id: str, error: str) -> None:
+        """The actuator raised: nothing about the plant may be assumed; the report stays pending (replayed at restart)."""
+        with self.repository._write() as conn:
+            incident = self.repository._fetch(conn, incident_id)
+            self._checkpoint(conn, incident, events=[("PLANT_ACTUATION_FAILED", {
+                "report_id": report_id, "error": (error or "")[:400],
+                "actor": m.ActorRef(kind="SYSTEM", id="operon.plant-actuator").public()})])
+
+    def _plant_view(self, conn, incident_id) -> dict:
+        actuations = self._all(conn, incident_id, m.PlantActuation)
+        recorded = {item.report_id for item in actuations}
+        failures = [{"report_id": payload.get("report_id"), "error": payload.get("error"), "at": created_at}
+                    for created_at, payload in ((row[0], json.loads(row[1])) for row in conn.execute(
+                        "SELECT created_at,payload_json FROM incident_event WHERE incident_id=? "
+                        "AND event_type='PLANT_ACTUATION_FAILED' ORDER BY event_id", (incident_id,)))]
+        return {"actuations": [{"actuation_id": item.id, "report_id": item.report_id, "status": item.status,
+                                "cause": item.cause, "actuator_kind": item.actuator_kind, "work_result": item.work_result,
+                                "response_profile": item.response_profile, "mode_before": item.mode_before,
+                                "mode_after": item.mode_after, "provenance": item.provenance, "reason": item.reason,
+                                "recorded_at": item.created_at.isoformat()} for item in actuations],
+                "pending_report_ids": [item.id for item in self._eligible_reports(conn, incident_id)
+                                       if item.id not in recorded],
+                "failures": [item for item in failures if item["report_id"] not in recorded]}
+
+    def _legacy_verification(self, conn, incident) -> dict | None:
+        """D4: classify an OBSERVING case whose dispatch cannot be verified under operon-outcome-2.
+
+        Derived on every read from durable records; nothing is rewritten, upgraded or
+        closed. ``LEGACY_RECEIPT_BOUND_PLAN``: verification of this dispatch already began
+        under operon-outcome-1 from the receipt (one plan per receipt, migration 007, so
+        no work-bound plan can be attached). ``LEGACY_NO_WORK_ASSIGNMENT``: the dispatch
+        predates work assignments, so no work evidence can ever be attached to it. Both
+        are BLOCKED; the supported operator actions are resume, escalate and cancel.
+        """
+        if incident.phase != m.IncidentPhase.OBSERVING:
+            return None
+        receipt = self._dispatch_receipt(conn, incident)
+        if receipt is None:
+            return None
+        allowed = ["resume", "escalate", "cancel"]
+        plans = [item for item in self._all(conn, incident.id, m.ObservationPlan) if item.receipt_id == receipt.id]
+        if plans and plans[0].policy_version == m.OUTCOME_POLICY_V1:
+            return {"code": "LEGACY_RECEIPT_BOUND_PLAN", "policy_version": m.OUTCOME_POLICY_V1, "plan_id": plans[0].id,
+                    "receipt_id": receipt.id, "allowed_commands": allowed,
+                    "reason": "verification of this dispatch began under operon-outcome-1 from the dispatch receipt, "
+                              "without work evidence; it is not evaluated again and work reports cannot be attached to "
+                              "it. Resume (re-investigate), escalate or cancel the case"}
+        if not any(item.receipt_id == receipt.id for item in self._all(conn, incident.id, m.WorkAssignment)):
+            return {"code": "LEGACY_NO_WORK_ASSIGNMENT", "policy_version": m.OUTCOME_POLICY_V1, "plan_id": None,
+                    "receipt_id": receipt.id, "allowed_commands": allowed,
+                    "reason": "this dispatch predates work assignments (operon-outcome-1 era); no work evidence can be "
+                              "attached to it, so it cannot be verified. Resume (re-investigate), escalate or cancel the case"}
+        return None
+
+    def _post_scores(self, conn, asset_id, start) -> tuple[int, str | None]:
+        row = conn.execute("SELECT COUNT(*) AS n, MAX(scored_at) AS latest FROM health_score "
+                           "WHERE equipment_id=? AND scored_at>=?", (asset_id, start.isoformat())).fetchone()
+        return int(row["n"]), row["latest"]
+
+    def _verification_view(self, conn, incident, status: "LifecycleStatus", now) -> dict:
+        """What verification is actually doing for the latest confirmed dispatch (derived, never authority).
+
+        AWAITING_WORK and WORK_NOT_PERFORMED mean nothing is being observed: they are
+        not "verifying". COLLECTING/EVALUATING observe post-report scores only.
+        """
+        from .outcome import MAX_POST_SCORES, MIN_POST_SCORES
+        view = {"state": "NOT_STARTED", "code": None, "reason": None, "policy_version": None, "plan_id": None,
+                "work_assignment_id": None, "work_report_id": None, "observation_start": None, "post_score_count": 0,
+                "minimum_scores": MIN_POST_SCORES, "maximum_scores": MAX_POST_SCORES, "latest_score_at": None,
+                "stalled": False, "outcome_id": None, "allowed_commands": []}
+        confirmed = [item for item in self._receipts(conn, incident.id) if item.status == "CONFIRMED"]
+        if not confirmed:
+            return view
+        receipt = confirmed[-1]
+        plans = [item for item in self._all(conn, incident.id, m.ObservationPlan) if item.receipt_id == receipt.id]
+        plan = plans[0] if plans else None
+        outcomes = [item for item in self._all(conn, incident.id, m.Outcome) if plan and item.plan_id == plan.id]
+        if plan is not None:
+            view.update(plan_id=plan.id, policy_version=plan.policy_version, work_assignment_id=plan.work_assignment_id,
+                        work_report_id=plan.work_report_id, observation_start=plan.observation_start.isoformat())
+        if outcomes:
+            outcome = outcomes[-1]
+            return {**view, "state": outcome.result, "outcome_id": outcome.id, "reason": outcome.reason,
+                    "policy_version": outcome.policy_version,
+                    "post_score_count": int(outcome.after_metrics.get("post_score_count", 0)),
+                    "latest_score_at": outcome.observation_end.isoformat()}
+        if incident.phase != m.IncidentPhase.OBSERVING:
+            return {**view, "state": "ENDED_WITHOUT_OUTCOME",
+                    "reason": f"the case left OBSERVING ({incident.phase.value}) before any verified outcome"}
+        legacy = self._legacy_verification(conn, incident)
+        if legacy is not None:
+            return {**view, "state": "BLOCKED", "code": legacy["code"], "reason": legacy["reason"],
+                    "policy_version": legacy["policy_version"], "plan_id": legacy["plan_id"],
+                    "allowed_commands": legacy["allowed_commands"]}
+        if not status.execution_lineage_valid:
+            return {**view, "state": "BLOCKED", "code": "LINEAGE_INVALID", "reason": status.execution_lineage_reason,
+                    "allowed_commands": ["escalate", "cancel"]}
+        work = self._qualifying_work(conn, incident, receipt)
+        if plan is None and work is None:
+            current = self._current_work(conn, incident)
+            not_performed = current is not None and (current["state"] == "DECLINED" or (
+                current["state"] == "REPORTED" and current["eligible"] is False))
+            if not_performed:
+                why = (f"declined: {current['decline_reason']}" if current["state"] == "DECLINED"
+                       else "report does not qualify: " + ", ".join(current["eligibility_reasons"]))
+                return {**view, "state": "WORK_NOT_PERFORMED", "code": "WORK_NOT_PERFORMED",
+                        "work_assignment_id": current["assignment_id"], "work_report_id": current["report_id"],
+                        "reason": f"no observation can start ({why})",
+                        "allowed_commands": ["reassign_work", "resume", "escalate", "cancel"]}
+            waiting = "acknowledgement" if current is None or current["state"] == "ASSIGNED" else "a work report"
+            return {**view, "state": "AWAITING_WORK", "code": "AWAITING_WORK",
+                    "work_assignment_id": current["assignment_id"] if current else None,
+                    "reason": f"dispatch confirmed; waiting for {waiting}. Nothing is observed until eligible work is reported",
+                    "allowed_commands": ["escalate", "cancel"]}
+        assignment, report = work if work is not None else (None, None)
+        start = plan.observation_start if plan is not None else _observation_start(report.created_at)
+        asset_id = plan.asset_id if plan is not None else assignment.equipment_ids[0]
+        count, latest = self._post_scores(conn, asset_id, start)
+        reference = datetime.fromisoformat(latest) if latest else start
+        if reference.tzinfo is None:
+            reference = reference.replace(tzinfo=start.tzinfo)
+        return {**view, "state": "COLLECTING" if count < MIN_POST_SCORES else "EVALUATING",
+                "work_assignment_id": view["work_assignment_id"] or assignment.id,
+                "work_report_id": view["work_report_id"] or report.id, "observation_start": start.isoformat(),
+                "post_score_count": count, "latest_score_at": latest, "stalled": now - reference > VERIFICATION_STALL_AFTER,
+                "reason": f"observing post-work scores: {count} since {start.isoformat()} "
+                          f"(policy needs {MIN_POST_SCORES}, at most {MAX_POST_SCORES})",
+                "allowed_commands": ["escalate", "cancel"]}
 
     # ----------------------------------------------------------------- outcome
     def verify_outcome(self, incident_id: str, *, evidence_service=None) -> OutcomeVerification:
@@ -1351,8 +1858,10 @@ class LifecycleService:
         latest = claims[-1] if claims else None
         receipts = self._receipts(conn, incident.id)
         # An outcome that exists while still OBSERVING was not committed by the verifier
-        # with its phase change: never treated as closure, always flagged.
+        # with its phase change: never treated as closure, always flagged. F1.2 (D4): a
+        # pre-version-2 dispatch that can no longer be verified is flagged the same way.
         stray_outcome = incident.phase == m.IncidentPhase.OBSERVING and outcome is not None
+        stray_outcome = stray_outcome or self._legacy_verification(conn, incident) is not None
         return LifecycleStatus(
             incident_id=incident.id, phase=incident.phase, revision=incident.revision,
             diagnosis_id=incident.current_diagnosis_id, intervention_id=incident.current_intervention_id,
@@ -1380,9 +1889,39 @@ class LifecycleService:
         """
         return [self.reconcile(incident.id) for incident in self.repository.list_active_incidents()]
 
-    def projection(self, incident_id: str) -> dict[str, JsonValue]:
-        """UI/API view of durable state. Contains no authority; approval needs exact identifiers."""
+    def verification(self, incident_id: str, *, now=None) -> dict:
+        """The derived verification sub-state alone (cheap; the engine polls it while observing)."""
         status = self.status(incident_id)
+        with db.get_conn(self.repository.path) as conn:
+            conn.execute("BEGIN")
+            return self._verification_view(conn, self.repository._fetch(conn, incident_id), status, now or utcnow())
+
+    @staticmethod
+    def _work_view(states: list[dict], now) -> list[dict]:
+        """Work facts plus derived attention flags (D9: flags only, never a transition)."""
+        def at(value):
+            return None if value is None else datetime.fromisoformat(value)
+        view = []
+        for state in states:
+            ack_due = at(state["assigned_at"]) + WORK_ACK_GRACE
+            report_due = at(state["window_end"]) or ((at(state["acknowledged_at"]) or ack_due) + WORK_REPORT_GRACE)
+            view.append({**state, "ack_due_at": ack_due.isoformat(), "report_due_at": report_due.isoformat(),
+                         "ack_overdue": bool(state["current"] and state["state"] == "ASSIGNED" and now > ack_due),
+                         "report_overdue": bool(state["current"] and state["state"] == "ACKNOWLEDGED" and now > report_due)})
+        return view
+
+    def projection(self, incident_id: str, *, now=None, actuator_kind: str | None = None) -> dict[str, JsonValue]:
+        """UI/API view of durable state. Contains no authority; approval needs exact identifiers.
+
+        ``now`` (default: the server clock) only drives derived attention flags;
+        ``actuator_kind`` is the engine's plant actuator ("simulator" / "none"), if known.
+        """
+        now = now or utcnow()
+        status = self.status(incident_id)
+        with db.get_conn(self.repository.path) as conn:
+            conn.execute("BEGIN")
+            verification = self._verification_view(conn, self.repository._fetch(conn, incident_id), status, now)
+            plant = {"actuator": actuator_kind, **self._plant_view(conn, incident_id)}
         incident = self.repository.fetch_incident(incident_id)
         requirement = None
         if status.approval and status.approval.state == "PENDING":
@@ -1406,7 +1945,11 @@ class LifecycleService:
                             "hypothesis_id": item.id, "link_basis": item.link_basis}
                            for item in sorted(self.promotion.current_hypotheses(incident_id).values(),
                                               key=lambda value: value.reference)],
-            "work": self.work_status(incident_id),
+            "work": self._work_view(self.work_status(incident_id), now),
+            # F1.2: what verification is actually doing; AWAITING_WORK is not "verifying".
+            "verification": verification,
+            # F1.2: what the plant actuator did for eligible reports (simulated plant facts; never evidence).
+            "plant": plant,
         }
 
 

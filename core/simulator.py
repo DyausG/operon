@@ -15,12 +15,16 @@ Degradation modes are driven by the demo engine:
     unresponsive -> SIMULATED plant that does not respond to the confirmed work package; risk holds
     failing      -> human rejected/ignored; runs to unplanned failure
 
-Step 14: a confirmed execution never sets "recovering" directly. The engine calls
-``respond_to_intervention`` and the asset profile's ``intervention_response`` decides
-whether the simulated plant recovers or stays degraded, so tests and demos can show
-verified recovery, persistent failure and inconclusive observation without hard-
-coding "maintenance always succeeds". Everything here is simulated provenance; the
-application's outcome verification reads only persisted evidence.
+Step 14 / F1.2: neither dispatch nor a receipt changes the simulated plant. The engine's
+``PlantActuator`` (core/plant.py) calls ``respond_to_work`` only for an eligible work
+report, and the asset profile decides the response: ``intervention_response`` for
+COMPLETED work (RECOVERS / PERSISTS), ``partial_response`` for PARTIAL work. Tests and
+demos can therefore show verified recovery, persistent failure and inconclusive
+observation without hard-coding "maintenance always succeeds". ``field_response`` is
+the scenario's simulated field crew behaviour (core/field_crew.py). ``snapshot`` /
+``restore`` give the simulated plant a durable memory, so an OPERON restart never resets
+an asset to healthy. Everything here is simulated provenance; the application's
+outcome verification reads only persisted evidence.
 """
 from __future__ import annotations
 import numpy as np
@@ -54,9 +58,13 @@ class AssetProfile:
     start_tick: int        # tick at which degradation begins
     ramp_ticks: int        # ticks from onset to full degradation (staggers alerts)
     base: dict             # healthy baseline feature values
-    # SIMULATED response to a confirmed work package (demo provenance only):
+    # SIMULATED response to eligible reported work (demo provenance only):
     #   RECOVERS -> "recovering" mode; PERSISTS -> "unresponsive" mode (risk holds).
     intervention_response: str = "RECOVERS"
+    # F1.2: response to PARTIAL work (default: the fault persists) and the scenario's
+    # simulated field crew: COMPLETES | PARTIAL | NOT_PERFORMED | DECLINES | NO_SHOW.
+    partial_response: str = "PERSISTS"
+    field_response: str = "COMPLETES"
 
 
 # Healthy baselines per asset (AI4I feature space) + degradation scenario.
@@ -108,19 +116,53 @@ class PlantSimulator:
     def set_mode(self, equipment_id: str, mode: str):
         self.assets[equipment_id].mode = mode
 
-    def respond_to_intervention(self, equipment_id: str) -> str:
-        """SIMULATED plant response to a confirmed work package; returns the mode applied.
+    def respond_to_work(self, equipment_id: str, result: str) -> tuple[str, str]:
+        """SIMULATED plant response to eligible reported work; returns (profile response, mode applied).
 
         Demo provenance only: whether the simulated asset recovers is a property of
-        its scenario profile, never an assumption that maintenance succeeded. The
-        application verifies outcomes from persisted evidence, not from this state.
+        its scenario profile, never an assumption that maintenance succeeded. Only
+        COMPLETED and PARTIAL work is ever performed on the asset. The application
+        verifies outcomes from persisted evidence, not from this state.
         """
         st = self.assets[equipment_id]
-        response = st.profile.intervention_response
+        if result == "COMPLETED":
+            response = st.profile.intervention_response
+        elif result == "PARTIAL":
+            response = st.profile.partial_response
+        else:
+            raise ValueError(f"no simulated plant response to {result!r} work")
         if response not in ("RECOVERS", "PERSISTS"):
             raise ValueError(f"unknown simulated intervention response {response!r}")
         st.mode = "recovering" if response == "RECOVERS" else "unresponsive"
-        return st.mode
+        return response, st.mode
+
+    def respond_to_intervention(self, equipment_id: str) -> str:
+        """Compatibility: the response to COMPLETED work (``respond_to_work``); returns the mode applied."""
+        return self.respond_to_work(equipment_id, "COMPLETED")[1]
+
+    def snapshot(self) -> list[dict]:
+        """Durable plant state per asset (core/plant.py SimulatorStateStore)."""
+        return [{"equipment_id": eid, "mode": st.mode, "prog": st.prog, "tick": st.tick,
+                 "scenario": st.profile.scenario, "start_tick": st.profile.start_tick,
+                 "ramp_ticks": st.profile.ramp_ticks, "intervention_response": st.profile.intervention_response,
+                 "partial_response": st.profile.partial_response, "field_response": st.profile.field_response}
+                for eid, st in self.assets.items()]
+
+    def restore(self, rows: dict[str, dict]) -> set[str]:
+        """Resume each known asset exactly where its durable state left it; returns the restored IDs."""
+        restored = set()
+        for eid, row in rows.items():
+            st = self.assets.get(eid)
+            if st is None or row.get("scenario") not in SCENARIO_DELTAS:
+                continue
+            st.mode, st.prog, st.tick = row["mode"], float(row["prog"]), int(row["tick"])
+            st.profile.scenario, st.profile.start_tick = row["scenario"], int(row["start_tick"])
+            st.profile.ramp_ticks = int(row["ramp_ticks"])
+            st.profile.intervention_response = row["intervention_response"]
+            st.profile.partial_response = row["partial_response"]
+            st.profile.field_response = row["field_response"]
+            restored.add(eid)
+        return restored
 
     def _noise(self, sd: float) -> float:
         return float(self.rng.normal(0, sd))
@@ -170,3 +212,29 @@ class PlantSimulator:
     def failed(self, equipment_id: str) -> bool:
         st = self.assets[equipment_id]
         return st.mode == "failing" and st.prog >= FAIL_PROG
+
+
+# Feature noise (see ``_features_for``) weights the estimate: precise channels count more.
+_ESTIMATE_CHANNELS = (("air_temp", "air", lambda d: d["air"], 0.15),
+                      ("process_temp", "proc", lambda d: d["air"] + d["proc_off"], 0.25),
+                      ("rot_speed", "speed", lambda d: d["speed"], 4.0),
+                      ("torque", "torque", lambda d: d["torque"], 0.4))
+
+
+def estimate_progress(profile: AssetProfile, readings: dict[str, float]) -> float:
+    """Weighted least-squares degradation progress implied by observed features (pre-F1.2 restart only).
+
+    Deterministic for the same readings. Tool wear is excluded because it also carries
+    the tick-dependent natural wear term. A healthy profile has no trajectory: 0.
+    """
+    deltas = SCENARIO_DELTAS[profile.scenario]
+    numerator = denominator = 0.0
+    for feature, base_key, delta_of, sd in _ESTIMATE_CHANNELS:
+        if feature not in readings:
+            continue
+        delta, weight = delta_of(deltas), 1.0 / (sd * sd)
+        numerator += weight * delta * (readings[feature] - profile.base[base_key])
+        denominator += weight * delta * delta
+    if denominator == 0:
+        return 0.0
+    return min(FAIL_PROG, max(0.0, numerator / denominator))

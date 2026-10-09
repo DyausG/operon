@@ -198,7 +198,10 @@ async def test_engine_drives_the_full_authoritative_lifecycle_to_observing(seede
     assert result["result"]["recovered_value"] == 12000.0
     incident = engine.coordinator.repository.fetch_incident(bridge.incident_id)
     assert incident.phase == m.IncidentPhase.OBSERVING
-    assert engine.alerts[ASSET]["status"] == "APPROVED" and engine.sim.assets[ASSET].mode == "recovering"
+    # F1.2 (intentional change): dispatch never changes the simulated plant; it stays held until eligible
+    # work is reported. The confirmed dispatch only assigns work.
+    assert engine.alerts[ASSET]["status"] == "APPROVED" and engine.sim.assets[ASSET].mode == "arrested"
+    assert engine.alerts[ASSET]["lifecycle"]["verification"]["state"] == "AWAITING_WORK"
     receipts = engine.coordinator.repository.list_execution_receipts(bridge.incident_id)
     assert [r.status for r in receipts] == ["CONFIRMED"]
     assert receipts[0].intervention_hash == intent["intervention_hash"]
@@ -215,7 +218,8 @@ async def test_engine_drives_the_full_authoritative_lifecycle_to_observing(seede
     # Restart reconstructs OBSERVING from durable pointers without any dispatch.
     restarted = make_engine(monkeypatch, runtime=StrandsRuntime(settings(), model=ScriptedModel()))
     assert restarted.incidents[ASSET].phase == m.IncidentPhase.OBSERVING
-    assert restarted.alerts[ASSET]["status"] == "APPROVED" and restarted.sim.assets[ASSET].mode == "recovering"
+    # F1.2 (intentional change): a restart never "responds" to a dispatch; the plant resumes as it was.
+    assert restarted.alerts[ASSET]["status"] == "APPROVED" and restarted.sim.assets[ASSET].mode == "arrested"
     assert restarted.alerts[ASSET]["execution_receipt_ids"] == [receipts[0].id]
     with db.get_conn() as conn:
         assert conn.execute("SELECT COUNT(*) FROM work_package").fetchone()[0] == 1
@@ -404,9 +408,28 @@ async def drive_to_observing(monkeypatch, clock, *, response="RECOVERS"):
     intent = {key: engine.alerts[ASSET]["lifecycle"][key] for key in ("requirement_id", "intervention_id", "intervention_hash", "context_revision")}
     result = await engine.approve(ASSET, intent)
     assert result["ok"] and result["phase"] == "OBSERVING" and result["result"]["outcome"] == "DISPATCHED"
-    # Post-intervention ticks must be provably after the confirmation second.
+    # F1.2 (intentional change): verification observes only after eligible reported work.
+    await report_work(engine, bridge)
+    # Post-work ticks must be provably after the server-recorded report second.
     clock["now"] = utcnow() + timedelta(seconds=2)
     return engine, bridge
+
+
+FIELD_TECHNICIAN = m.ActorRef(kind="DECLARED", id="tech-7", role="technician")
+
+
+async def report_work(engine, bridge, *, result="COMPLETED"):
+    """Acknowledge and report the dispatch's current assignment through the engine's audited work commands."""
+    work = next(item for item in engine.lifecycle.work_status(bridge.incident_id) if item["current"])
+    ack = await engine.lifecycle_command(bridge.incident_id, "acknowledge_work", assignment_id=work["assignment_id"],
+                                         expected_revision=bridge.revision(), actor=FIELD_TECHNICIAN)
+    assert ack["ok"], ack
+    report = await engine.lifecycle_command(
+        bridge.incident_id, "report_work", assignment_id=work["assignment_id"], expected_revision=bridge.revision(),
+        actor=FIELD_TECHNICIAN, result=result, summary="Reviewed work package performed", performed_at=utcnow(),
+        asset_intervened=True)
+    assert report["ok"], report
+    return report
 
 
 def recorded_broadcasts(engine):
@@ -466,8 +489,11 @@ async def test_engine_reports_inconclusive_then_not_recovered_without_closure(se
     incident = engine.coordinator.repository.fetch_incident(bridge.incident_id)
     assert incident.phase == m.IncidentPhase.OBSERVING and engine.alerts[ASSET]["status"] == "APPROVED"
     restarted = make_engine(monkeypatch, runtime=StrandsRuntime(settings(), model=ScriptedModel()))
-    # Restart reconstructs OBSERVING; the simulator tweak is demo state, not durable, so the fresh profile responds.
-    assert restarted.incidents[ASSET].phase == m.IncidentPhase.OBSERVING and restarted.sim.assets[ASSET].mode == "recovering"
+    # F1.2 (intentional inversion): the simulated plant is durable, so a restart can no longer flip a
+    # persisting fault into recovery; the restored asset is exactly as it was.
+    restored = restarted.sim.assets[ASSET]
+    assert restarted.incidents[ASSET].phase == m.IncidentPhase.OBSERVING and restored.mode == "unresponsive"
+    assert (restored.prog, restored.profile.intervention_response) == (engine.sim.assets[ASSET].prog, "PERSISTS")
     with db.get_conn() as conn:
         assert conn.execute("SELECT COUNT(*) FROM incident_artifact WHERE kind='Outcome'").fetchone()[0] == 0
     # Risk stays critical (StubModel 0.91) for the whole observation budget.

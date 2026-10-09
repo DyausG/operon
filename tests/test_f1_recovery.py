@@ -410,9 +410,10 @@ def test_work_requested_acknowledged_and_reported_are_separate_facts_not_recover
     assert flow.lifecycle.work_status(flow.incident_id)[0]["state"] == "ASSIGNED"
 
     def report(**kw):
+        # F1.2 (intentional change): a COMPLETED report must attest whether physical work was done.
         return flow.lifecycle.report_work(flow.incident_id, assignment_id=assignment.id, expected_revision=revision(flow),
                                           actor=TECHNICIAN, result="COMPLETED", summary="Bearing replaced",
-                                          performed_at=utcnow(), **kw)
+                                          performed_at=utcnow(), asset_intervened=True, **kw)
     with pytest.raises(LifecycleRefused, match="acknowledged before"):
         report()
     flow.lifecycle.acknowledge_work(flow.incident_id, assignment_id=assignment.id, expected_revision=revision(flow),

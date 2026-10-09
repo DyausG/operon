@@ -74,6 +74,8 @@ class LifecycleCommandBody(ActorFields):
 class WorkAcknowledgement(ActorFields):
     expected_revision: int = Field(ge=1)
     note: str | None = Field(default=None, max_length=2000)
+    # F1.2: optional client key; an identical retry is answered from the durable record.
+    request_key: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class WorkReportSubmission(ActorFields):
@@ -82,6 +84,23 @@ class WorkReportSubmission(ActorFields):
     summary: str = Field(min_length=1, max_length=2000)
     findings: tuple[str, ...] = Field(default=(), max_length=20)
     performed_at: datetime | None = None
+    # F1.2 (operon-work-eligibility-1): COMPLETED/PARTIAL must attest whether physical work
+    # was performed on the asset; PARTIAL names the completed instruction indices.
+    asset_intervened: bool | None = None
+    completed_instructions: tuple[int, ...] | None = Field(default=None, max_length=50)
+    request_key: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class WorkDecline(ActorFields):
+    expected_revision: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=2000)
+    request_key: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class ReassignWorkBody(LifecycleCommandBody):
+    assignment_id: str = Field(min_length=1)
+    assignee_reference: str | None = Field(default=None, min_length=1, max_length=200)
+    request_key: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class ExecutionCommand(BaseModel):
@@ -243,6 +262,17 @@ async def approval(incident_id: str, command: ApprovalCommand):
     return _status(await handler(eid, command.model_dump(exclude={"decision"}) | {"actor_kind": kind}))
 
 
+@app.post("/api/incidents/{incident_id}/commands/reassign_work")
+async def reassign_work(incident_id: str, body: ReassignWorkBody):
+    """F1.2: a new assignment for the same dispatch after the current one was declined or did not qualify."""
+    actor, refused = _actor(body)
+    if refused is not None:
+        return refused
+    return _status(await engine.lifecycle_command(
+        incident_id, "reassign_work", assignment_id=body.assignment_id, expected_revision=body.expected_revision,
+        actor=actor, rationale=body.rationale, assignee_reference=body.assignee_reference, request_key=body.request_key))
+
+
 @app.post("/api/incidents/{incident_id}/commands/{command}")
 async def lifecycle_command(incident_id: str, command: Literal["resume", "cancel", "escalate", "renew_approval",
                                                                "return_to_planning", "retry_execution"],
@@ -264,12 +294,31 @@ async def acknowledge_work(incident_id: str, assignment_id: str, body: WorkAckno
     if refused is not None:
         return refused
     return _status(await engine.lifecycle_command(incident_id, "acknowledge_work", assignment_id=assignment_id,
-                                                  expected_revision=body.expected_revision, actor=actor, note=body.note))
+                                                  expected_revision=body.expected_revision, actor=actor, note=body.note,
+                                                  request_key=body.request_key))
+
+
+@app.post("/api/incidents/{incident_id}/work/{assignment_id}/decline")
+async def decline_work(incident_id: str, assignment_id: str, body: WorkDecline):
+    """Sandbox field response (F1.2): the assignee declines an unacknowledged request. No plant actuation."""
+    if not _human_inputs_enabled():
+        return _trusted_disabled()
+    actor, refused = _actor(body)
+    if refused is not None:
+        return refused
+    return _status(await engine.lifecycle_command(incident_id, "decline_work", assignment_id=assignment_id,
+                                                  expected_revision=body.expected_revision, actor=actor,
+                                                  reason=body.reason, request_key=body.request_key))
 
 
 @app.post("/api/incidents/{incident_id}/work/{assignment_id}/response")
 async def report_work(incident_id: str, assignment_id: str, body: WorkReportSubmission):
-    """Sandbox field response: the assignee reports the work. Never verification of recovery."""
+    """Sandbox field response: the assignee reports the work. Never verification of recovery.
+
+    F1.2: whatever the caller says, a report about the simulated plant is SIMULATED
+    provenance; only a production process (which refuses unauthenticated humans until
+    F3) could record OBSERVED work.
+    """
     if not _human_inputs_enabled():
         return _trusted_disabled()
     actor, refused = _actor(body)
@@ -278,8 +327,9 @@ async def report_work(incident_id: str, assignment_id: str, body: WorkReportSubm
     return _status(await engine.lifecycle_command(
         incident_id, "report_work", assignment_id=assignment_id, expected_revision=body.expected_revision,
         actor=actor, result=body.result, summary=body.summary, findings=body.findings,
-        performed_at=body.performed_at,
-        provenance="SIMULATED" if config.environment() == "sandbox" else "OBSERVED"))
+        performed_at=body.performed_at, asset_intervened=body.asset_intervened,
+        completed_instructions=body.completed_instructions, request_key=body.request_key,
+        provenance="OBSERVED" if config.environment() == "production" else "SIMULATED"))
 
 
 @app.post("/api/incidents/{incident_id}/execute")

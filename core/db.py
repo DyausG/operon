@@ -191,7 +191,9 @@ def reset_transactional() -> None:
     """Wipe the loop's write-back + telemetry (keep master data)."""
     with get_conn() as conn:
         for t in RELIABILITY_RESET_TABLES + ("labor_booking", "part_reservation", "work_package", "notification",
-                  "alert", "maintenance_event", "work_order", "health_score", "sensor_reading"):
+                  "alert", "maintenance_event", "work_order", "health_score", "sensor_reading",
+                  # F1.2: after a demo reset the simulated plant restarts from its profiles.
+                  "simulator_asset_state"):
             conn.execute(f"DELETE FROM {t};")
     # Reset removes generated operational writes but restores the one explicitly
     # marked historical demo fixture so a fresh incident remains investigable.

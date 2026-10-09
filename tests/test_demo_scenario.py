@@ -156,7 +156,16 @@ async def test_no_provider_runs_real_lifecycle_with_labelled_deterministic_advis
         closed = await wait_status(engine, "complete", timeout=60)
         assert closed["approval_state"] == "APPROVED"
         assert repo.fetch_incident(incident.id).phase == IncidentPhase.CLOSED
-        assert artifacts_of(engine, m.Outcome)[0].result == "VERIFIED_RECOVERY"
+        outcome = artifacts_of(engine, m.Outcome)[0]
+        assert outcome.result == "VERIFIED_RECOVERY"
+        # F1.2: the scenario's simulated crew acknowledged and reported through the audited
+        # work commands; the simulated plant responded to that report; verification observed
+        # only after it. Dispatch itself changed nothing.
+        [report] = artifacts_of(engine, m.WorkReport)
+        assert report.actor.kind == "SCENARIO" and report.provenance == "SIMULATED"
+        [actuation] = artifacts_of(engine, m.PlantActuation)
+        assert (actuation.report_id, actuation.provenance, actuation.mode_after) == (report.id, "SIMULATED", "recovering")
+        assert outcome.work_report_id == report.id and outcome.observation_start > report.created_at
         assert engine._guided_owner is None
     finally:
         await finish(engine)

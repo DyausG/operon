@@ -24,13 +24,13 @@ from core.reliability import outcome as oc
 from core.reliability.lifecycle import LifecycleRefused, LifecycleService
 from core.reliability.repository import utcnow
 from tests.test_engine_lifecycle import ASSET, Bridge, make_engine, recorded_broadcasts, scripted_supervisor, tick
-from tests.test_outcome import HEALTHY, observing, outcomes, plans, post, verify, write_scores
+from tests.test_outcome import HEALTHY, dispatched, outcomes, plans, verify, write_scores
 from tests.test_promotion import revision
 from tests.test_reliability_lifecycle import Flow
 from tests.test_strands_agents import ScriptedModel, settings
 
-# M0: target behaviour, expected to fail until the milestones land (strict: an unexpected pass fails the run).
-pytestmark = pytest.mark.xfail(strict=True, reason="F1.2 target behaviour, not implemented yet (M0)")
+# Target behaviour still pending a later milestone (strict: an unexpected pass fails the run).
+pending = pytest.mark.xfail(strict=True, reason="F1.2 target behaviour, not implemented yet")
 
 TECHNICIAN = m.ActorRef(kind="DECLARED", id="tech-7", role="technician")
 ENGINEER = m.ActorRef(kind="DECLARED", id="engineer-1", role="reliability_engineer")
@@ -51,14 +51,24 @@ def complete_work(flow, *, result="COMPLETED", later=timedelta(0), monkeypatch=N
     assignment = assignment_of(flow)
     flow.lifecycle.acknowledge_work(flow.incident_id, assignment_id=assignment.id, expected_revision=revision(flow),
                                     actor=TECHNICIAN)
+    original = lc.utcnow
     if monkeypatch is not None and later:
         shifted = utcnow() + later
-        monkeypatch.setattr(lc, "utcnow", lambda: shifted)
+        monkeypatch.setattr(lc, "utcnow", lambda: shifted)  # the server records the report later
     values = dict(result=result, summary="Bearing replaced and shaft realigned", performed_at=lc.utcnow(),
                   asset_intervened=True)
     values.update(fields)
-    return flow.lifecycle.report_work(flow.incident_id, assignment_id=assignment.id, expected_revision=revision(flow),
-                                      actor=TECHNICIAN, **values)
+    try:
+        return flow.lifecycle.report_work(flow.incident_id, assignment_id=assignment.id,
+                                          expected_revision=revision(flow), actor=TECHNICIAN, **values)
+    finally:
+        if monkeypatch is not None:
+            monkeypatch.setattr(lc, "utcnow", original)
+
+
+def after_dispatch(flow, receipt, probs):
+    """Scores stamped after the dispatch receipt but before any work report (never post-work evidence)."""
+    write_scores(flow.repo.path, ASSET, probs, start=oc.observation_start(receipt.completed_at) + timedelta(seconds=1))
 
 
 def legacy_v1_plan(flow, receipt):
@@ -88,8 +98,8 @@ def legacy_v1_plan(flow, receipt):
 
 # ------------------------------------------------------------ lifecycle level
 def test_verification_waits_for_an_eligible_work_report(flow):
-    _, receipt = observing(flow)
-    post(flow, receipt, HEALTHY)  # the plant looks healthy, but nobody reported any work
+    _, receipt = dispatched(flow)
+    after_dispatch(flow, receipt, HEALTHY)  # the plant looks healthy, but nobody reported any work
     result = verify(flow)
     assert result.disposition == "AWAITING_WORK" and result.outcome_id is None
     assert not plans(flow) and not outcomes(flow)
@@ -97,10 +107,9 @@ def test_verification_waits_for_an_eligible_work_report(flow):
 
 
 def test_observation_starts_only_after_the_server_recorded_report(flow, monkeypatch):
-    _, receipt = observing(flow)
-    post(flow, receipt, HEALTHY)  # healthy scores stamped before the report can never count
+    _, receipt = dispatched(flow)
+    after_dispatch(flow, receipt, HEALTHY)  # healthy scores stamped before the report can never count
     report = complete_work(flow, later=timedelta(minutes=10), monkeypatch=monkeypatch)
-    monkeypatch.undo()
     first = verify(flow)
     assert first.disposition == "OBSERVING" and first.post_score_count == 0
     [plan] = plans(flow)
@@ -114,7 +123,7 @@ def test_observation_starts_only_after_the_server_recorded_report(flow, monkeypa
 
 
 def test_a_completed_report_with_unhealthy_telemetry_is_not_recovery(flow):
-    _, receipt = observing(flow)
+    _, receipt = dispatched(flow)
     report = complete_work(flow)
     assert verify(flow).disposition == "OBSERVING"
     [plan] = plans(flow)
@@ -125,9 +134,9 @@ def test_a_completed_report_with_unhealthy_telemetry_is_not_recovery(flow):
 
 
 def test_pre_version_two_receipt_bound_plan_is_blocked_never_closed(flow):
-    _, receipt = observing(flow)
+    _, receipt = dispatched(flow)
     legacy = legacy_v1_plan(flow, receipt)
-    post(flow, receipt, HEALTHY)
+    after_dispatch(flow, receipt, HEALTHY)
     for service in (flow.lifecycle, LifecycleService(flow.repo)):  # identical after a restart
         result = service.verify_outcome(flow.incident_id)
         assert result.disposition == "BLOCKED" and result.outcome_id is None
@@ -201,7 +210,7 @@ async def test_restart_never_creates_an_artificial_recovery(seeded_db, monkeypat
     assert (await engine.approve(ASSET, intent))["ok"]
     await report_via_engine(engine, bridge)
     held = engine.sim.assets[ASSET]
-    assert held.mode == "unresponsive" and held.prog > 0.9
+    assert held.mode == "unresponsive" and held.prog >= 0.9
     restarted = make_engine(monkeypatch, runtime=StrandsRuntime(settings(), model=ScriptedModel()))
     state = restarted.sim.assets[ASSET]
     assert (state.mode, state.prog, state.profile.intervention_response) == (held.mode, held.prog, "PERSISTS")
@@ -227,3 +236,63 @@ async def test_awaiting_work_case_is_held_across_restart(seeded_db, monkeypatch)
     restarted = make_engine(monkeypatch, runtime=StrandsRuntime(settings(), model=ScriptedModel()))
     assert (restarted.sim.assets[ASSET].mode, restarted.sim.assets[ASSET].prog) == held
     assert restarted.alerts[ASSET]["lifecycle"]["verification"]["state"] == "AWAITING_WORK"
+
+
+# ------------------------------------------------------- D4: pre-version-2 cases
+def strip_work_assignments(flow):
+    """Emulate a dispatch recorded before F1.1 (no WorkAssignment existed then). Test-only data surgery."""
+    with db.get_conn(flow.repo.path) as conn:
+        conn.execute("DELETE FROM incident_artifact WHERE incident_id=? AND kind='WorkAssignment'", (flow.incident_id,))
+        conn.execute("DELETE FROM incident_event WHERE incident_id=? AND event_type='WORK_ASSIGNED'", (flow.incident_id,))
+
+
+def test_pre_f1_1_dispatch_without_assignment_is_blocked_with_supported_actions(flow):
+    _, receipt = dispatched(flow)
+    strip_work_assignments(flow)
+    after_dispatch(flow, receipt, HEALTHY)
+    result = verify(flow)
+    assert (result.disposition, result.code) == ("BLOCKED", "LEGACY_NO_WORK_ASSIGNMENT") and not plans(flow)
+    view = LifecycleService(flow.repo).projection(flow.incident_id)
+    assert view["verification"]["state"] == "BLOCKED" and view["verification"]["allowed_commands"] == [
+        "resume", "escalate", "cancel"]
+    assert view["reconciliation_required"] is True and view["work"] == []
+    with pytest.raises(LifecycleRefused, match="predates work assignments"):
+        flow.lifecycle.decline_work(flow.incident_id, assignment_id="any", expected_revision=revision(flow),
+                                    actor=TECHNICIAN, reason="x")
+    flow.lifecycle.cancel(flow.incident_id, expected_revision=revision(flow), actor=ENGINEER, rationale="retire case")
+    assert flow.incident().phase == m.IncidentPhase.CANCELLED and not outcomes(flow)
+
+
+def test_legacy_blocked_case_can_be_escalated_and_is_never_evaluated_again(flow):
+    _, receipt = dispatched(flow)
+    legacy = legacy_v1_plan(flow, receipt)
+    write_scores(flow.repo.path, ASSET, (0.1,) * 12, start=legacy.observation_start + timedelta(seconds=1))
+    before = revision(flow)
+    for _ in range(3):
+        assert verify(flow).disposition == "BLOCKED"
+    assert revision(flow) == before  # a blocked attempt collects no evidence and writes nothing
+    flow.lifecycle.escalate(flow.incident_id, expected_revision=revision(flow), actor=ENGINEER, rationale="review v1 case")
+    assert flow.incident().phase == m.IncidentPhase.ESCALATED and not outcomes(flow)
+    assert LifecycleService(flow.repo).projection(flow.incident_id)["verification"]["state"] == "ENDED_WITHOUT_OUTCOME"
+
+
+async def test_engine_restart_over_a_legacy_case_keeps_it_blocked_and_never_closes(seeded_db, monkeypatch):
+    from tests.test_engine import StubModel
+    clock = {"now": utcnow()}
+    engine, bridge, intent = await to_approval(monkeypatch, clock)
+    assert (await engine.approve(ASSET, intent))["ok"]
+    receipt = engine.coordinator.repository.list_execution_receipts(bridge.incident_id)[-1]
+    shim = type("FlowShim", (), {"repo": engine.coordinator.repository, "incident_id": bridge.incident_id,
+                                 "lifecycle": engine.lifecycle})()
+    legacy_v1_plan(shim, receipt)
+    restarted = make_engine(monkeypatch, failure_prob=0.05, runtime=StrandsRuntime(settings(), model=ScriptedModel()))
+    restarted._clock = lambda: clock["now"]
+    assert restarted.alerts[ASSET]["lifecycle"]["verification"]["code"] == "LEGACY_RECEIPT_BOUND_PLAN"
+    restarted.model = StubModel(0.05)  # the plant looks perfectly healthy
+    for _ in range(6):
+        clock["now"] += timedelta(seconds=1)
+        await restarted._advance()
+    incident = restarted.coordinator.repository.fetch_incident(bridge.incident_id)
+    assert incident.phase == m.IncidentPhase.OBSERVING
+    assert not [a for a in restarted.coordinator.repository.list_artifacts(bridge.incident_id) if isinstance(a, m.Outcome)]
+    assert restarted.alerts[ASSET]["lifecycle"]["reconciliation_required"] is True

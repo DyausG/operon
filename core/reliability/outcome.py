@@ -1,13 +1,19 @@
-"""Deterministic outcome verification and autonomous closure authority (Step 14).
+"""Deterministic outcome verification and autonomous closure authority (Step 14, F1.2).
 
-prediction != diagnosis != intervention != approval != execution != outcome
+prediction != diagnosis != intervention != approval != execution != work != outcome
 
 A CONFIRMED execution receipt means the consequential operation is known to have
 committed. It never means the equipment recovered, and it never permits CLOSED.
-Only the deterministic policy in this module, applied to durable post-intervention
+F1.2 (``operon-outcome-2``): a receipt does not even start observation. Verification
+waits (``AWAITING_WORK``) until an eligible work report (operon-work-eligibility-1)
+exists on the dispatch's current assignment, and observes only after the
+server-recorded report time. The report bounds the window; it is never evidence.
+Only the deterministic policy in this module, applied to durable post-work
 evidence bound to the exact executed lineage, may establish recovery. Closure
 (OBSERVING -> CLOSED) is written by ``LifecycleService`` in the same transaction as
-the authoritative ``Outcome``; no other route to CLOSED exists.
+the authoritative ``Outcome``; no other route to CLOSED exists. Pre-version-2 cases
+(a receipt-bound ``operon-outcome-1`` plan, or a dispatch without any work
+assignment) are ``BLOCKED`` and never evaluated again (D4).
 
 Verification is application-owned and model-free: every read is local SQLite,
 evidence is collected between the read snapshot and the commit transaction (never
@@ -33,6 +39,7 @@ from .promotion import PromotionRefused
 from .repository import DuplicateRecord, InvalidReference, StaleRevision, content_hash, manifest_authority, new_id, utcnow
 
 POLICY_VERSION = m.OUTCOME_POLICY
+LEGACY_POLICY_VERSION = m.OUTCOME_POLICY_V1
 VERIFIER = m.OUTCOME_VERIFIER
 # Explicit, versioned, conservative policy parameters (frozen into every plan).
 MIN_POST_SCORES = 3        # consecutive post-intervention scores that must agree before any terminal result
@@ -53,10 +60,11 @@ def policy_parameters() -> dict[str, float]:
 
 
 def observation_start(confirmed_at: datetime) -> datetime:
-    """First fully elapsed second after confirmation (mirror of ``investigation.snapshot_boundary``).
+    """First fully elapsed second after a durable moment (mirror of ``investigation.snapshot_boundary``).
 
-    Writers stamp scores and readings at whole-second precision, so a sample in the
-    confirmation second cannot be proven post-execution and is excluded.
+    F1.2 applies it to the server-recorded work report time. Writers stamp scores and
+    readings at whole-second precision, so a sample in that second cannot be proven
+    post-work and is excluded.
     """
     return confirmed_at.replace(microsecond=0) + timedelta(seconds=1)
 
@@ -89,7 +97,9 @@ class OutcomeVerification(BaseModel):
     incident_id: str
     phase: m.IncidentPhase
     revision: int
-    disposition: Literal["CLOSED", "REINVESTIGATE", "ESCALATED", "OBSERVING", "RETRY"]
+    # F1.2: AWAITING_WORK (no eligible work report yet: nothing is observed or written)
+    # and BLOCKED (a pre-version-2 case, never evaluated again; ``code`` says why).
+    disposition: Literal["CLOSED", "REINVESTIGATE", "ESCALATED", "OBSERVING", "RETRY", "AWAITING_WORK", "BLOCKED"]
     result: m.OutcomeResult | None
     reason: str
     policy_version: str = POLICY_VERSION
@@ -98,6 +108,8 @@ class OutcomeVerification(BaseModel):
     evidence_ids: tuple[str, ...] = ()
     checks: dict[str, bool] = {}
     post_score_count: int = 0
+    code: str | None = None
+    work_report_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -300,21 +312,25 @@ class OutcomeVerifier:
         return dict(asset_id=asset_id, signal_evidence=signal_evidence, evidence_ids=tuple(ids), metrics=metrics,
                     simulated=signal.input_provenance == "SIMULATED")
 
-    def _build_plan(self, incident, lineage: ExecutedLineage, baseline) -> m.ObservationPlan:
+    def _build_plan(self, incident, lineage: ExecutedLineage, baseline, work) -> m.ObservationPlan:
         receipt = lineage.receipt
+        assignment, report = work
         confirmed_at = receipt.completed_at or receipt.created_at
+        from .lifecycle import WORK_ELIGIBILITY_POLICY  # runtime import: lifecycle imports this module
         return m.ObservationPlan(
             id=new_id(), incident_id=incident.id, created_at=utcnow(), equipment_ids=(baseline["asset_id"],),
             asset_id=baseline["asset_id"], diagnosis_id=lineage.diagnosis.id, diagnosis_promotion_id=lineage.diagnosis_record.id,
             intervention_id=lineage.intervention.id, intervention_hash=lineage.intervention_hash, promotion_id=lineage.record.id,
             approval_requirement_id=lineage.requirement.id, approval_decision_ids=lineage.decision_ids,
             execution_claim_key=lineage.claim.idempotency_key, receipt_id=receipt.id, receipt_operation_key=receipt.operation_key,
-            receipt_attempt=receipt.attempt, confirmed_at=confirmed_at, observation_start=observation_start(confirmed_at),
+            receipt_attempt=receipt.attempt, confirmed_at=confirmed_at, observation_start=observation_start(report.created_at),
             baseline_signal_evidence_id=baseline["signal_evidence"].id, baseline_evidence_ids=baseline["evidence_ids"],
             baseline_metrics=baseline["metrics"], diagnosed_failure_mode_code=lineage.diagnosis.failure_mode_code,
-            policy_parameters=policy_parameters())
+            policy_parameters=policy_parameters(), work_assignment_id=assignment.id, work_report_id=report.id,
+            work_result=report.result, work_reported_at=report.created_at, work_performed_at_claimed=report.performed_at,
+            work_eligibility_policy=WORK_ELIGIBILITY_POLICY)
 
-    def _check_plan(self, plan: m.ObservationPlan, lineage: ExecutedLineage, incident):
+    def _check_plan(self, plan: m.ObservationPlan, lineage: ExecutedLineage, incident, work):
         receipt = lineage.receipt
         _require((plan.incident_id, plan.intervention_id, plan.intervention_hash, plan.promotion_id, plan.diagnosis_id,
                   plan.diagnosis_promotion_id, plan.execution_claim_key, plan.receipt_id, plan.receipt_operation_key,
@@ -323,9 +339,37 @@ class OutcomeVerifier:
                      lineage.diagnosis_record.id, lineage.claim.idempotency_key, receipt.id, receipt.operation_key,
                      receipt.attempt, lineage.requirement.id),
                  "observation plan does not bind the exact executed lineage")
-        _require(plan.observation_start == observation_start(receipt.completed_at or receipt.created_at)
+        _require(plan.confirmed_at == (receipt.completed_at or receipt.created_at)
                  and plan.policy_version == POLICY_VERSION and plan.verifier_identity == VERIFIER,
                  "observation plan boundary or policy is not the application's")
+        # F1.2: the plan must bind the eligible report on the dispatch's current assignment,
+        # and its boundary must be that report's server-recorded time.
+        _require(work is not None, "the work report that opened observation no longer qualifies")
+        assignment, report = work
+        _require((plan.work_assignment_id, plan.work_report_id, plan.work_result, plan.work_reported_at) == (
+                     assignment.id, report.id, report.result, report.created_at)
+                 and plan.observation_start == observation_start(report.created_at),
+                 "observation plan does not bind the qualifying work report and its server-recorded time")
+
+    def _awaiting_work(self, conn, incident) -> OutcomeVerification:
+        """No eligible work report yet: nothing is observed or written; the reason names the work state."""
+        current = self.lifecycle._current_work(conn, incident)
+        code, reason = "AWAITING_WORK", "no work assignment is current for the executed dispatch"
+        if current is not None:
+            state, assignment_id = current["state"], current["assignment_id"]
+            if state == "ASSIGNED":
+                reason = f"waiting for the assignee to acknowledge work assignment {assignment_id}"
+            elif state == "ACKNOWLEDGED":
+                reason = f"waiting for the work report on assignment {assignment_id}"
+            elif state == "DECLINED":
+                code = "WORK_NOT_PERFORMED"
+                reason = (f"work assignment {assignment_id} was declined ({current['decline_reason']}); "
+                          "reassign, resume, escalate or cancel")
+            else:
+                code = "WORK_NOT_PERFORMED"
+                reason = (f"the work report on assignment {assignment_id} does not qualify for verification "
+                          f"({', '.join(current['eligibility_reasons'])}); reassign, resume, escalate or cancel")
+        return self._verification(incident, "AWAITING_WORK", None, reason, code=code)
 
     def _latest_post_score(self, conn, plan: m.ObservationPlan):
         """Newest persisted post-boundary score and the count so far (cheap pre-check, no artifacts)."""
@@ -427,19 +471,27 @@ class OutcomeVerifier:
             _require(incident.phase == m.IncidentPhase.OBSERVING,
                      f"outcome verification requires OBSERVING, found {incident.phase.value}", authority=False)
             lineage = self._executed(conn, incident)
+            legacy = self.lifecycle._legacy_verification(conn, incident)
+            if legacy is not None:
+                # D4: a pre-version-2 case is never evaluated again and never closed from its receipt.
+                return self._verification(incident, "BLOCKED", None, legacy["reason"], code=legacy["code"],
+                                          plan_id=legacy.get("plan_id"), policy_version=legacy["policy_version"])
             plan = self._plan_for(conn, incident, lineage.receipt.id)
+            work = self.lifecycle._qualifying_work(conn, incident, lineage.receipt)
             if plan is not None:
-                self._check_plan(plan, lineage, incident)
+                self._check_plan(plan, lineage, incident, work)
                 existing = self._outcome_for(conn, incident, plan.id)
                 _require(existing is None, "an authoritative outcome exists while the incident is still OBSERVING; "
                                            "reconciliation is required and no closure is inferred")
+            elif work is None:
+                return self._awaiting_work(conn, incident)
             else:
                 baseline = self._baseline(conn, incident, lineage, lineage.receipt.completed_at or lineage.receipt.created_at)
                 if baseline is None:
                     return self._verification(incident, "OBSERVING", "INCONCLUSIVE",
                                               "no durable pre-intervention model signal exists in the promoted diagnosis packet; "
-                                              "no comparison baseline can be frozen")
-                proposed = self._build_plan(incident, lineage, baseline)
+                                              "no comparison baseline can be frozen", work_report_id=work[1].id)
+                proposed = self._build_plan(incident, lineage, baseline, work)
         if proposed is not None:
             # The read snapshot is closed: the plan commit is its own short transaction.
             plan = self._persist_plan(incident_id, proposed)
@@ -454,8 +506,9 @@ class OutcomeVerifier:
         minimum = int(plan.policy_parameters["minimum_post_scores"])
         if count < minimum or latest is None:
             return self._verification(incident, "OBSERVING", "INCONCLUSIVE",
-                                      f"{count} post-intervention score(s) persisted since {plan.observation_start.isoformat()}; "
-                                      f"policy requires {minimum}", plan_id=plan.id, post_score_count=count)
+                                      f"{count} post-work score(s) persisted since {plan.observation_start.isoformat()}; "
+                                      f"policy requires {minimum}", plan_id=plan.id, post_score_count=count,
+                                      work_report_id=plan.work_report_id)
         end_at = datetime.fromisoformat(latest.replace("Z", "+00:00"))
         if end_at.tzinfo is None:
             end_at = end_at.replace(tzinfo=plan.observation_start.tzinfo)
@@ -482,19 +535,22 @@ class OutcomeVerifier:
     def _persist_plan(self, incident_id, plan: m.ObservationPlan):
         with self.repository._write() as conn:
             incident = self.repository._fetch(conn, incident_id)
-            if incident.phase != m.IncidentPhase.OBSERVING:
+            if incident.phase != m.IncidentPhase.OBSERVING or self.lifecycle._legacy_verification(conn, incident):
                 return None
             lineage = self._executed(conn, incident)
+            work = self.lifecycle._qualifying_work(conn, incident, lineage.receipt)
             existing = self._plan_for(conn, incident, lineage.receipt.id)
             if existing is not None:
-                self._check_plan(existing, lineage, incident)
+                self._check_plan(existing, lineage, incident, work)
                 return existing
-            self._check_plan(plan, lineage, incident)
+            self._check_plan(plan, lineage, incident, work)
             self.lifecycle._checkpoint(conn, incident, [plan], events=[("OBSERVATION_PLANNED", {
                 "plan_id": plan.id, "receipt_id": plan.receipt_id, "intervention_id": plan.intervention_id,
                 "intervention_hash": plan.intervention_hash, "promotion_id": plan.promotion_id,
                 "observation_start": plan.observation_start.isoformat(), "policy_version": POLICY_VERSION,
-                "baseline_evidence_ids": list(plan.baseline_evidence_ids)})])
+                "baseline_evidence_ids": list(plan.baseline_evidence_ids),
+                "work_assignment_id": plan.work_assignment_id, "work_report_id": plan.work_report_id,
+                "work_result": plan.work_result, "work_reported_at": plan.work_reported_at.isoformat()})])
             # Return the durable form so every later comparison is against stored bytes.
             return self.repository._artifact(conn, incident.id, plan.id)
 
@@ -509,6 +565,7 @@ class OutcomeVerifier:
             lineage = self._executed(conn, incident)
             stored = self._plan_for(conn, incident, lineage.receipt.id)
             _require(stored is not None and stored == plan, "observation plan is not the durable plan for the executed receipt")
+            self._check_plan(stored, lineage, incident, self.lifecycle._qualifying_work(conn, incident, lineage.receipt))
             _require(self._outcome_for(conn, incident, plan.id) is None,
                      "an authoritative outcome already exists for this observation plan")
             loaded, stale = self._bound_evidence(conn, incident, plan, end_at, evidence_ids)
@@ -539,7 +596,8 @@ class OutcomeVerifier:
                 reason=derived.reason,
                 estimated_avoided_loss=lineage.intervention.estimated_avoided_loss if derived.result == "VERIFIED_RECOVERY" else None,
                 measured_cost=None, diagnosis_confirmed=None,
-                lesson=LESSONS[derived.result])
+                lesson=LESSONS[derived.result], work_assignment_id=plan.work_assignment_id,
+                work_report_id=plan.work_report_id, work_result=plan.work_result)
             changes = {"active_run_id": None}
             if derived.result != "VERIFIED_RECOVERY":
                 # The executed intervention is consumed: it is never current authority again
@@ -552,15 +610,17 @@ class OutcomeVerifier:
                 "execution_claim_key": plan.execution_claim_key, "evidence_ids": list(evidence_ids),
                 "observation_start": plan.observation_start.isoformat(), "observation_end": end_at.isoformat(),
                 "policy_version": POLICY_VERSION, "verifier_identity": VERIFIER, "reason": derived.reason,
-                "checks": derived.checks})], **changes)
+                "checks": derived.checks, "work_report_id": plan.work_report_id})], **changes)
             return self._verification(updated, disposition, derived.result, derived.reason, plan_id=plan.id, outcome_id=outcome.id,
-                                      evidence_ids=tuple(evidence_ids), checks=derived.checks, post_score_count=derived.post_score_count)
+                                      evidence_ids=tuple(evidence_ids), checks=derived.checks, post_score_count=derived.post_score_count,
+                                      work_report_id=plan.work_report_id)
 
 
 LESSONS = {
-    "VERIFIED_RECOVERY": "Post-intervention persisted risk scores returned to the healthy band; the modelled risk that admitted "
-                         "the incident is no longer present. Physical repair quality was not independently measured.",
-    "NOT_RECOVERED": "Persisted risk stayed elevated for the whole observation budget after a confirmed work package; the "
+    "VERIFIED_RECOVERY": "Persisted risk scores recorded after the reported work returned to the healthy band; the modelled "
+                         "risk that admitted the incident is no longer present. The work report bounded the observation "
+                         "window and was not itself evidence; physical repair quality was not independently measured.",
+    "NOT_RECOVERED": "Persisted risk stayed elevated for the whole observation budget after the reported work; the "
                      "diagnosis and intervention require re-investigation through the full authority chain.",
     "REGRESSED": "Persisted risk stayed in the critical band for the settled tail and rose above the pre-intervention "
                  "baseline after execution; human "
